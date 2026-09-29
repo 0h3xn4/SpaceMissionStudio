@@ -119,6 +119,28 @@ def _wrap_pm_pi(angle_rad: float) -> float:
     return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def _eclipse_illumination_fraction(eclipse_payload) -> float:
+    """[-] 0 = fully eclipsed, 1 = fully sunlit, from a real
+    ``EclipseMsgPayload``.
+
+    Real crash report: ``illuminationFactor`` (this project's own source
+    tree copy of Basilisk documents it as the current field name --
+    ``src/architecture/msgPayloadDefC/EclipseMsgPayload.h``) does not
+    exist at all on a real user's installed Basilisk build --
+    ``AttributeError: 'EclipseMsgPayload' object has no attribute
+    'illuminationFactor'`` -- meaning that build predates the field being
+    added; only the older ``shadowFactor`` name exists there. This
+    project does not pin an exact Basilisk version (see
+    ``pyproject.toml``'s own comment on why), so both must work: try the
+    current name first, fall back to the older one only if it is genuinely
+    absent on the installed build.
+    """
+    try:
+        return eclipse_payload.illuminationFactor
+    except AttributeError:
+        return eclipse_payload.shadowFactor
+
+
 class StationKeepingController(sysModel.SysModel):
     """Independent altitude/SMA station-keeping for one spacecraft -- see
     this module's docstring and ``schema.scenario.StationKeepingConfig``'s
@@ -236,10 +258,7 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            # illuminationFactor, not the deprecated shadowFactor alias --
-            # see PhasingKeepingController.UpdateState()'s matching read
-            # for why this rename matters, not just style.
-            inSun = self.eclipseInMsg().illuminationFactor > self.sunlitThreshold
+            inSun = _eclipse_illumination_fraction(self.eclipseInMsg()) > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -503,26 +522,17 @@ class PhasingKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsgB.isLinked():
-            # illuminationFactor, not the deprecated shadowFactor alias --
-            # real crash investigation isolated this by elimination (see
-            # README's "Root cause found" section for the diagnostic
-            # sequence): only the two call sites reading .shadowFactor
-            # every tick (here and StationKeepingController.UpdateState())
-            # ever crashed; every diagnostic that avoided that specific
-            # read, including one that built the same shared Eclipse()/SRP
-            # machinery without reading it, ran clean. illuminationFactor
-            # is Basilisk's own current, non-deprecated name for the
-            # identical value (src/architecture/messaging/msgAutoSource/
-            # msgInterfacePy.i.in's EclipseMsg-specific aliasing block --
-            # a plain property() assigned once at module-import time, NOT
-            # re-injected per read, so that specific mechanism is not by
-            # itself an explanation for the crash; what actually inside
-            # Basilisk's C++/SWIG layer makes reading the deprecated
-            # property unsafe from here is not confirmed, only that it
-            # empirically is). Both controllers used shadowFactor because
-            # that predates the illuminationFactor rename in
-            # ../missionAnalysis, this class's own ported source.
-            inSun = self.eclipseInMsgB().illuminationFactor > self.sunlitThreshold
+            # See _eclipse_illumination_fraction's own docstring: a real
+            # crash investigation initially pinned this on
+            # EclipseMsgPayload.shadowFactor being deprecated in favor of
+            # illuminationFactor -- wrong, or at least not confirmed,
+            # since a real user's installed Basilisk build turned out not
+            # to have illuminationFactor AT ALL (an AttributeError, not a
+            # deprecation warning), meaning shadowFactor was never
+            # deprecated there in the first place. The actual root cause
+            # of the original crash remains open; this call site is
+            # simply tolerant of both Basilisk API generations now.
+            inSun = _eclipse_illumination_fraction(self.eclipseInMsgB()) > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without

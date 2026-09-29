@@ -2509,7 +2509,7 @@ Python `UpdateState()` callback, specifically via
 `StationKeepingController`'s/`PhasingKeepingController`'s own
 `.shadowFactor` read.
 
-## Root cause found: a deprecated Basilisk message field, not custom code
+## A deprecated-field theory that turned out not to hold on a real build
 
 Reading Basilisk's own C++/SWIG source (not this project's code) turned
 up the actual field. `EclipseMsgPayload.shadowFactor`
@@ -2549,32 +2549,60 @@ That is the actual evidence for this fix; the mechanism inside Basilisk
 remains an open question, not something this project's investigation
 resolved.
 
-**Fixed** in `engine/orbit_maintenance.py`: both `StationKeepingController.
-UpdateState()` and `PhasingKeepingController.UpdateState()` now read
-`.illuminationFactor` instead of `.shadowFactor` -- Basilisk's own
-current, non-deprecated name for the identical value, bypassing the
-deprecated-property machinery entirely. Not a workaround or custom logic
-of any kind -- this is exactly the API Basilisk itself recommends (its
-own test suite asserts `illuminationFactor` reads back with no warning at
-all, unlike `shadowFactor`). The reason both controllers used the old
-name in the first place: `../missionAnalysis/constellation_controllers.py`
-(the original source these were ported from, unchanged in this respect)
-predates the rename and still uses `shadowFactor` in three places --
-worth flagging there too, though that's a sibling project outside this
-one's scope, not touched here.
+**This theory did not survive contact with a real build.** Switching to
+`.illuminationFactor` was pushed and the user tried it -- and it failed
+immediately with `AttributeError: 'EclipseMsgPayload' object has no
+attribute 'illuminationFactor'`. That field does not exist at all on
+their installed Basilisk build, which means: their build predates
+`illuminationFactor` being added, `shadowFactor` was never deprecated in
+their actual runtime (there is no aliasing/deprecation machinery on a
+build that doesn't have the new name to alias to), and this project's
+`illuminationFactor`/`shadowFactor` deprecation story -- while accurate
+for the LATEST Basilisk source tree available for reading in this
+environment -- was never the right frame for what is actually installed
+on the user's machine. This project does not pin an exact Basilisk
+version (see `pyproject.toml`'s own comment on why), so a fix that only
+works against one specific source-tree snapshot was never going to be
+correct in the first place.
 
-**Verification:** existing `requires_basilisk` tests
-(`test_station_keeping_skips_thrust_on_nan_state`, `test_phasing_keeping_
-skips_thrust_on_nan_state`, and the others in `tests/test_orbit_
-maintenance.py` that exercise these `UpdateState()` methods with a
-finite, sunlit state) already cover this code path -- no behavior change
-from this fix (same semantic value, same comparison), only which
-Basilisk-internal code path reads it, so no new tests were added; the
-existing suite (600 passed, 71 skipped in this sandbox) continues to
-pass. Not yet confirmed against a real Basilisk build -- this is the
-actual fix to verify: template '05' (and the `diagnostic_05c_station_
-keeping_only.json` diagnostic that reliably reproduced this) should now
-run to completion.
+**What this means for the original crash: the root cause is still
+open.** The diagnostic sequence that isolated eclipse-reading as the
+empirical trigger (`constant_thrust` clean, SRP-with-eclipse-model clean,
+`station_keeping` alone reliably crashing) is still valid evidence -- it
+ran on the user's real, unchanged Basilisk build throughout, reading
+`.shadowFactor` the entire time (the only field that build has). But the
+explanation for WHY reading it crashes cannot be "it's deprecated and
+unstable," because on this build it isn't deprecated at all -- it's
+simply the current, only, ordinary field. Whatever actually makes
+reading the eclipse message from a Python `SysModel` callback unsafe on
+this specific installed build remains unidentified.
+
+**Fixed for real, scoped correctly this time:** new
+`_eclipse_illumination_fraction()` in `engine/orbit_maintenance.py` tries
+`.illuminationFactor` first (Basilisk's current documented name, per this
+checkout's own source) and falls back to `.shadowFactor` only on
+`AttributeError` (i.e. only on a Basilisk build old enough not to have
+the new name at all) -- both `StationKeepingController.UpdateState()`
+and `PhasingKeepingController.UpdateState()` now go through it. This does
+NOT claim to fix the underlying crash (it can't, without knowing the real
+mechanism) -- it only makes this one read tolerant of both Basilisk API
+generations instead of hard-crashing with an `AttributeError` on an
+older build, which is what the previous, now-reverted `.illuminationFactor`
+-only version did. Expect the ORIGINAL crash (the one `diagnostic_05c_
+station_keeping_only.json` reliably reproduced, reading `.shadowFactor`
+either way) to still occur on the next run -- this fixes the regression
+this project itself introduced, not the crash the investigation started
+with.
+
+**Verification:** two new tests,
+`test_eclipse_illumination_fraction_prefers_new_name` and
+`test_eclipse_illumination_fraction_falls_back_to_old_name` (the second
+one directly modeling the real user's build: a stub payload object with
+`shadowFactor` but no `illuminationFactor` attribute at all), in
+`tests/test_orbit_maintenance.py` (`requires_basilisk`, auto-skipped in
+this sandbox since even constructing the stub payload's consumer needs
+the module's Basilisk imports to succeed). 600 passed, 73 skipped in
+this sandbox (2 more skipped, matching the 2 new tests).
 
 ## Repository layout
 

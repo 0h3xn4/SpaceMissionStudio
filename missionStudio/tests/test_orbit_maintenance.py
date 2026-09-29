@@ -12,6 +12,33 @@ import pytest
 pytestmark = pytest.mark.requires_basilisk
 
 
+def test_eclipse_illumination_fraction_prefers_new_name():
+    from missionstudio.engine.orbit_maintenance import _eclipse_illumination_fraction
+
+    class _NewStylePayload:
+        illuminationFactor = 0.75
+        shadowFactor = -1.0  # would be wrong if this were read instead
+
+    assert _eclipse_illumination_fraction(_NewStylePayload()) == 0.75
+
+
+def test_eclipse_illumination_fraction_falls_back_to_old_name():
+    """Real gap found on a real user's installed Basilisk build:
+    illuminationFactor does not exist there at all (an AttributeError,
+    not a deprecation warning) -- only the older shadowFactor name is
+    present. This project does not pin an exact Basilisk version, so
+    both must work.
+    """
+    from missionstudio.engine.orbit_maintenance import _eclipse_illumination_fraction
+
+    class _OldStylePayload:
+        shadowFactor = 0.42
+        # No illuminationFactor attribute at all -- matches the real
+        # installed build that triggered this fix.
+
+    assert _eclipse_illumination_fraction(_OldStylePayload()) == 0.42
+
+
 def test_vnb_basis_circular_equatorial_prograde_orbit():
     """Hand-computed reference case: r along +x, v along +y (circular,
     equatorial, prograde). Orbit normal is +z; V=[0,1,0]=v-hat by
