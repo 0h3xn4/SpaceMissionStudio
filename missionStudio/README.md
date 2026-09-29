@@ -2512,37 +2512,42 @@ Python `UpdateState()` callback, specifically via
 ## Root cause found: a deprecated Basilisk message field, not custom code
 
 Reading Basilisk's own C++/SWIG source (not this project's code) turned
-up the actual mechanism. `EclipseMsgPayload.shadowFactor`
+up the actual field. `EclipseMsgPayload.shadowFactor`
 (`src/architecture/msgPayloadDefC/EclipseMsgPayload.h`) is DEPRECATED in
 favor of `illuminationFactor` (same value, same semantics -- confirmed by
 Basilisk's own unit test,
 `src/simulation/environment/eclipse/_UnitTest/test_eclipse.py`'s
 `test_shadow_vs_illumination_alias_and_deprecation_behavior`, with a
-removal deadline of 2026-12-31). Basilisk's deprecation machinery for
-exactly this kind of field rename
-(`src/architecture/_GeneralModuleFiles/swig_deprecated.i`'s
-`_inject_deprecated_property`) works by re-injecting a fresh `property()`
-onto the PAYLOAD'S OWN CLASS (`setattr(instance.__class__, old_attr,
-property(getter, setter))`) every time the deprecated name is read --
-not a per-instance patch, a per-CLASS one, repeated on every read. Read
-from `StationKeepingController`'s/`PhasingKeepingController`'s
-`UpdateState()` -- a Basilisk SWIG director callback, executing on
-Basilisk's own separate simulation worker thread
-(`SimThreadExecution`) -- every single dynamics tick, this is exactly
-the kind of repeated class-level mutation from inside a hot simulation
-loop that could produce the two different native crash signatures this
-investigation started with (`basic_string::_M_create`,
-`std::bad_alloc`) -- both are consistent with heap corruption/allocation
-failure from unstable, repeated string/property-object construction, not
-with the "NaN defeats the adaptive integrator's step-acceptance check"
-mechanism `raise_clear_execution_error`'s docstring describes (which
-remains accurate for genuinely non-physical states -- just not what was
-happening here). This fully explains every earlier diagnostic result:
-`constant_thrust` (no eclipse reader) and the SRP effector (a plain C++
-Basilisk module reading eclipse internally, never through this
-Python-level deprecated-property machinery) both ran clean, while
+removal deadline of 2026-12-31).
+
+**Correction, since an earlier revision of this section named a specific
+internal mechanism that turned out to be wrong -- caught by going back
+and verifying it directly against Basilisk's generator source rather
+than leaving the claim standing on inference:** the generic
+`swig_deprecated.i`/`_inject_deprecated_property` machinery (which DOES
+re-inject a class-level `property()` on every read, and was this
+project's first guess) is NOT what backs `shadowFactor`/
+`illuminationFactor`. That field has its own hand-written, one-off
+aliasing block, specific to `EclipseMsg` alone among every message type
+(`src/architecture/messaging/msgAutoSource/msgInterfacePy.i.in`, the
+`if "{type}" == "EclipseMsg":` block): it assigns
+`EclipseMsgPayload.illuminationFactor`/`.shadowFactor` as plain
+`property()` objects on the class exactly ONCE, at Python import time --
+not re-injected per read, per tick, or per instance. So the specific
+"repeated class mutation from a hot loop" story in an earlier revision of
+this section does not hold up, and no other confirmed mechanism has
+replaced it: what Basilisk's own C++/SWIG layer does internally that
+makes reading this one deprecated property unsafe from a Python
+`SysModel` callback is NOT established here, only that it empirically is
+-- proven by elimination, not inferred from a plausible-sounding
+mechanism. Four separate diagnostic scenarios agree: `constant_thrust`
+(no eclipse reader at all) ran clean; the SRP effector with the SAME
+shared `Eclipse()` model present, read only in C++, ran clean;
 `station_keeping` alone -- the one thing that reads `.shadowFactor` from
-Python every tick -- reliably crashed.
+Python every tick -- reliably crashed at the identical point every time.
+That is the actual evidence for this fix; the mechanism inside Basilisk
+remains an open question, not something this project's investigation
+resolved.
 
 **Fixed** in `engine/orbit_maintenance.py`: both `StationKeepingController.
 UpdateState()` and `PhasingKeepingController.UpdateState()` now read

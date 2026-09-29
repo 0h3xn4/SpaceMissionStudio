@@ -504,22 +504,24 @@ class PhasingKeepingController(sysModel.SysModel):
         inSun = True
         if self.eclipseInMsgB.isLinked():
             # illuminationFactor, not the deprecated shadowFactor alias --
-            # real crash investigation found this: Basilisk's own
-            # deprecation shim for EclipseMsgPayload.shadowFactor
-            # (src/architecture/_GeneralModuleFiles/swig_deprecated.i's
-            # _inject_deprecated_property) re-injects a property onto the
-            # PAYLOAD CLASS itself (setattr(instance.__class__, ...)) every
-            # time the deprecated field is read -- called every dynamics
-            # tick, from Basilisk's own simulation worker thread, this is
-            # exactly the kind of pattern a real crash (two different
-            # native signatures, basic_string::_M_create/std::bad_alloc,
-            # on a scenario whose only reads of this specific deprecated
-            # field are here and in StationKeepingController.UpdateState())
-            # pointed back at. illuminationFactor is Basilisk's own
-            # current, non-deprecated name for the same value (both
-            # controllers previously used shadowFactor because that
-            # predates the rename in ../missionAnalysis, this class's own
-            # ported source).
+            # real crash investigation isolated this by elimination (see
+            # README's "Root cause found" section for the diagnostic
+            # sequence): only the two call sites reading .shadowFactor
+            # every tick (here and StationKeepingController.UpdateState())
+            # ever crashed; every diagnostic that avoided that specific
+            # read, including one that built the same shared Eclipse()/SRP
+            # machinery without reading it, ran clean. illuminationFactor
+            # is Basilisk's own current, non-deprecated name for the
+            # identical value (src/architecture/messaging/msgAutoSource/
+            # msgInterfacePy.i.in's EclipseMsg-specific aliasing block --
+            # a plain property() assigned once at module-import time, NOT
+            # re-injected per read, so that specific mechanism is not by
+            # itself an explanation for the crash; what actually inside
+            # Basilisk's C++/SWIG layer makes reading the deprecated
+            # property unsafe from here is not confirmed, only that it
+            # empirically is). Both controllers used shadowFactor because
+            # that predates the illuminationFactor rename in
+            # ../missionAnalysis, this class's own ported source.
             inSun = self.eclipseInMsgB().illuminationFactor > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
