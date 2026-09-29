@@ -126,6 +126,18 @@ _LOGGER = logging.getLogger(__name__)
 # found.
 _DIAG_SKIP_ECLIPSE_READ = os.environ.get("MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ") == "1"
 
+# Temporary crash-investigation switch, one step further than the read-skip
+# above: MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_SUBSCRIBE=1 skips the
+# eclipseInMsg(B).subscribeTo(...) call entirely (Eclipse() itself is still
+# built and added to the dynamics task by engine.service -- only THIS
+# controller's own subscription to it is skipped), so eclipseInMsg.isLinked()
+# is False and the per-tick read is never even attempted. Set alongside
+# MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ=1 -- skipping only the subscription
+# while leaving the (now dead) read-skip branch in place is still correct
+# either way, since isLinked() being False short-circuits it regardless.
+# Remove once the root cause is found.
+_DIAG_SKIP_ECLIPSE_SUBSCRIBE = os.environ.get("MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_SUBSCRIBE") == "1"
+
 
 def _wrap_pm_pi(angle_rad: float) -> float:
     """Wrap an angle [rad] to (-pi, pi]."""
@@ -354,7 +366,7 @@ def build_station_keeping(scSim, task_name: str, tag: str, sc_object, mu: float,
     controller.extForceEffector = thruster
     controller.scObject = sc_object
     controller.scStateInMsg.subscribeTo(sc_object.scStateOutMsg)
-    if eclipse_out_msg is not None:
+    if eclipse_out_msg is not None and not _DIAG_SKIP_ECLIPSE_SUBSCRIBE:
         controller.eclipseInMsg.subscribeTo(eclipse_out_msg)
     scSim.AddModelToTask(task_name, controller)
     return controller
@@ -689,7 +701,7 @@ def build_phasing_keeping(scSim, task_name: str, tag: str, mu: float, chief_sc_o
 
     controller.scStateInMsgA.subscribeTo(chief_sc_object.scStateOutMsg)
     controller.scStateInMsgB.subscribeTo(follower_sc_object.scStateOutMsg)
-    if follower_eclipse_out_msg is not None:
+    if follower_eclipse_out_msg is not None and not _DIAG_SKIP_ECLIPSE_SUBSCRIBE:
         controller.eclipseInMsgB.subscribeTo(follower_eclipse_out_msg)
     controller.extForceEffectorB = follower_station_keeping_controller.extForceEffector
     controller.scObjectB = follower_sc_object
