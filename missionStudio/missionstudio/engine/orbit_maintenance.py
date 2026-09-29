@@ -101,6 +101,7 @@ found and fixed after a full codebase audit).
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import numpy as np
@@ -112,6 +113,8 @@ from Basilisk.utilities import macros, orbitalMotion
 from ..schema.scenario import ConstantThrustConfig, PhasingKeepingConfig, StationKeepingConfig
 from .constellation import SeparationSchedule
 from .propellant_bookkeeping import apply_propellant_burn
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _wrap_pm_pi(angle_rad: float) -> float:
@@ -258,7 +261,9 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            inSun = _eclipse_illumination_fraction(self.eclipseInMsg()) > self.sunlitThreshold
+            illum = _eclipse_illumination_fraction(self.eclipseInMsg())
+            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illum)
+            inSun = illum > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -532,7 +537,9 @@ class PhasingKeepingController(sysModel.SysModel):
             # deprecated there in the first place. The actual root cause
             # of the original crash remains open; this call site is
             # simply tolerant of both Basilisk API generations now.
-            inSun = _eclipse_illumination_fraction(self.eclipseInMsgB()) > self.sunlitThreshold
+            illumB = _eclipse_illumination_fraction(self.eclipseInMsgB())
+            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illumB)
+            inSun = illumB > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without
