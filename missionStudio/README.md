@@ -2462,7 +2462,47 @@ thruster arbitration.
 `phasing_keeping` being present and sharing `station_keeping`'s effector,
 not either controller's logic in isolation.
 
-Not yet confirmed -- depends on the user running this third diagnostic.
+**Result, confirmed by the user: `station_keeping` alone crashes, at the
+identical point, with identical state.** Conclusive: NOT the
+two-controllers-sharing-one-effector mechanism (there's only one
+controller here) -- the trigger is specifically in
+`StationKeepingController`'s own logic.
+
+## Fourth diagnostic: eclipse machinery present vs. actually read
+
+Comparing the one clean diagnostic (`constant_thrust` alone) against the
+one crashing diagnostic (`station_keeping` alone) with everything else
+held equal (same thrust magnitude 0.05 N, same VNB-prograde direction,
+same mass-bookkeeping write, same fuel-tank message, both start applying
+nonzero force on their very first tick): the one remaining code
+difference is eclipse-gating.
+`StationKeepingController.UpdateState()` reads
+`self.eclipseInMsg.isLinked()` / `.shadowFactor` every tick;
+`ConstantFrameThrustController` has no eclipse message reader at all --
+and because `constant_thrust` alone doesn't trigger
+`engine.service.build()`'s `needs_eclipse` condition
+(`power`/`station_keeping`/`enable_srp`), that earlier clean diagnostic
+never even built the shared `Eclipse()` model in the first place.
+
+New `missionstudio/scenarios/diagnostic_05d_constant_thrust_with_eclipse_model.json`
+isolates whether it's the mere PRESENCE of that machinery, or the ACT of
+reading it, that matters: `constant_thrust` alone again (no eclipse
+message reader, same as the clean diagnostic), but with `enable_srp=True`
+added -- this forces `needs_eclipse` true and builds the real shared
+`Eclipse()` model/SRP effector, exactly as `station_keeping` does,
+WITHOUT `constant_thrust` itself ever reading `eclipseInMsg`.
+
+**If this crashes**, the `Eclipse()`/SRP machinery itself is implicated,
+independent of which controller reads it -- something about that model's
+construction or its interaction with the integrator. **If it does NOT
+crash**, that points specifically at `station_keeping`'s/
+`phasing_keeping`'s own act of reading `eclipseInMsg.isLinked()`/
+`.shadowFactor` from within their `UpdateState()` callback as the actual
+trigger -- an unusual but very specific, actionable finding to chase down
+next (e.g. in how `EclipseMsgReader()` behaves when read from a Python
+`SysModel` callback versus a C++ one).
+
+Not yet confirmed -- depends on the user running this fourth diagnostic.
 
 ## Repository layout
 
