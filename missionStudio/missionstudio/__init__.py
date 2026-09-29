@@ -8,4 +8,4 @@ kernel management, space weather, results). See ``missionStudio/README.md``
 for the phased roadmap and what is/isn't implemented yet.
 """
 
-__version__ = "0.1.0.dev0"  # Phase 0
+__version__ = "1.0.0"

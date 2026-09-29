@@ -2,10 +2,15 @@
 
 Phase 3 scope, per the roadmap ("Phase 3: Monte Carlo + access analysis +
 packaging"). This directory covers the Basilisk-independent half of
-packaging missionStudio into a real, installable Linux artifact --
-everything here has been built and run for real in this project's
-development sandbox. The Basilisk-dependent half (vendoring an actual
-Basilisk wheel) could not be, and that limit is explained below rather
+packaging missionStudio into a real, installable artifact for both Linux
+and Windows -- the Linux scripts (`build_wheel.sh`/`install.sh`) have been
+built and run for real in this project's development sandbox; their
+Windows/PowerShell counterparts (`build_wheel.ps1`/`install.ps1`, added
+for the 1.0.0 release) have NOT, because this development sandbox is
+Linux-only with no Windows environment available -- see "Windows support"
+below for exactly what that means and doesn't mean. The Basilisk-dependent
+half (vendoring an actual Basilisk wheel) could not be exercised
+end-to-end on either platform, and that limit is explained below rather
 than glossed over.
 
 ## What's here
@@ -67,6 +72,40 @@ than glossed over.
   even on a headless install. Non-fatal if it fails (e.g. no Qt platform
   plugins present at all) -- the desktop entry still installs, just with
   the icon theme's generic fallback.
+
+## Windows support
+
+Added for the 1.0.0 release. `build_wheel.ps1`/`install.ps1` are direct
+PowerShell ports of `build_wheel.sh`/`install.sh` -- same steps, same
+flags (`-Prefix`/`-BasiliskWheel`/`-MissionstudioWheel`/`-NoShortcut`
+instead of `--prefix`/`--basilisk-wheel`/`--missionstudio-wheel`/
+`--no-desktop-entry`), same two already-verified bugs from the Linux
+side pre-emptively fixed (the `scenarios/*.json` package-data glob is in
+`pyproject.toml`, platform-independent; the stale-`./build/`-directory
+shadowing fix is ported into `build_wheel.ps1` unchanged, since it's
+about `python -m build`'s own behavior, not the shell). Windows'
+equivalent of a `.desktop` entry is a Start Menu shortcut (`.lnk`),
+created via the standard `WScript.Shell` COM object at
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\missionStudio.lnk`.
+
+**Honesty note, matching this project's own discipline elsewhere:**
+these two scripts have NOT been run against a real Windows 11 machine --
+this development sandbox is Linux-only, with no Windows environment
+available at any point in this project's history. They were written
+against documented, standard PowerShell/`venv`/`pip`/`WScript.Shell`
+behavior and against `build_wheel.sh`/`install.sh`'s own
+already-verified logic (matched step-for-step), and reviewed for syntax
+by hand since no `pwsh`/`powershell.exe` was available in this sandbox
+to actually execute them either -- but "written carefully" is not the
+same claim as "run and confirmed working" that the rest of this
+directory makes for the Linux scripts. One specific, known gap: the
+Start Menu shortcut does not get a custom icon (`gui/icons.py`'s
+`ensure_icon_file()` always writes PNG data -- see that function's own
+docstring -- and a `.lnk`'s `IconLocation` needs a real `.ico`/`.exe`/
+`.dll`; rather than ship an icon file that wouldn't actually resolve,
+the shortcut just uses `missionstudio.exe`'s own embedded icon). If you
+run these on a real Windows 11 machine, please report anything that
+doesn't work as documented here.
 
 ## The vendoring decision (why there's no Basilisk wheel here)
 

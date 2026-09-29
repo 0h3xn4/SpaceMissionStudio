@@ -178,6 +178,40 @@ docs) and having ``engine.service`` retain BOTH (previously just
 ``viz``, and before that, neither) as plain attributes of its own
 ``SimulationService`` instance -- an ordinary Python object with no such
 restriction -- for that instance's lifetime.
+
+**Same bug found again, second occurrence, this time in GenericStorage**
+(reported: same ``basic_string::_M_create``/``std::length_error``
+signature as above, this time thrown from ``VizInterface::WriteProtobuffer()``
+-> ``google::protobuf::internal::ArenaStringPtr::Set()`` on VizInterface's
+own background write thread -- confirmed with a real ``gdb``
+``catch throw``/``bt`` on an otherwise-clean, fully-isolated repro: a
+station-keeping-only scenario, headless CLI, no live Vizard connection,
+just ``--vizard-save-file``). The paragraph above's claim that
+``GenericStorage``/``GenericSensor`` don't need this same retention --
+because their "relevant state is copied into Basilisk's own C++
+containers by ``enableUnityVisualization()``" -- was never actually
+verified against ``vizStructures.h`` and turned out to be wrong:
+``VizSpacecraftData::genericStorageList``/``genericSensorList`` are
+``std::vector<GenericStorage *>``/``std::vector<GenericSensor *>`` --
+POINTER vectors, not value vectors. ``enableUnityVisualization()`` only
+stores the pointers it's handed; it does not clone the pointed-to
+structs. The ``panel``/``sensor`` objects built in the loop below (and
+their embedded ``tank_reader``/``battery_reader``/``cmd_reader``
+``ReadFunctor``s) were local variables, never returned, never retained
+by ``engine.service`` -- garbage-collected the moment this function
+returned, while ``VizInterface`` kept dangling pointers to them and
+dereferenced one every tick in ``WriteProtobuffer()``, eventually
+reading freed/reused memory as a corrupt string length. Only
+spacecraft with a ``GenericStorage``/``GenericSensor`` panel (i.e. only
+``station_keeping``/ground-station-access scenarios -- never
+``constant_thrust``, which creates no panel at all) can hit this,
+which is exactly the split a long real-repro investigation across
+several scenario variants eventually converged on before this was
+found. Fixed the same way as the bridge fix: ``generic_storage_list``/
+``generic_sensor_list`` (built below, parallel per-spacecraft lists)
+are now returned alongside ``viz``/``access_indicator_bridges`` (see
+:func:`enable_vizard`'s own Returns docs) and ``engine.service`` retains
+all four for the ``SimulationService`` instance's lifetime.
 """
 
 from __future__ import annotations
@@ -229,13 +263,19 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     this checkout's own examples).
 
     Returns:
-        ``(viz, access_indicator_bridges)`` -- the ``vizInterface.VizInterface``
-        instance ``vizSupport.enableUnityVisualization()`` built, and the
-        (possibly empty) list of ``_AccessIndicatorBridge`` ``SysModel``
-        instances this function registered on ``scSim``'s task. The
-        caller MUST keep both alive (e.g. as attributes on a
+        ``(viz, access_indicator_bridges, generic_storage_list, generic_sensor_list)``
+        -- the ``vizInterface.VizInterface`` instance
+        ``vizSupport.enableUnityVisualization()`` built; the (possibly
+        empty) list of ``_AccessIndicatorBridge`` ``SysModel`` instances
+        this function registered on ``scSim``'s task; and the
+        per-spacecraft ``GenericStorage``/``GenericSensor`` panel lists
+        (each entry ``None`` or a list, parallel to ``sc_objects``) this
+        function built and handed to ``enableUnityVisualization()``. The
+        caller MUST keep ALL FOUR alive (e.g. as attributes on a
         long-lived object) for as long as the simulation runs -- see
-        ``access_indicator_bridges``' own comment below for exactly why.
+        ``access_indicator_bridges``' own comment below, which turned out
+        to apply to ``generic_storage_list``/``generic_sensor_list`` too
+        (see the "Real bug found" note below, second occurrence).
 
     Args:
         sc_objects: every ``spacecraft.Spacecraft`` in this run, in the
@@ -448,7 +488,13 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     # raised exactly that "You tried to add this variable ... To this
     # class" error before initialization ever got as far as running a
     # single step) so the caller (engine.service.SimulationService.build())
-    # can retain both for the instance's lifetime -- see this function's
-    # docstring and access_indicator_bridges' own comment above for why
-    # these specifically need a persistent Python reference at all.
-    return viz, access_indicator_bridges
+    # can retain all four for the instance's lifetime -- see this
+    # function's docstring (both "Real bug found" notes) for why these
+    # specifically need a persistent Python reference at all.
+    # generic_storage_list/generic_sensor_list are the exact objects
+    # already handed to enableUnityVisualization() above (genericStorageList=/
+    # genericSensorList=) -- VizSpacecraftData's matching fields are
+    # std::vector<GenericStorage *>/std::vector<GenericSensor *> (raw
+    # pointers), so those are the SAME objects VizInterface now holds
+    # dangling pointers to unless something keeps them alive.
+    return viz, access_indicator_bridges, generic_storage_list, generic_sensor_list

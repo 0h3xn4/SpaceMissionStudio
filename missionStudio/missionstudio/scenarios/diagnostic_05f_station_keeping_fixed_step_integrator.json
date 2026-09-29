@@ -1,0 +1,186 @@
+{
+  "name": "DIAGNOSTIC - 05 formation flying, station_keeping only, fixed-step integrator",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "orbit_only",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 0,
+    "third_body_perturbers": [
+      "sun"
+    ]
+  },
+  "spacecraft": [
+    {
+      "name": "chief-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6928.0,
+        "eccentricity": 0.001,
+        "inclination_deg": 45.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 400.0,
+      "inertia_kg_m2": [
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0
+      ],
+      "sigma_bn_init": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "sensors": [],
+      "actuators": [],
+      "fsw_mode": null,
+      "fsw_params": {},
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "name": "follower-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6928.0,
+        "eccentricity": 0.001,
+        "inclination_deg": 45.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": -0.5,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 400.0,
+      "inertia_kg_m2": [
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0
+      ],
+      "sigma_bn_init": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "sensors": [],
+      "actuators": [],
+      "fsw_mode": null,
+      "fsw_params": {},
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": {
+        "target_altitude_km": 550.0,
+        "deadband_km": 2.0,
+        "thrust_n": 0.05,
+        "isp_s": 1500.0,
+        "propellant_kg": 5.0,
+        "eclipse_sunlit_threshold": 0.99
+      },
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null
+  },
+  "sim_settings": {
+    "duration_days": 0.05,
+    "dynamics_task_rate_s": 1.0,
+    "integrator": "rk2"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "Fifth diagnostic scenario, NOT a permanent template. Identical to diagnostic_05e_station_keeping_fine_rate.json (which reproducibly crashes deterministically within the first 1-2 simulated seconds regardless of dynamics_task_rate_s -- both 30 s and 1 s task rates show the last-good state already gone by the very next tick, so the divergence is genuinely near-instantaneous once station-keeping starts thrusting, not a logging-resolution artifact) except: integrator changed from the adaptive rkf78 to the FIXED-step rk2.\n\nPurpose: Basilisk's rkf45/rkf78 adaptive integrators have a known, already-documented limitation (see engine.service.raise_clear_execution_error's own error message) -- once the state goes non-finite, computeMaxRelativeError() returns NaN, the adaptive step-size search never terminates, and the process exhausts memory instead of raising a clear error. rk2 has no adaptive step-size search at all (it takes exactly one fixed-size step per dynamics_task_rate_s tick), so it cannot exhibit that specific spin-until-OOM failure mode.\n\nIf this run stays clean and physically stable, the adaptive step-size search itself (not the underlying force/mass model) is implicated as the actual trigger -- a Basilisk integrator-level issue, not a bug in orbit_maintenance.py. If this run also goes non-finite (even without the OOM spin -- rk2 would just propagate NaN state forward tick over tick instead of hanging), that rules the adaptive integrator OUT and points back at the force/mass model in StationKeepingController itself producing a genuinely wrong (not just numerically fragile) result.",
+  "schema_version": 1
+}

@@ -27,26 +27,48 @@ wheel to PyPI, and installing it that way genuinely works.
 
 **1. Prerequisites**
 
-* Linux, Python 3.9+.
-* `python3 -m venv` (or your preferred environment tool) -- everything
+* Linux or Windows 11, Python 3.9+. Basilisk's own prebuilt-wheel support
+  matrix (`../docs/source/Install.rst`) explicitly covers both: "Windows:
+  Windows 10/11 (x86_64)" and "Linux: Manylinux 2.24+ (x86_64, aarch64)"
+  -- macOS is also listed there but not a target for missionStudio's own
+  install scripts below (nothing prevents `pip install` from working on
+  it too, just not independently verified for this project).
+* `python -m venv` (or your preferred environment tool) -- everything
   below assumes a virtualenv so it doesn't touch your system Python.
+  (Linux commands below use `python3`/`pip3`-equivalent `python`/`pip`
+  once the venv is active, matching what actually ran in this project's
+  own Linux development sandbox; on Windows, use the `python`/`pip`
+  installed by the official python.org or Microsoft Store installer.)
 
 **2. Install Basilisk**
 
+Linux/macOS:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "bsk[all]"
 ```
 
+Windows (PowerShell):
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install "bsk[all]"
+```
+
 This is Basilisk's own recommended install path (see `../docs/source/Install.rst`
 in this checkout) -- a prebuilt wheel from PyPI, no compiler or Conan
-required. It was genuinely run in this project's development sandbox: the
-wheel downloads and installs cleanly, and every Basilisk module/class this
-app's code imports (across all three phases) was confirmed present.
-Building from source is still possible and documented
-(`../docs/source/Build.rst`) if you need an unpublished feature or a
-locally-modified Basilisk, but it's no longer the first thing to reach for.
+required, published for both platforms above. The Linux command was
+genuinely run in this project's development sandbox: the wheel downloads
+and installs cleanly, and every Basilisk module/class this app's code
+imports (across every phase) was confirmed present. The Windows command
+was not independently run in this project (this development sandbox is
+Linux-only) -- it follows Basilisk's own documented Windows install path
+exactly, but is flagged here rather than claimed as verified end-to-end;
+please report any issues. Building from source is still possible and
+documented (`../docs/source/Build.rst`) if you need an unpublished
+feature or a locally-modified Basilisk, but it's no longer the first
+thing to reach for on either platform.
 
 **3. Install missionStudio**
 
@@ -55,10 +77,17 @@ cd missionStudio
 pip install -e ".[dev,gui]"
 ```
 
+(Same command on Windows, once the venv above is active.)
+
 (Or skip steps 2-3 and run `packaging/install.sh --basilisk-wheel "bsk[all]"`
-instead, which does both in one shot into its own private venv and adds a
-desktop launcher -- see `packaging/README.md`. That flag genuinely works
-now, for the same reason step 2 does.)
+on Linux, or `packaging/install.ps1 -BasiliskWheel "bsk[all]"` on Windows,
+instead -- either does both in one shot into its own private venv and
+adds a launcher (a desktop entry on Linux, a Start Menu shortcut on
+Windows) -- see `packaging/README.md` for exactly what's verified on
+each platform. The Linux script and its `--basilisk-wheel` flag
+genuinely work, for the same reason step 2 does; the Windows script is
+new for the 1.0.0 release and carries the same not-independently-run
+caveat as the Windows command above.)
 
 **4. Check it's working**
 
@@ -2604,6 +2633,117 @@ this sandbox since even constructing the stub payload's consumer needs
 the module's Basilisk imports to succeed). 600 passed, 73 skipped in
 this sandbox (2 more skipped, matching the 2 new tests).
 
+## The actual root cause, found for real: not eclipse at all
+
+Everything in the sections above -- the deprecated-field theory, the
+`illuminationFactor`/`shadowFactor` fallback, "the root cause is still
+open" -- was a dead end. Eclipse was never involved in the original
+crash. Here is what actually happened, found by continuing the
+diagnostic sequence with real repros rather than assuming the eclipse
+angle was the only thread left to pull.
+
+**Two more real diagnostics fully exonerated eclipse.** A debug log of
+the raw value `StationKeepingController`/`PhasingKeepingController`
+read from `EclipseMsgPayload` every tick showed it was always a
+completely sane `1.0` (fully sunlit) right up to the crash -- ruling
+out a bad/NaN value. A follow-up diagnostic switch that skipped the
+eclipse message's `subscribeTo()` call entirely (not just the read --
+`isLinked()` stayed `False` the whole run, confirmed by zero
+eclipse-related log lines) still crashed identically. Eclipse, the
+value it carries, and the act of reading or even subscribing to it,
+are conclusively not the trigger.
+
+**A controlled A/B comparison then ruled out `station_keeping`'s own
+control logic too.** `diagnostic_05b_constant_thrust_only.json` (clean)
+and `diagnostic_05c_station_keeping_only.json` (crashes) use
+byte-for-byte identical orbits, and -- because station-keeping's
+altitude deadband trips on tick 1 in this configuration -- identical
+thrust magnitude, direction, and timing throughout. Both write a
+`FuelTankMsgPayload` every tick. Swapping the adaptive `rkf78`
+integrator for the fixed-step, non-adaptive `rk2` (which structurally
+cannot exhibit "the adaptive step-size search spins forever on a NaN
+error estimate," the mechanism this project's own error message
+blames) made no difference either -- same crash, same signature. Every
+hypothesis this project could test from the Python side was tried and
+eliminated.
+
+**The actual break: the headless CLI (`missionstudio.cli run`) ran the
+exact same crashing scenario to completion, clean, first try.** Every
+single crash report collected across this entire investigation came
+from the GUI's `run_live()` path, and every one of them logged
+`Basilisk-Vizard connection made` -- something this project had not
+isolated as a variable until debugging under `gdb` forced a
+Vizard-free headless run. That pointed at Vizard, not station-keeping,
+not eclipse, not the integrator.
+
+**Confirmed with a real `gdb catch throw`/`bt`** on a fully isolated
+repro: headless CLI, `--vizard-save-file` (no live Vizard connection
+needed, just exercises the same `enable_vizard()` build path), station-
+keeping only. Full native backtrace:
+
+```
+VizInterface::WriteProtobuffer(unsigned long)
+  -> google::protobuf::internal::ArenaStringPtr::Set(std::string const&, Arena*)
+    -> std::string::_M_create()
+      -> throws std::length_error
+```
+
+thrown on `vizInterface`'s own background write thread -- not the main
+simulation thread, and not anywhere near `orbit_maintenance.py`.
+
+**Root cause:** `engine/vizard.py`'s `enable_vizard()` builds a
+`vizInterface.GenericStorage` "Propellant" panel for every spacecraft
+with `station_keeping` configured (never for `constant_thrust`, which
+is exactly the split every diagnostic above kept finding). Reading
+Basilisk's own `vizStructures.h`: `VizSpacecraftData::genericStorageList`/
+`genericSensorList` are `std::vector<GenericStorage *>`/
+`std::vector<GenericSensor *>` -- raw POINTER vectors.
+`vizSupport.enableUnityVisualization()` only stores the pointers it's
+handed; it never clones the pointed-to structs. The `panel`/`sensor`
+objects `enable_vizard()` built (and their embedded
+`FuelTankMsgReader`/`PowerStorageStatusMsgReader`/`DeviceCmdMsgReader`
+readers) were local variables, never returned, never retained anywhere
+-- garbage-collected the instant `enable_vizard()` returned, while
+`VizInterface` kept dangling pointers to them and dereferenced one
+every tick from its background thread, eventually reading freed/reused
+memory as a corrupt string length.
+
+This is the exact same bug class this same module already found and
+fixed once before, for `_AccessIndicatorBridge` (see that section's
+own history above the "Live-data panels" docstring in
+`engine/vizard.py`) -- right down to the identical
+`basic_string::_M_create`/`std::length_error` signature. That earlier
+fix's own justification for not extending the same retention to
+`GenericStorage`/`GenericSensor` ("their relevant state is copied into
+Basilisk's own C++ containers") was an unverified assumption, never
+checked against `vizStructures.h`, and it was wrong for these two
+specific pointer-vector fields.
+
+**Fixed the same way as the bridge fix:** `enable_vizard()` now also
+returns `generic_storage_list`/`generic_sensor_list` alongside
+`viz`/`access_indicator_bridges`, and `engine.service.SimulationService`
+retains all four (`_viz`/`_viz_access_indicator_bridges`/
+`_viz_generic_storage_list`/`_viz_generic_sensor_list`) for the
+instance's lifetime instead of just the first two.
+
+**Verification:** `tests/test_vizard.py` (new,
+`requires_basilisk`) -- `test_station_keeping_with_vizard_save_file_does_not_crash`
+runs `diagnostic_05f_station_keeping_fixed_step_integrator.json` with a
+real `VizardRequest(save_file=...)` through `SimulationService.run()`
+end to end (this is the actual regression check: it used to raise
+`SimulationServiceError` wrapping `std::length_error`/`std::bad_alloc`
+within the first couple of ticks, every time); `test_generic_storage_
+and_sensor_lists_are_retained_after_build` checks the fix directly --
+`service._viz_generic_storage_list` is non-`None` and carries a real
+entry after `build()`. Both auto-skip in this sandbox (no Basilisk
+build here) but were designed directly from, and match, the real
+crash this project's user reproduced and debugged with `gdb` on their
+own machine. 600 passed, 75 skipped in this sandbox (2 more than the
+count above, matching these 2 new tests). The temporary
+`MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ`/`_SUBSCRIBE` diagnostic switches
+used to isolate eclipse as a non-cause have been removed from
+`engine/orbit_maintenance.py` now that the real root cause is fixed.
+
 ## Repository layout
 
 ```
@@ -2979,6 +3119,46 @@ specifically:
   itself, and `tests/test_two_body_validation.py`'s analytical check,
   still need to be run once on a machine with ordinary internet access.
 
+## Version 1.0.0
+
+The first tagged release. What changed for it, and what "1.0.0" actually
+means here:
+
+* **A real end-to-end run, on a real Basilisk install, finally happened**
+  -- the one specific gap the "What's next" section below used to call
+  out (this development sandbox's network policy blocks the NAIF SPICE
+  kernel host, so a full run past kernel loading was never independently
+  confirmed here). A real user ran the full `05_formation_flying_phasing.json`
+  template -- both `StationKeepingController` and `PhasingKeepingController`
+  active, Vizard live-streaming on -- to 100% completion (`t=604800.0 s`
+  of `604800.0 s`, the full 7 simulated days) with no errors. That
+  finding a real, previously-unreproducible crash along the way (see the
+  eclipse-investigation-turned-red-herring sections above, and "The
+  actual root cause, found for real: not eclipse at all" for the fix) and
+  then confirming a clean full run afterward is the actual end-to-end
+  verification this project didn't have before.
+* **Cross-platform install.** `python -m venv` + `pip install "bsk[all]"`
+  + `pip install -e ".[dev,gui]"` (the "Getting started" section above)
+  works identically on Linux and Windows 11 -- Basilisk's own prebuilt
+  wheels are published for both (`../docs/source/Install.rst`'s "Prebuilt
+  wheel availability" table), and missionStudio's own code was already
+  written with per-OS awareness where it matters (`gui/vizard_launcher.py`'s
+  `_candidate_roots()`/`_EXECUTABLE_NAME` branch on `sys.platform` for
+  finding the external Vizard app; `Path.home()`, never a raw `$HOME`/
+  POSIX assumption, for every user-data location). `packaging/install.ps1`/
+  `build_wheel.ps1` are new this release -- direct PowerShell ports of
+  the already-verified `install.sh`/`build_wheel.sh`, giving Windows the
+  same one-command install + Start Menu shortcut experience Linux has had
+  since Phase 3. Per this project's own verification discipline: the
+  Linux install scripts and the Linux Basilisk-wheel install have been
+  run for real; their Windows counterparts have not (no Windows
+  environment has ever been available in this development sandbox) --
+  see `packaging/README.md`'s "Windows support" section for exactly
+  what that does and doesn't cover, and please report anything that
+  doesn't work as documented on a real Windows 11 machine.
+* **Version bumped** `0.1.0.dev0` -> `1.0.0` in `pyproject.toml` and
+  `missionstudio/__init__.py`.
+
 ## What's next
 
 Phase 4 (see "What Phase 4 adds" above) responded to the first round of
@@ -3004,13 +3184,13 @@ not yet built:
 Beyond that, the "Known limitations" list above is the rest of the honest
 map: a handful of schema-valid-but-not-wired-up options (celestial-body
 `locationPointing` targets, thrusters, magnetic torque rods, non-Earth
-spherical harmonics/magnetometer), navigation error modeling, richer Monte
-Carlo retention, and -- the one requiring something this development
-sandbox's network policy specifically blocks -- a full simulation run past
-SPICE kernel loading, to get the first true end-to-end confirmation
-(including `test_two_body_validation.py`'s analytical check, and the new
-Phase 4 power-budget/link-budget/station-keeping/phasing-keeping/
-Vizard-panel wiring) on top of everything up to that point already being
-verified against a real Basilisk install. None of it is blocked on a
-design decision; each item is scoped and documented at its own call site
-for whoever picks it up next.
+spherical harmonics/magnetometer), navigation error modeling, and richer
+Monte Carlo retention. (This paragraph used to also list "a full
+simulation run past SPICE kernel loading, to get the first true
+end-to-end confirmation" as blocked on this development sandbox's
+network policy -- see "Version 1.0.0" above: that confirmation has since
+happened for real, on a real user's machine, including the exact
+station-keeping/phasing-keeping/Vizard-panel wiring this paragraph used
+to flag as unconfirmed.) None of the remaining items is blocked on a
+design decision; each is scoped and documented at its own call site for
+whoever picks it up next.
