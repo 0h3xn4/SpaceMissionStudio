@@ -236,7 +236,10 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            inSun = self.eclipseInMsg().shadowFactor > self.sunlitThreshold
+            # illuminationFactor, not the deprecated shadowFactor alias --
+            # see PhasingKeepingController.UpdateState()'s matching read
+            # for why this rename matters, not just style.
+            inSun = self.eclipseInMsg().illuminationFactor > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -500,7 +503,24 @@ class PhasingKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsgB.isLinked():
-            inSun = self.eclipseInMsgB().shadowFactor > self.sunlitThreshold
+            # illuminationFactor, not the deprecated shadowFactor alias --
+            # real crash investigation found this: Basilisk's own
+            # deprecation shim for EclipseMsgPayload.shadowFactor
+            # (src/architecture/_GeneralModuleFiles/swig_deprecated.i's
+            # _inject_deprecated_property) re-injects a property onto the
+            # PAYLOAD CLASS itself (setattr(instance.__class__, ...)) every
+            # time the deprecated field is read -- called every dynamics
+            # tick, from Basilisk's own simulation worker thread, this is
+            # exactly the kind of pattern a real crash (two different
+            # native signatures, basic_string::_M_create/std::bad_alloc,
+            # on a scenario whose only reads of this specific deprecated
+            # field are here and in StationKeepingController.UpdateState())
+            # pointed back at. illuminationFactor is Basilisk's own
+            # current, non-deprecated name for the same value (both
+            # controllers previously used shadowFactor because that
+            # predates the rename in ../missionAnalysis, this class's own
+            # ported source).
+            inSun = self.eclipseInMsgB().illuminationFactor > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without

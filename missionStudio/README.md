@@ -2502,7 +2502,74 @@ trigger -- an unusual but very specific, actionable finding to chase down
 next (e.g. in how `EclipseMsgReader()` behaves when read from a Python
 `SysModel` callback versus a C++ one).
 
-Not yet confirmed -- depends on the user running this fourth diagnostic.
+**Result, confirmed by the user: this diagnostic ran the full 7 days with
+no crash.** Fully exonerates the `Eclipse()`/SRP machinery itself --
+narrows the trigger to the ACT of reading `eclipseInMsg` from a custom
+Python `UpdateState()` callback, specifically via
+`StationKeepingController`'s/`PhasingKeepingController`'s own
+`.shadowFactor` read.
+
+## Root cause found: a deprecated Basilisk message field, not custom code
+
+Reading Basilisk's own C++/SWIG source (not this project's code) turned
+up the actual mechanism. `EclipseMsgPayload.shadowFactor`
+(`src/architecture/msgPayloadDefC/EclipseMsgPayload.h`) is DEPRECATED in
+favor of `illuminationFactor` (same value, same semantics -- confirmed by
+Basilisk's own unit test,
+`src/simulation/environment/eclipse/_UnitTest/test_eclipse.py`'s
+`test_shadow_vs_illumination_alias_and_deprecation_behavior`, with a
+removal deadline of 2026-12-31). Basilisk's deprecation machinery for
+exactly this kind of field rename
+(`src/architecture/_GeneralModuleFiles/swig_deprecated.i`'s
+`_inject_deprecated_property`) works by re-injecting a fresh `property()`
+onto the PAYLOAD'S OWN CLASS (`setattr(instance.__class__, old_attr,
+property(getter, setter))`) every time the deprecated name is read --
+not a per-instance patch, a per-CLASS one, repeated on every read. Read
+from `StationKeepingController`'s/`PhasingKeepingController`'s
+`UpdateState()` -- a Basilisk SWIG director callback, executing on
+Basilisk's own separate simulation worker thread
+(`SimThreadExecution`) -- every single dynamics tick, this is exactly
+the kind of repeated class-level mutation from inside a hot simulation
+loop that could produce the two different native crash signatures this
+investigation started with (`basic_string::_M_create`,
+`std::bad_alloc`) -- both are consistent with heap corruption/allocation
+failure from unstable, repeated string/property-object construction, not
+with the "NaN defeats the adaptive integrator's step-acceptance check"
+mechanism `raise_clear_execution_error`'s docstring describes (which
+remains accurate for genuinely non-physical states -- just not what was
+happening here). This fully explains every earlier diagnostic result:
+`constant_thrust` (no eclipse reader) and the SRP effector (a plain C++
+Basilisk module reading eclipse internally, never through this
+Python-level deprecated-property machinery) both ran clean, while
+`station_keeping` alone -- the one thing that reads `.shadowFactor` from
+Python every tick -- reliably crashed.
+
+**Fixed** in `engine/orbit_maintenance.py`: both `StationKeepingController.
+UpdateState()` and `PhasingKeepingController.UpdateState()` now read
+`.illuminationFactor` instead of `.shadowFactor` -- Basilisk's own
+current, non-deprecated name for the identical value, bypassing the
+deprecated-property machinery entirely. Not a workaround or custom logic
+of any kind -- this is exactly the API Basilisk itself recommends (its
+own test suite asserts `illuminationFactor` reads back with no warning at
+all, unlike `shadowFactor`). The reason both controllers used the old
+name in the first place: `../missionAnalysis/constellation_controllers.py`
+(the original source these were ported from, unchanged in this respect)
+predates the rename and still uses `shadowFactor` in three places --
+worth flagging there too, though that's a sibling project outside this
+one's scope, not touched here.
+
+**Verification:** existing `requires_basilisk` tests
+(`test_station_keeping_skips_thrust_on_nan_state`, `test_phasing_keeping_
+skips_thrust_on_nan_state`, and the others in `tests/test_orbit_
+maintenance.py` that exercise these `UpdateState()` methods with a
+finite, sunlit state) already cover this code path -- no behavior change
+from this fix (same semantic value, same comparison), only which
+Basilisk-internal code path reads it, so no new tests were added; the
+existing suite (600 passed, 71 skipped in this sandbox) continues to
+pass. Not yet confirmed against a real Basilisk build -- this is the
+actual fix to verify: template '05' (and the `diagnostic_05c_station_
+keeping_only.json` diagnostic that reliably reproduced this) should now
+run to completion.
 
 ## Repository layout
 
