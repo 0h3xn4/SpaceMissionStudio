@@ -429,7 +429,7 @@ class PhasingKeepingConfig:
     point ``rv2elem()`` silently falls back to a formula that is
     numerically meaningless that close to zero eccentricity, feeding a
     garbage phasing error into this controller. See
-    ``missionStudio/README.md``'s "Template '05' crash" writeup for the
+    ``missionStudio/HISTORY.md``'s "Template '05' crash" writeups for the
     full investigation (bundled template ``05_formation_flying_phasing``
     hit exactly this and was fixed the same way).
     """

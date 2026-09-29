@@ -100,7 +100,7 @@ def build_02_elliptical_orbit_with_perturbations() -> Scenario:
             "via 8th-degree spherical harmonics) and third-body gravity from the Sun and Moon all "
             "switched on. dynamics_task_rate_s is deliberately fine (1.0 s) here: coarser rates "
             "introduce real truncation error into the spherical-harmonics gravity term itself (see "
-            "this project's own README, 'What Phase 6 (Mission Sequence architecture) adds', for the "
+            "this project's own HISTORY.md, 'What Phase 6 (Mission Sequence architecture) adds', for the "
             "measured effect of this on a real Basilisk run) -- always use a fine rate together with "
             "central_body_degree > 0, not just for point-mass orbits.\n\n"
             "What to look at: plot 'sat-1.position_N' and watch the orbit visibly precess over the "
@@ -391,7 +391,7 @@ def build_08_mission_sequence_orbit_raise() -> Scenario:
         name="08 - Mission sequence: impulsive orbit raise",
         description=(
             "Introduces the Mission Sequence layer (Resources/Mission Sequence/Output -- see this "
-            "project's README, 'What Phase 6 (Mission Sequence architecture) adds'): rather than one "
+            "project's HISTORY.md, 'What Phase 6 (Mission Sequence architecture) adds'): rather than one "
             "single propagate-to-duration run, this scenario is a time-ordered list of commands, "
             "editable as a tree in the GUI's 'Mission sequence' panel: coast, snapshot the orbit "
             "state, apply a single prograde impulsive delta-V, coast again, snapshot again. The "

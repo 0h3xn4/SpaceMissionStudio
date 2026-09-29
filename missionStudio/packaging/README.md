@@ -56,7 +56,7 @@ than glossed over.
   is ordinary, non-missionstudio-specific `pip` behavior -- not something
   this project can miswire in a Basilisk-specific way -- but it could NOT
   be exercised end-to-end here, because this development sandbox has no
-  built Basilisk wheel to test it against (see the main README's
+  built Basilisk wheel to test it against (see `../HISTORY.md`'s
   "Environment honesty note": the same Conan Center network block that
   stopped a from-source Basilisk build here also means there's nothing
   vendorable sitting around to install with this flag).
@@ -120,7 +120,7 @@ This phase implements the RECEIVING end of that decision (`install.sh
 --basilisk-wheel`) but does not itself produce a Basilisk wheel, because
 doing so needs a working Basilisk build -- which this development sandbox
 has never had, for the same network-policy reason throughout this whole
-project (see `../README.md`'s "Environment honesty note"). Producing that
+project (see `../HISTORY.md`'s "Environment honesty note"). Producing that
 wheel is a separate, one-time release-engineering task (on a machine that
 CAN build Basilisk, following `../../docs/source/Build.rst`, then
 `python -m pip wheel .` from that checkout, or using Basilisk's own
