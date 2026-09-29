@@ -102,6 +102,7 @@ found and fixed after a full codebase audit).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -115,6 +116,15 @@ from .constellation import SeparationSchedule
 from .propellant_bookkeeping import apply_propellant_burn
 
 _LOGGER = logging.getLogger(__name__)
+
+# Temporary crash-investigation switch: MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ=1
+# keeps the eclipse message SUBSCRIBED/wired exactly as normal but skips the
+# actual per-tick read call, to isolate whether invoking
+# ReadFunctor.__call__() on this build's EclipseMsgReader is itself what
+# triggers the still-open basic_string::_M_create crash, independent of the
+# (already-confirmed-sane) value it returns. Remove once the root cause is
+# found.
+_DIAG_SKIP_ECLIPSE_READ = os.environ.get("MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ") == "1"
 
 
 def _wrap_pm_pi(angle_rad: float) -> float:
@@ -261,9 +271,12 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            illum = _eclipse_illumination_fraction(self.eclipseInMsg())
-            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illum)
-            inSun = illum > self.sunlitThreshold
+            if _DIAG_SKIP_ECLIPSE_READ:
+                _LOGGER.debug("%s: t=%.3f s eclipse read SKIPPED (diagnostic)", self.ModelTag, t)
+            else:
+                illum = _eclipse_illumination_fraction(self.eclipseInMsg())
+                _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illum)
+                inSun = illum > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -537,9 +550,12 @@ class PhasingKeepingController(sysModel.SysModel):
             # deprecated there in the first place. The actual root cause
             # of the original crash remains open; this call site is
             # simply tolerant of both Basilisk API generations now.
-            illumB = _eclipse_illumination_fraction(self.eclipseInMsgB())
-            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illumB)
-            inSun = illumB > self.sunlitThreshold
+            if _DIAG_SKIP_ECLIPSE_READ:
+                _LOGGER.debug("%s: t=%.3f s eclipse read SKIPPED (diagnostic)", self.ModelTag, t)
+            else:
+                illumB = _eclipse_illumination_fraction(self.eclipseInMsgB())
+                _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illumB)
+                inSun = illumB > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without
