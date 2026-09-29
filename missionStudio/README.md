@@ -17,11 +17,36 @@ this for the first time should actually be able to read.
 
 ## Getting started
 
-Everything below was actually run, not just written and assumed to work --
-including step 2, which for most of this project's history looked like it
-would need a from-source Basilisk build (fragile, and blocked in this
-project's own sandbox). It turned out Basilisk now publishes a prebuilt
-wheel to PyPI, and installing it that way genuinely works.
+**Just want to use the app, not develop it?** There's a real installer
+for that -- no terminal, no typed `pip`/`venv` commands:
+
+* **Linux:** `packaging/build_deb.sh` produces `missionstudio_1.0.0_all.deb`
+  -- install it with `sudo apt install ./missionstudio_1.0.0_all.deb`
+  (or double-click it in a file manager with package-install support) and
+  get a normal application-menu entry. **Genuinely built and installed
+  end-to-end in this project's own development sandbox**, including a
+  real Basilisk install -- see `packaging/README.md`'s "The real
+  installers" section for exactly what that confirmed.
+* **Windows:** `packaging/windows/missionstudio.iss` (built with
+  [Inno Setup](https://jrsoftware.org/isinfo.php)) produces
+  `missionstudio-1.0.0-setup.exe` -- a normal installer wizard, ending in
+  a Start Menu entry. New for 1.0.0; written carefully but not yet run on
+  a real Windows machine (this development sandbox has none) -- see
+  `packaging/README.md` for the same honesty-first verification status
+  this project applies everywhere else.
+
+Either way, the installer still needs internet access the first time (to
+download Basilisk from PyPI) -- there's no getting around that without
+bundling a multi-hundred-MB Basilisk wheel directly into the installer,
+which neither one does yet (see `packaging/README.md`'s "vendoring
+decision" section).
+
+**Developing missionStudio, or want full control over the install?**
+Everything below was actually run, not just written and assumed to work
+-- including step 2, which for most of this project's history looked
+like it would need a from-source Basilisk build (fragile, and blocked in
+this project's own sandbox). It turned out Basilisk now publishes a
+prebuilt wheel to PyPI, and installing it that way genuinely works.
 
 **1. Prerequisites**
 
@@ -154,14 +179,21 @@ environment issue.
   end-to-end in-sandbox -- not a project limitation, just this one
   sandbox's own network policy. Anything with that specific gap says so
   in its own docstring/module comment.
-* **Packaging** (`packaging/build_wheel.sh`/`install.sh`, including the
-  Basilisk-wheel-vendoring path) was fully verified end-to-end on
-  Linux. The Windows counterparts (`build_wheel.ps1`/`install.ps1`, new
-  for 1.0.0) were written against the same already-verified logic and
-  Basilisk's own documented Windows install path, but have not been run
-  on a real Windows 11 machine (none has ever been available in this
-  development sandbox) -- see `packaging/README.md`'s "Windows support"
-  section, and please report anything that doesn't work as documented.
+* **Packaging.** The scriptable install path
+  (`packaging/build_wheel.sh`/`install.sh`, including the
+  Basilisk-wheel-vendoring path) AND the real, double-click Linux
+  installer (`packaging/build_deb.sh`'s `.deb` package) were both fully
+  verified end-to-end on Linux -- a real Basilisk build installed for
+  real, confirmed with its own `printBuildInfo()`, and hundreds of this
+  project's own Basilisk-dependent tests genuinely passing against it
+  (not auto-skipping) when run from the installed copy. Their Windows
+  counterparts (`build_wheel.ps1`/`install.ps1`, and the Inno Setup
+  installer `packaging/windows/missionstudio.iss`, all new for 1.0.0)
+  were written against the same already-verified logic and Basilisk's
+  own documented Windows install path, but have not been run on a real
+  Windows 11 machine (none has ever been available in this development
+  sandbox) -- see `packaging/README.md` for exactly what's verified
+  where, and please report anything that doesn't work as documented.
 
 ## Capabilities
 

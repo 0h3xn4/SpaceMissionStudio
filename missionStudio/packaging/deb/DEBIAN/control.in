@@ -1,0 +1,17 @@
+Package: missionstudio
+Version: @VERSION@
+Section: science
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.9), python3-venv, python3-pip
+Maintainer: missionStudio contributors <missionstudio@example.invalid>
+Homepage: https://github.com/AVSLab/basilisk
+Description: GUI mission-analysis application built on Basilisk
+ A standalone, GUI-based mission-analysis application for spacecraft
+ mission design, using the Basilisk astrodynamics framework (AVS Lab,
+ University of Colorado Boulder) as its sole simulation/dynamics engine.
+ .
+ This package's own contents are pure Python and platform-independent
+ (Architecture: all); Basilisk itself is downloaded from PyPI and
+ installed into a dedicated virtual environment the first time this
+ package is configured, which needs internet access.

@@ -1,0 +1,84 @@
+#!/bin/sh
+# postinst: runs automatically after dpkg unpacks this package's files.
+# Creates missionStudio's own dedicated virtualenv under /opt/missionstudio,
+# installs Basilisk (from PyPI -- needs internet access, the one thing this
+# package genuinely cannot bundle: see packaging/README.md's "The vendoring
+# decision") and missionStudio itself (from the wheel this package DOES
+# bundle, at /opt/missionstudio/dist -- no network needed for that part),
+# then wires up a /usr/bin/missionstudio launcher and renders the app icon.
+#
+# Standard Debian maintainer-script convention: `set -e` so any failure
+# here aborts cleanly (dpkg reports the package as not fully configured,
+# rather than silently leaving a half-working install) and re-running
+# `apt install --reinstall missionstudio` (or `dpkg-reconfigure`, if this
+# is ever registered as one) retries from a clean slate.
+
+set -e
+
+INSTALL_DIR=/opt/missionstudio
+VENV_DIR="$INSTALL_DIR/venv"
+ICON_DIR=/usr/share/icons/hicolor/256x256/apps
+LAUNCHER=/usr/bin/missionstudio
+
+case "$1" in
+    configure)
+        # A previous install/upgrade may have left a venv behind (e.g. an
+        # interrupted or failed prior run) -- always start from a clean
+        # slate rather than layering a new install on top of a possibly
+        # -broken one.
+        if [ -d "$VENV_DIR" ]; then
+            rm -rf "$VENV_DIR"
+        fi
+
+        echo "missionStudio: creating its Python environment at $VENV_DIR ..."
+        python3 -m venv "$VENV_DIR"
+        "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
+
+        echo "missionStudio: installing Basilisk (bsk[all]) from PyPI -- this needs internet access and can take a few minutes ..."
+        "$VENV_DIR/bin/python3" -m pip install --quiet "bsk[all]"
+
+        wheel=$(ls "$INSTALL_DIR"/dist/missionstudio-*.whl 2>/dev/null | head -n1)
+        if [ -z "$wheel" ]; then
+            echo "missionStudio postinst: no bundled wheel found under $INSTALL_DIR/dist -- this package is broken." >&2
+            exit 1
+        fi
+        echo "missionStudio: installing missionStudio itself from the bundled wheel ..."
+        "$VENV_DIR/bin/python3" -m pip install --quiet "${wheel}[gui]"
+
+        cat > "$LAUNCHER" <<EOF
+#!/bin/sh
+exec "$VENV_DIR/bin/missionstudio" "\$@"
+EOF
+        chmod 755 "$LAUNCHER"
+
+        # Renders gui/icons.py's procedurally-drawn app icon (QPainter, no
+        # bitmap asset shipped in the repo -- see that module's docstring)
+        # into the standard XDG hicolor icon theme location, using the
+        # 'offscreen' Qt platform plugin so no display is needed. Needs
+        # PySide6 (just installed above via the [gui] extra). Non-fatal:
+        # a failure here still leaves a fully working install, just with
+        # the desktop entry's Icon=missionstudio falling back to a
+        # generic icon.
+        mkdir -p "$ICON_DIR"
+        if QT_QPA_PLATFORM=offscreen "$VENV_DIR/bin/python3" -c "
+from missionstudio.gui.icons import ensure_icon_file
+ensure_icon_file('$ICON_DIR/missionstudio.png')
+" 2>/dev/null; then
+            :
+        else
+            echo "missionStudio: could not render the app icon (non-fatal) -- the menu entry will use a generic icon." >&2
+        fi
+
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+
+        echo ""
+        echo "missionStudio installed. Find it in your application menu, or run: missionstudio gui"
+        ;;
+esac
+
+exit 0
