@@ -102,7 +102,6 @@ found and fixed after a full codebase audit).
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 import numpy as np
@@ -116,27 +115,6 @@ from .constellation import SeparationSchedule
 from .propellant_bookkeeping import apply_propellant_burn
 
 _LOGGER = logging.getLogger(__name__)
-
-# Temporary crash-investigation switch: MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ=1
-# keeps the eclipse message SUBSCRIBED/wired exactly as normal but skips the
-# actual per-tick read call, to isolate whether invoking
-# ReadFunctor.__call__() on this build's EclipseMsgReader is itself what
-# triggers the still-open basic_string::_M_create crash, independent of the
-# (already-confirmed-sane) value it returns. Remove once the root cause is
-# found.
-_DIAG_SKIP_ECLIPSE_READ = os.environ.get("MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ") == "1"
-
-# Temporary crash-investigation switch, one step further than the read-skip
-# above: MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_SUBSCRIBE=1 skips the
-# eclipseInMsg(B).subscribeTo(...) call entirely (Eclipse() itself is still
-# built and added to the dynamics task by engine.service -- only THIS
-# controller's own subscription to it is skipped), so eclipseInMsg.isLinked()
-# is False and the per-tick read is never even attempted. Set alongside
-# MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ=1 -- skipping only the subscription
-# while leaving the (now dead) read-skip branch in place is still correct
-# either way, since isLinked() being False short-circuits it regardless.
-# Remove once the root cause is found.
-_DIAG_SKIP_ECLIPSE_SUBSCRIBE = os.environ.get("MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_SUBSCRIBE") == "1"
 
 
 def _wrap_pm_pi(angle_rad: float) -> float:
@@ -283,12 +261,9 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            if _DIAG_SKIP_ECLIPSE_READ:
-                _LOGGER.debug("%s: t=%.3f s eclipse read SKIPPED (diagnostic)", self.ModelTag, t)
-            else:
-                illum = _eclipse_illumination_fraction(self.eclipseInMsg())
-                _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illum)
-                inSun = illum > self.sunlitThreshold
+            illum = _eclipse_illumination_fraction(self.eclipseInMsg())
+            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illum)
+            inSun = illum > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -366,7 +341,7 @@ def build_station_keeping(scSim, task_name: str, tag: str, sc_object, mu: float,
     controller.extForceEffector = thruster
     controller.scObject = sc_object
     controller.scStateInMsg.subscribeTo(sc_object.scStateOutMsg)
-    if eclipse_out_msg is not None and not _DIAG_SKIP_ECLIPSE_SUBSCRIBE:
+    if eclipse_out_msg is not None:
         controller.eclipseInMsg.subscribeTo(eclipse_out_msg)
     scSim.AddModelToTask(task_name, controller)
     return controller
@@ -552,22 +527,19 @@ class PhasingKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsgB.isLinked():
-            # See _eclipse_illumination_fraction's own docstring: a real
-            # crash investigation initially pinned this on
+            # See _eclipse_illumination_fraction's own docstring: an
+            # earlier crash investigation initially pinned a real crash on
             # EclipseMsgPayload.shadowFactor being deprecated in favor of
-            # illuminationFactor -- wrong, or at least not confirmed,
-            # since a real user's installed Basilisk build turned out not
-            # to have illuminationFactor AT ALL (an AttributeError, not a
-            # deprecation warning), meaning shadowFactor was never
-            # deprecated there in the first place. The actual root cause
-            # of the original crash remains open; this call site is
-            # simply tolerant of both Basilisk API generations now.
-            if _DIAG_SKIP_ECLIPSE_READ:
-                _LOGGER.debug("%s: t=%.3f s eclipse read SKIPPED (diagnostic)", self.ModelTag, t)
-            else:
-                illumB = _eclipse_illumination_fraction(self.eclipseInMsgB())
-                _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illumB)
-                inSun = illumB > self.sunlitThreshold
+            # illuminationFactor -- wrong, since a real user's installed
+            # Basilisk build turned out not to have illuminationFactor AT
+            # ALL. That crash's actual root cause was later found
+            # (engine.vizard.enable_vizard()'s GenericStorage/GenericSensor
+            # dangling-pointer bug -- see that module's docstring); eclipse
+            # was never involved. This call site remains tolerant of both
+            # Basilisk API generations regardless.
+            illumB = _eclipse_illumination_fraction(self.eclipseInMsgB())
+            _LOGGER.debug("%s: t=%.3f s eclipse illumination read=%r", self.ModelTag, t, illumB)
+            inSun = illumB > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without
@@ -701,7 +673,7 @@ def build_phasing_keeping(scSim, task_name: str, tag: str, mu: float, chief_sc_o
 
     controller.scStateInMsgA.subscribeTo(chief_sc_object.scStateOutMsg)
     controller.scStateInMsgB.subscribeTo(follower_sc_object.scStateOutMsg)
-    if follower_eclipse_out_msg is not None and not _DIAG_SKIP_ECLIPSE_SUBSCRIBE:
+    if follower_eclipse_out_msg is not None:
         controller.eclipseInMsgB.subscribeTo(follower_eclipse_out_msg)
     controller.extForceEffectorB = follower_station_keeping_controller.extForceEffector
     controller.scObjectB = follower_sc_object

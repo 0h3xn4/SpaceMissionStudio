@@ -2604,6 +2604,117 @@ this sandbox since even constructing the stub payload's consumer needs
 the module's Basilisk imports to succeed). 600 passed, 73 skipped in
 this sandbox (2 more skipped, matching the 2 new tests).
 
+## The actual root cause, found for real: not eclipse at all
+
+Everything in the sections above -- the deprecated-field theory, the
+`illuminationFactor`/`shadowFactor` fallback, "the root cause is still
+open" -- was a dead end. Eclipse was never involved in the original
+crash. Here is what actually happened, found by continuing the
+diagnostic sequence with real repros rather than assuming the eclipse
+angle was the only thread left to pull.
+
+**Two more real diagnostics fully exonerated eclipse.** A debug log of
+the raw value `StationKeepingController`/`PhasingKeepingController`
+read from `EclipseMsgPayload` every tick showed it was always a
+completely sane `1.0` (fully sunlit) right up to the crash -- ruling
+out a bad/NaN value. A follow-up diagnostic switch that skipped the
+eclipse message's `subscribeTo()` call entirely (not just the read --
+`isLinked()` stayed `False` the whole run, confirmed by zero
+eclipse-related log lines) still crashed identically. Eclipse, the
+value it carries, and the act of reading or even subscribing to it,
+are conclusively not the trigger.
+
+**A controlled A/B comparison then ruled out `station_keeping`'s own
+control logic too.** `diagnostic_05b_constant_thrust_only.json` (clean)
+and `diagnostic_05c_station_keeping_only.json` (crashes) use
+byte-for-byte identical orbits, and -- because station-keeping's
+altitude deadband trips on tick 1 in this configuration -- identical
+thrust magnitude, direction, and timing throughout. Both write a
+`FuelTankMsgPayload` every tick. Swapping the adaptive `rkf78`
+integrator for the fixed-step, non-adaptive `rk2` (which structurally
+cannot exhibit "the adaptive step-size search spins forever on a NaN
+error estimate," the mechanism this project's own error message
+blames) made no difference either -- same crash, same signature. Every
+hypothesis this project could test from the Python side was tried and
+eliminated.
+
+**The actual break: the headless CLI (`missionstudio.cli run`) ran the
+exact same crashing scenario to completion, clean, first try.** Every
+single crash report collected across this entire investigation came
+from the GUI's `run_live()` path, and every one of them logged
+`Basilisk-Vizard connection made` -- something this project had not
+isolated as a variable until debugging under `gdb` forced a
+Vizard-free headless run. That pointed at Vizard, not station-keeping,
+not eclipse, not the integrator.
+
+**Confirmed with a real `gdb catch throw`/`bt`** on a fully isolated
+repro: headless CLI, `--vizard-save-file` (no live Vizard connection
+needed, just exercises the same `enable_vizard()` build path), station-
+keeping only. Full native backtrace:
+
+```
+VizInterface::WriteProtobuffer(unsigned long)
+  -> google::protobuf::internal::ArenaStringPtr::Set(std::string const&, Arena*)
+    -> std::string::_M_create()
+      -> throws std::length_error
+```
+
+thrown on `vizInterface`'s own background write thread -- not the main
+simulation thread, and not anywhere near `orbit_maintenance.py`.
+
+**Root cause:** `engine/vizard.py`'s `enable_vizard()` builds a
+`vizInterface.GenericStorage` "Propellant" panel for every spacecraft
+with `station_keeping` configured (never for `constant_thrust`, which
+is exactly the split every diagnostic above kept finding). Reading
+Basilisk's own `vizStructures.h`: `VizSpacecraftData::genericStorageList`/
+`genericSensorList` are `std::vector<GenericStorage *>`/
+`std::vector<GenericSensor *>` -- raw POINTER vectors.
+`vizSupport.enableUnityVisualization()` only stores the pointers it's
+handed; it never clones the pointed-to structs. The `panel`/`sensor`
+objects `enable_vizard()` built (and their embedded
+`FuelTankMsgReader`/`PowerStorageStatusMsgReader`/`DeviceCmdMsgReader`
+readers) were local variables, never returned, never retained anywhere
+-- garbage-collected the instant `enable_vizard()` returned, while
+`VizInterface` kept dangling pointers to them and dereferenced one
+every tick from its background thread, eventually reading freed/reused
+memory as a corrupt string length.
+
+This is the exact same bug class this same module already found and
+fixed once before, for `_AccessIndicatorBridge` (see that section's
+own history above the "Live-data panels" docstring in
+`engine/vizard.py`) -- right down to the identical
+`basic_string::_M_create`/`std::length_error` signature. That earlier
+fix's own justification for not extending the same retention to
+`GenericStorage`/`GenericSensor` ("their relevant state is copied into
+Basilisk's own C++ containers") was an unverified assumption, never
+checked against `vizStructures.h`, and it was wrong for these two
+specific pointer-vector fields.
+
+**Fixed the same way as the bridge fix:** `enable_vizard()` now also
+returns `generic_storage_list`/`generic_sensor_list` alongside
+`viz`/`access_indicator_bridges`, and `engine.service.SimulationService`
+retains all four (`_viz`/`_viz_access_indicator_bridges`/
+`_viz_generic_storage_list`/`_viz_generic_sensor_list`) for the
+instance's lifetime instead of just the first two.
+
+**Verification:** `tests/test_vizard.py` (new,
+`requires_basilisk`) -- `test_station_keeping_with_vizard_save_file_does_not_crash`
+runs `diagnostic_05f_station_keeping_fixed_step_integrator.json` with a
+real `VizardRequest(save_file=...)` through `SimulationService.run()`
+end to end (this is the actual regression check: it used to raise
+`SimulationServiceError` wrapping `std::length_error`/`std::bad_alloc`
+within the first couple of ticks, every time); `test_generic_storage_
+and_sensor_lists_are_retained_after_build` checks the fix directly --
+`service._viz_generic_storage_list` is non-`None` and carries a real
+entry after `build()`. Both auto-skip in this sandbox (no Basilisk
+build here) but were designed directly from, and match, the real
+crash this project's user reproduced and debugged with `gdb` on their
+own machine. 600 passed, 75 skipped in this sandbox (2 more than the
+count above, matching these 2 new tests). The temporary
+`MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ`/`_SUBSCRIBE` diagnostic switches
+used to isolate eclipse as a non-cause have been removed from
+`engine/orbit_maintenance.py` now that the real root cause is fixed.
+
 ## Repository layout
 
 ```
