@@ -1,0 +1,25 @@
+#!/bin/sh
+# postrm: runs after dpkg removes this package's files. dpkg itself only
+# tracks files this package's payload shipped -- the virtualenv postinst
+# created at /opt/missionstudio/venv (with everything pip installed into
+# it, Basilisk included) and the rendered icon are NOT in that payload, so
+# nothing removes them without this script.
+set -e
+
+case "$1" in
+    remove|purge)
+        rm -rf /opt/missionstudio/venv
+        rm -f /usr/share/icons/hicolor/256x256/apps/missionstudio.png
+        # dpkg already tried to remove the packaged /opt/missionstudio/dist
+        # payload and its parent directory before this script ran, but
+        # would have skipped the parent while venv/ (not a packaged file)
+        # still existed inside it -- clean up whatever's left now that it
+        # doesn't.
+        rmdir --ignore-fail-on-non-empty -p /opt/missionstudio/dist /opt/missionstudio 2>/dev/null || true
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+exit 0

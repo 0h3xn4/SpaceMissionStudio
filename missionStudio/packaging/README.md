@@ -1,17 +1,30 @@
 # Packaging
 
-Phase 3 scope, per the roadmap ("Phase 3: Monte Carlo + access analysis +
-packaging"). This directory covers the Basilisk-independent half of
-packaging missionStudio into a real, installable artifact for both Linux
-and Windows -- the Linux scripts (`build_wheel.sh`/`install.sh`) have been
-built and run for real in this project's development sandbox; their
-Windows/PowerShell counterparts (`build_wheel.ps1`/`install.ps1`, added
-for the 1.0.0 release) have NOT, because this development sandbox is
-Linux-only with no Windows environment available -- see "Windows support"
-below for exactly what that means and doesn't mean. The Basilisk-dependent
-half (vendoring an actual Basilisk wheel) could not be exercised
-end-to-end on either platform, and that limit is explained below rather
-than glossed over.
+This directory covers packaging missionStudio into a real, installable,
+out-of-the-box application for both Linux and Windows -- not just a
+`pip install` a developer runs from a terminal. Two tiers exist for each
+platform:
+
+1. **A real double-click installer** -- a `.deb` package on Linux
+   (`build_deb.sh`), an Inno Setup wizard on Windows
+   (`windows/missionstudio.iss`). No terminal, no typed `pip`/`venv`
+   commands for the end user: install, get a menu entry, click it, done.
+2. **The scriptable install path** (`build_wheel.sh`/`install.sh` and
+   their `.ps1` counterparts) these installers are themselves built on
+   top of -- still useful directly for anyone who'd rather script an
+   install or doesn't want a system-wide package manager entry.
+
+**A real update, made while building the `.deb` installer above:** this
+development sandbox's Basilisk story has changed since earlier sections
+of this file (and `../HISTORY.md`) were written. `pip install "bsk[all]"`
+(Basilisk's own published PyPI wheel) now genuinely installs here --
+confirmed directly, not assumed, by actually running it and then running
+a real Basilisk build's `printBuildInfo()`. What's STILL blocked in this
+sandbox specifically is network access to the NAIF SPICE kernel host
+(`naif.jpl.nasa.gov`) and its backup mirror, needed for an actual
+simulation RUN past kernel loading -- a narrower, later gap than "no
+Basilisk at all". See "The `.deb` package" below for exactly what this
+made possible to verify end-to-end for the first time.
 
 ## What's here
 
@@ -52,14 +65,14 @@ than glossed over.
   `$XDG_DATA_HOME`, confirming: the venv installs cleanly, the launcher
   script's `missionstudio validate` works against the installed scenario
   file, and the desktop entry is written with the correct `Exec=` path.
-  The `--basilisk-wheel` path itself (`pip install <wheel>` into the venv)
-  is ordinary, non-missionstudio-specific `pip` behavior -- not something
-  this project can miswire in a Basilisk-specific way -- but it could NOT
-  be exercised end-to-end here, because this development sandbox has no
-  built Basilisk wheel to test it against (see `../HISTORY.md`'s
-  "Environment honesty note": the same Conan Center network block that
-  stopped a from-source Basilisk build here also means there's nothing
-  vendorable sitting around to install with this flag).
+  **The `--basilisk-wheel` path itself is now ALSO genuinely verified**
+  (re-run while building the `.deb` package below, once PyPI turned out
+  to be reachable from this sandbox after all --
+  `./install.sh --basilisk-wheel "bsk[all]"` installed a real Basilisk
+  build end-to-end and the launcher's `missionstudio validate` worked
+  against it), not just asserted to be "ordinary, non-missionstudio
+  -specific `pip` behavior" as an earlier revision of this note had to
+  settle for.
 
 * **`missionstudio.desktop.in`** -- the desktop-entry template `install.sh`
   fills in (`@INSTALL_PREFIX@` -> the venv's parent directory).
@@ -73,11 +86,100 @@ than glossed over.
   plugins present at all) -- the desktop entry still installs, just with
   the icon theme's generic fallback.
 
-## Windows support
+## The real installers
 
-Added for the 1.0.0 release. `build_wheel.ps1`/`install.ps1` are direct
-PowerShell ports of `build_wheel.sh`/`install.sh` -- same steps, same
-flags (`-Prefix`/`-BasiliskWheel`/`-MissionstudioWheel`/`-NoShortcut`
+### The `.deb` package (Linux)
+
+`build_deb.sh` produces `missionstudio_<version>_all.deb` -- a real
+Debian/Ubuntu package. It bundles missionStudio's own wheel (built the
+same way `build_wheel.sh` always has) plus a small set of maintainer
+scripts (`deb/DEBIAN/postinst`/`prerm`/`postrm`) and a desktop entry
+(`deb/usr/share/applications/missionstudio.desktop`); it does NOT bundle
+Basilisk itself (see "The vendoring decision" below for why not) --
+`postinst` creates a dedicated virtualenv at `/opt/missionstudio/venv`
+and pip-installs `bsk[all]` there the moment the package is configured
+(`apt install`/`dpkg -i`'s normal "configure" step), which needs
+internet access on the installing machine.
+
+**Genuinely built AND installed for real in this project's development
+sandbox** -- this is the first time ANY Basilisk-dependent path in this
+whole project has been exercised against a real Basilisk build from
+inside the sandbox itself, not just written carefully against verified
+API sequences:
+
+```bash
+./build_deb.sh                       # -> dist/missionstudio_1.0.0_all.deb
+sudo apt install ./dist/missionstudio_1.0.0_all.deb
+```
+
+ran end-to-end with no errors: the venv was created, `bsk[all]` installed
+for real from PyPI (confirmed with a real build's own `printBuildInfo()`),
+missionStudio installed from the bundled wheel, the `/usr/bin/missionstudio`
+launcher and the desktop entry + a real rendered PNG icon were all
+written correctly. `missionstudio validate` against a real bundled
+scenario file, and `missionstudio kernels-status`, were both run against
+the installed copy afterward and behaved exactly as expected -- including
+`kernels-status` correctly reporting the NAIF SPICE kernel host as
+unreachable, this sandbox's one remaining, already-documented network
+gap (see the note at the top of this file), not a bug in the package.
+
+Went further: `missionStudio`'s own real `pytest` suite was then run from
+the installed venv (`/opt/missionstudio/venv/bin/python3 -m pytest tests/`)
+against this real Basilisk build. Every test up through
+`tests/test_mission_engine.py` passed genuinely -- hundreds of tests,
+including every Basilisk-IMPORTING module that doesn't need an actual
+kernel-loaded simulation run (schema, GUI, link budget, logging,
+constellation generation, and more) -- confirmed real, not the
+auto-skip-without-Basilisk path this suite normally takes. It only starts
+failing exactly at the tests that DO need kernel loading
+(`test_mission_engine.py`, `test_two_body_validation.py`, and similar),
+and for exactly the expected reason: the agent proxy's own connection log
+for that run shows rejected `CONNECT` attempts to `naif.jpl.nasa.gov` and
+`celestrak.org` specifically -- the same already-documented network gap,
+not a new or different problem.
+
+Uninstalling (`apt remove`/`apt purge missionstudio`) correctly removes
+the venv and rendered icon too (`postrm`) -- these aren't part of the
+package's own tracked payload (they're created at configure time), so
+without `postrm` they'd survive an uninstall silently.
+
+### The Windows installer (Inno Setup)
+
+`windows/missionstudio.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php)
+script producing `missionstudio-<version>-setup.exe`: a real wizard --
+Welcome, license, install-location, Install, an optional "launch now"
+checkbox on Finish -- built on the exact same idea as the `.deb` above
+(bundle missionStudio's own wheel, create a venv, pip-install `bsk[all]`
+at install time) via a companion script (`windows/bootstrap_env.ps1`)
+the installer's `[Run]` step invokes. It checks for a working `python`
+on `PATH` before the wizard even starts, and guides the user to
+python.org (rather than failing silently) if none is found. Installs
+per-user (`{localappdata}`, no admin/UAC prompt needed), and creates a
+Start Menu entry (plus an optional desktop shortcut) that launches the
+GUI directly via `pythonw.exe` (no console-window flash).
+
+Building it (on a real Windows machine, with Inno Setup installed):
+
+```powershell
+cd missionStudio
+powershell -File packaging\build_wheel.ps1 packaging\windows\dist
+ISCC packaging\windows\missionstudio.iss
+```
+
+**NOT compiled or run** -- Inno Setup is Windows-only software with no
+equivalent in this Linux-only development sandbox, unlike the `.deb`
+above. Written carefully against Inno Setup's documented, stable script
+syntax and `install.ps1`'s own already-written logic, but flagged here
+rather than claimed as verified; please report any issues building or
+running this on a real Windows 11 machine.
+
+## Windows support (the scriptable install path)
+
+Not the Inno Setup wizard above -- this is `build_wheel.ps1`/`install.ps1`,
+the Windows counterpart of `build_wheel.sh`/`install.sh` (tier 2 from the
+top of this file: scriptable, for anyone who'd rather not use a GUI
+installer). Added for the 1.0.0 release, direct PowerShell ports --
+same steps, same flags (`-Prefix`/`-BasiliskWheel`/`-MissionstudioWheel`/`-NoShortcut`
 instead of `--prefix`/`--basilisk-wheel`/`--missionstudio-wheel`/
 `--no-desktop-entry`), same two already-verified bugs from the Linux
 side pre-emptively fixed (the `scenarios/*.json` package-data glob is in
@@ -107,35 +209,50 @@ the shortcut just uses `missionstudio.exe`'s own embedded icon). If you
 run these on a real Windows 11 machine, please report anything that
 doesn't work as documented here.
 
-## The vendoring decision (why there's no Basilisk wheel here)
+## The vendoring decision (why Basilisk isn't bundled inside the installers)
 
 Flagged since Phase 0's README: **vendor a prebuilt Basilisk wheel pinned
 to a specific release/commit** as the default install path for end users,
 keeping "build Basilisk from source" a documented, opt-in developer path
-only (building from source in an automated/sandboxed context is fragile --
-this project hit exactly that failure mode, a Conan Center network block,
-before Phase 0 even started).
+only. Building from source in an automated/sandboxed context is fragile
+-- this project hit exactly that failure mode (a Conan Center network
+block) before Phase 0 even started, and that specific block is STILL true
+of this development sandbox today.
 
-This phase implements the RECEIVING end of that decision (`install.sh
---basilisk-wheel`) but does not itself produce a Basilisk wheel, because
-doing so needs a working Basilisk build -- which this development sandbox
-has never had, for the same network-policy reason throughout this whole
-project (see `../HISTORY.md`'s "Environment honesty note"). Producing that
-wheel is a separate, one-time release-engineering task (on a machine that
-CAN build Basilisk, following `../../docs/source/Build.rst`, then
-`python -m pip wheel .` from that checkout, or using Basilisk's own
-distributed wheel if/when AVS Lab publishes one) -- not something that
-belongs inside this app's own packaging scripts, and not something this
-phase can fabricate without a real build to produce it from.
+That's no longer the whole picture, though (corrected here, since an
+earlier revision of this section conflated "can't build Basilisk from
+source" with "no Basilisk wheel available at all" -- they turned out to
+be two different things): AVS Lab already publishes Basilisk's wheel to
+PyPI (`pip install "bsk[all]"`), and PyPI IS reachable from this
+sandbox -- confirmed directly while building the `.deb` package above,
+not assumed. So "vendor a Basilisk wheel" no longer needs a from-source
+build at all; every installer in this directory (`install.sh`/`.ps1`,
+the `.deb`, the Inno Setup installer) gets Basilisk the same simple way:
+`pip install "bsk[all]"` at install time, needing only ordinary internet
+access, not a Basilisk build toolchain anywhere.
+
+What's genuinely still NOT done here: actually bundling a Basilisk
+`.whl` FILE inside an installer (so install works fully offline, with no
+PyPI access needed at all) -- `pip download "bsk[all]"` would produce
+one, but doing that for every dependency, embedding the result, and
+testing the fully-offline path is real, separate follow-on work, not
+attempted blind here. `install.sh`/`install.ps1`'s `--basilisk-wheel`/
+`-BasiliskWheel` flag already accepts a local `.whl` file for exactly
+this purpose whenever someone does produce one (a pinned/older release,
+a custom build, or an offline bundle) -- that RECEIVING end was already
+built and (on Linux) verified; only producing the bundled file itself is
+the open item.
 
 ## Producing a full offline installable bundle
 
-Not built in this phase (would need the vendored Basilisk wheel above to
-be meaningful to test): the natural next step, once a Basilisk wheel
-exists, is `pip download` -ing missionstudio + Basilisk + all extras'
-dependencies into a local directory (`--no-deps` per package, or a
-`requirements.txt` with hashes) so `install.sh` can run fully offline,
-and/or wrapping the venv + launcher in a single self-extracting archive
-(e.g. `makeself`) for a true single-file installer. Flagged here rather
-than attempted blind, per this whole project's "don't fabricate what
-can't be verified" discipline.
+Not built yet: the natural next step, now that "the vendored Basilisk
+wheel" is just `pip download "bsk[all]"` away (see above), is doing
+exactly that -- plus missionStudio's own dependencies -- into a local
+directory (`--no-deps` per package, or a `requirements.txt` with hashes)
+so `install.sh`/the `.deb`/the Windows installer can all run fully
+offline, with no PyPI access needed at install time. Flagged here rather
+than attempted blind, per this project's "don't fabricate what can't be
+verified" discipline -- the pieces (a bundled missionStudio wheel, a
+working `--basilisk-wheel`/`-BasiliskWheel` receiving end) are already
+in place; only the "download everything into one bundle" step is
+missing.
