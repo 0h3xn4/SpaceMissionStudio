@@ -279,6 +279,7 @@ around the other.
 missionStudio/
   README.md                          -- this file
   HISTORY.md                         -- the full phase-by-phase development log
+  LICENSE                            -- ISC license
   pyproject.toml                     -- packaging metadata, pytest config, CLI entry point
   missionstudio/
     cli.py                           -- batch/headless CLI + GUI launcher
@@ -341,6 +342,11 @@ missionStudio/
   scripts/
     _generate_templates.py            -- regenerates scenarios/templates/*.json from schema dataclasses (not installed/imported elsewhere)
   packaging/                          -- build_wheel.sh/.ps1, install.sh/.ps1, .desktop entry (Linux) -- see packaging/README.md
+    build_deb.sh                     -- builds the real, double-click Linux .deb installer
+    deb/                              -- .deb package skeleton (DEBIAN/control.in + postinst/prerm/postrm, desktop entry, copyright)
+    windows/                          -- the real Windows installer wizard
+      missionstudio.iss              -- Inno Setup script -> missionstudio-1.0.0-setup.exe
+      bootstrap_env.ps1              -- venv + Basilisk + missionStudio install step the installer runs
   tests/
     conftest.py                      -- requires_basilisk / requires_gui auto-skip markers
     test_scenario_schema.py
