@@ -187,6 +187,7 @@ extensions = [
     'breathe',
     'doxygen_cache',
     'generated_documentation',
+    'scenario_navigation',
     'module_catalog',
     'module_examples',
     'sphinx_copybutton',
@@ -255,7 +256,7 @@ exclude_patterns = [
     # Internal helpers and generated result artifacts are not documentation pages.
     'examples/dynamicsComparison/_runtimeTable.rst',
     'examples/dynamicsComparison/results/**',
-    # Release note snippets are consumed via include in bskReleaseNotes.rst and
+    # Release note snippets are included in the active version-series page and
     # should not be treated as standalone documentation pages.
     'Support/bskReleaseNotesSnippets/*.rst',
     'Support/bskReleaseNotesSnippets/*.md',

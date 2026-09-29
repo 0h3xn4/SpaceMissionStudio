@@ -1,0 +1,475 @@
+# ISC License
+#
+# Copyright (c) 2026, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+"""Regression tests for draft generation, smoke checks, and file preservation."""
+
+import ast
+import importlib.util
+import os
+from pathlib import Path
+import runpy
+import shutil
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+
+GENERATOR_PATH = Path(__file__).resolve().parents[1] / "makeDraftModule.py"
+
+
+@pytest.fixture(params=["C", "C++"])
+def draft(request, tmp_path, monkeypatch):
+    """Configure a real generator in an isolated source tree for either language."""
+    spec = importlib.util.spec_from_file_location("draft_module_test", GENERATOR_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source_path = tmp_path / "repository with spaces" / "src"
+    (source_path / "moduleTemplates").mkdir(parents=True)
+    shutil.copyfile(GENERATOR_PATH.parents[2] / "LICENSE", source_path.parent / "LICENSE")
+    monkeypatch.setattr(module, "pathToSrc", str(source_path))
+
+    generator = module.moduleGenerator()
+    if request.param == "C":
+        module.fillCInfo(generator)
+        create = generator.createCModule
+        extension = ".c"
+    else:
+        module.fillCppInfo(generator)
+        create = generator.createCppModule
+        extension = ".cpp"
+    generator.verbose = False
+    generator.moduleName = "draftExample"
+    generator.briefDescription = "A draft with a Unicode description: café."
+    caller = tmp_path / "caller directory"
+    caller.mkdir()
+    # Import happened above, before entering this caller's directory.
+    monkeypatch.chdir(caller)
+    return SimpleNamespace(
+        module=module,
+        generator=generator,
+        create=create,
+        extension=extension,
+        source_path=source_path,
+        destination=source_path / "moduleTemplates" / generator.moduleName,
+        caller=caller,
+    )
+
+
+def _existing_work(draft):
+    """Create an existing module containing work that must survive failures."""
+    draft.destination.mkdir()
+    marker = draft.destination / "existing-work.txt"
+    marker.write_bytes(b"Keep this module work.\n")
+    return marker
+
+
+@pytest.mark.parametrize("relative_path", [
+    "moduleTemplates",
+    "moduleTemplates/",
+    "fswAlgorithms/attControl",
+    "fswAlgorithms/attControl/",
+    os.path.join("fswAlgorithms", "attControl", "nested", ""),
+    Path("fswAlgorithms") / "attControl" / "nested",
+])
+def test_destination_paths_generate_valid_imports(draft, relative_path):
+    """Normalize native paths and trailing separators without changing the caller."""
+    draft.generator.modulePathRelSrc = relative_path
+    parent = draft.source_path / relative_path
+    parent.mkdir(parents=True, exist_ok=True)
+
+    draft.create()
+
+    name = draft.generator.moduleName
+    destination = parent / name
+    files = {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()}
+    assert files == {
+        f"{name}.h", f"{name}{draft.extension}", f"{name}.i", f"{name}.rst",
+        f"_UnitTest/test_{name}.py",
+    }
+    test_source = (destination / "_UnitTest" / f"test_{name}.py").read_text(encoding="utf-8")
+    tree = ast.parse(test_source)
+    module_import = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and any(alias.name == name for alias in node.names)
+    )
+    assert module_import.module == f"Basilisk.{Path(relative_path).parts[0]}"
+    implementation = (destination / f"{name}{draft.extension}").read_text(encoding="utf-8")
+    assert f'#include "{Path(relative_path).as_posix()}/{name}/{name}.h"' in implementation
+    assert "café" in (destination / f"{name}.rst").read_text(encoding="utf-8")
+    assert Path.cwd() == draft.caller
+    assert list(parent.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_existing_module_is_replaced_only_after_generation(draft, monkeypatch, automatic):
+    """Keep existing files throughout staged writing, then publish the complete draft."""
+    marker = _existing_work(draft)
+    draft.generator.cleanBuild = automatic
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    original_write_files = draft.generator._write_files
+
+    def check_existing_work(files):
+        """Inspect the destination before and after writing the completed draft."""
+        assert marker.read_bytes() == b"Keep this module work.\n"
+        assert Path.cwd() == draft.caller
+        original_write_files(files)
+        assert marker.read_bytes() == b"Keep this module work.\n"
+
+    monkeypatch.setattr(draft.generator, "_write_files", check_existing_work)
+    draft.create()
+
+    assert not marker.exists()
+    assert len([path for path in draft.destination.rglob("*") if path.is_file()]) == 5
+    assert list(draft.destination.parent.iterdir()) == [draft.destination]
+    assert Path.cwd() == draft.caller
+
+
+def test_declining_replacement_preserves_existing_module(draft, monkeypatch):
+    """Reject an overwrite without deleting files or changing directories."""
+    marker = _existing_work(draft)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    with pytest.raises(FileExistsError, match="cancelled"):
+        draft.create()
+
+    assert marker.read_bytes() == b"Keep this module work.\n"
+    assert list(draft.destination.parent.iterdir()) == [draft.destination]
+    assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("invalid_input", ["wrapper", "missing_description", "duplicate", "empty_type"])
+def test_invalid_specification_preserves_existing_module(draft, invalid_input):
+    """Validate message and variable metadata before replacing existing work."""
+    marker = _existing_work(draft)
+    draft.generator.cleanBuild = True
+    if invalid_input == "wrapper":
+        draft.generator.inMsgList[0]["wrap"] = "unsupported"
+    elif invalid_input == "missing_description":
+        del draft.generator.inMsgList[0]["desc"]
+    elif invalid_input == "duplicate":
+        draft.generator.variableList[0]["var"] = draft.generator.inMsgList[0]["var"]
+    else:
+        draft.generator.variableList[0]["type"] = ""
+
+    with pytest.raises(ValueError):
+        draft.create()
+
+    assert marker.read_bytes() == b"Keep this module work.\n"
+    assert list(draft.destination.parent.iterdir()) == [draft.destination]
+    assert Path.cwd() == draft.caller
+
+
+def test_c_module_rejects_cpp_message_before_overwrite(draft):
+    """Reject a C++ message in a C specification before deleting the destination."""
+    marker = _existing_work(draft)
+    draft.generator.cleanBuild = True
+    draft.generator.inMsgList[0]["wrap"] = "C++"
+
+    with pytest.raises(ValueError, match="C modules require message wrappers"):
+        draft.generator.createCModule()
+
+    assert marker.read_bytes() == b"Keep this module work.\n"
+    assert list(draft.destination.parent.iterdir()) == [draft.destination]
+    assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("already_exists", [False, True])
+def test_rendering_failure_preserves_destination(draft, monkeypatch, already_exists):
+    """Fail before staging when the final renderer rejects the draft."""
+    marker = _existing_work(draft) if already_exists else None
+    draft.generator.cleanBuild = True
+
+    def fail_test_rendering(module_type):
+        """Simulate a rendering error before any files are written."""
+        assert draft.generator._output_path is None
+        raise ValueError("test rendering failed")
+
+    monkeypatch.setattr(draft.generator, "_render_test", fail_test_rendering)
+    with pytest.raises(ValueError, match="test rendering failed"):
+        draft.create()
+
+    if marker is not None:
+        assert marker.read_bytes() == b"Keep this module work.\n"
+        assert list(draft.destination.iterdir()) == [marker]
+    assert list(draft.destination.parent.iterdir()) == ([draft.destination] if already_exists else [])
+    assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("already_exists", [False, True])
+def test_write_failure_preserves_destination(draft, monkeypatch, already_exists):
+    """Discard partially written staged files while preserving existing work."""
+    marker = _existing_work(draft) if already_exists else None
+    draft.generator.cleanBuild = True
+    original_write_text = Path.write_text
+
+    def fail_test_write(path, content, *args, **kwargs):
+        """Reject the final file after the native sources have been written."""
+        if path.name == f"test_{draft.generator.moduleName}.py":
+            assert (draft.generator._output_path / f"{draft.generator.moduleName}.h").is_file()
+            raise OSError("test file write failed")
+        return original_write_text(path, content, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_test_write)
+    with pytest.raises(OSError, match="test file write failed"):
+        draft.create()
+
+    if marker is not None:
+        assert marker.read_bytes() == b"Keep this module work.\n"
+        assert list(draft.destination.iterdir()) == [marker]
+    assert list(draft.destination.parent.iterdir()) == ([draft.destination] if already_exists else [])
+    assert Path.cwd() == draft.caller
+
+
+def test_rendering_is_independent_of_filesystem_and_call_order(draft, monkeypatch, capsys):
+    """Render from prepared configuration without a destination or earlier renders."""
+    generator = draft.generator
+    generator.modulePathRelSrc = Path("fswAlgorithms") / "missingDirectory"
+    generator._licenseText = "Example license.\n"
+    generator.verbose = True
+    module_type = "C" if draft.extension == ".c" else "C++"
+
+    def reject_filesystem_access(*args, **kwargs):
+        """Fail if configuration preparation or rendering touches the filesystem."""
+        raise AssertionError("Unexpected filesystem access")
+
+    with monkeypatch.context() as isolated:
+        for method in ("open", "mkdir", "resolve", "exists", "is_dir"):
+            isolated.setattr(Path, method, reject_filesystem_access)
+        generator._validate_specification(module_type)
+        prepared_state = generator.__dict__.copy()
+        test_text = generator._render_test(module_type)
+        files = generator._render_module(module_type)
+        assert generator.__dict__ == prepared_state
+
+    name = generator.moduleName
+    assert files[Path("_UnitTest") / f"test_{name}.py"] == test_text
+    assert f"from Basilisk.fswAlgorithms import {name} as module_under_test" in test_text
+    class_name = name if module_type == "C" else "DraftExample"
+    assert f"module = module_under_test.{class_name}()" in test_text
+    assert capsys.readouterr().out == ""
+    assert not draft.destination.exists()
+
+
+def test_failed_installation_restores_existing_module(draft, monkeypatch):
+    """Restore the original module when moving the completed draft fails."""
+    marker = _existing_work(draft)
+    draft.generator.cleanBuild = True
+    original_rename = Path.rename
+
+    def fail_installation(path, target):
+        """Fail only the move from staging into the final destination."""
+        if path == draft.generator._output_path:
+            raise OSError("installation failed")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_installation)
+    with pytest.raises(OSError, match="installation failed"):
+        draft.create()
+
+    assert marker.read_bytes() == b"Keep this module work.\n"
+    assert list(draft.destination.iterdir()) == [marker]
+    assert list(draft.destination.parent.iterdir()) == [draft.destination]
+    assert Path.cwd() == draft.caller
+
+
+def test_failed_restoration_retains_backup(draft, monkeypatch):
+    """Keep the recoverable original files even if rollback itself fails."""
+    _existing_work(draft)
+    draft.generator.cleanBuild = True
+    original_rename = Path.rename
+
+    def fail_installation_and_restoration(path, target):
+        """Allow the backup move but reject both moves into the destination."""
+        if target == draft.destination:
+            raise OSError("destination unavailable")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_installation_and_restoration)
+    with pytest.raises(OSError, match="original module; its files remain at") as error:
+        draft.create()
+
+    backups = list(draft.destination.parent.iterdir())
+    assert len(backups) == 1
+    backup = backups[0] / draft.generator.moduleName
+    assert (backup / "existing-work.txt").read_bytes() == b"Keep this module work.\n"
+    assert str(backup) in str(error.value)
+    assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("link_parent", [False, True])
+def test_symbolic_links_cannot_replace_outside_work(draft, link_parent):
+    """Reject destination links and parent links that escape the source tree."""
+    outside = draft.caller / "outside"
+    outside.mkdir()
+    marker = outside / "existing-work.txt"
+    marker.write_bytes(b"Keep outside work.\n")
+    link = draft.source_path / "linkedPackage" if link_parent else draft.destination
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("Creating directory symlinks requires platform permission")
+    if link_parent:
+        draft.generator.modulePathRelSrc = "linkedPackage"
+    draft.generator.cleanBuild = True
+
+    with pytest.raises(ValueError):
+        draft.create()
+
+    assert marker.read_bytes() == b"Keep outside work.\n"
+    assert link.is_symlink()
+    assert Path.cwd() == draft.caller
+
+
+def test_reuses_generator_for_both_languages(draft):
+    """Retain the sequential C++/C generation API used by the Conan build."""
+    for configure, create in (
+        (draft.module.fillCppInfo, draft.generator.createCppModule),
+        (draft.module.fillCInfo, draft.generator.createCModule),
+    ):
+        configure(draft.generator)
+        create()
+        name = draft.generator.moduleName
+        destination = draft.source_path / "moduleTemplates" / name
+        assert (destination / "_UnitTest" / f"test_{name}.py").is_file()
+        assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("relative_path", ["", ".", "../outside", "moduleTemplates/../outside", "absolute"])
+def test_rejects_paths_outside_source_packages(draft, relative_path):
+    """Reject ambiguous or escaping paths before any destination is touched."""
+    marker = _existing_work(draft)
+    draft.generator.cleanBuild = True
+    draft.generator.modulePathRelSrc = (
+        str(draft.source_path / "moduleTemplates") if relative_path == "absolute" else relative_path
+    )
+
+    with pytest.raises(ValueError, match="modulePathRelSrc"):
+        draft.create()
+
+    assert marker.read_bytes() == b"Keep this module work.\n"
+    assert Path.cwd() == draft.caller
+
+
+@pytest.mark.parametrize("module_name", ["../draftExample", "bad-name", "for"])
+def test_rejects_invalid_module_names(draft, module_name):
+    """Reject module names that could escape the destination or break imports."""
+    draft.generator.moduleName = module_name
+    with pytest.raises(ValueError, match="moduleName"):
+        draft.create()
+    assert not list(draft.destination.parent.iterdir())
+    assert Path.cwd() == draft.caller
+
+
+def test_missing_parent_raises_error(draft):
+    """Report an invalid destination as an exception rather than a successful exit."""
+    draft.generator.modulePathRelSrc = "missingPackage"
+    with pytest.raises(NotADirectoryError):
+        draft.create()
+    assert Path.cwd() == draft.caller
+
+
+def test_invalid_specification_exits_unsuccessfully(draft):
+    """An unhandled generator error must produce a nonzero process status."""
+    script = (
+        "import runpy, sys\n"
+        "module = runpy.run_path(sys.argv[1])\n"
+        "generator = module['moduleGenerator']()\n"
+        "generator.verbose = False\n"
+        "generator.createCModule()\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(GENERATOR_PATH)],
+        cwd=draft.caller, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "ValueError: moduleName must be a nonempty string" in result.stderr
+
+
+def _run_generated_smoke_test(draft, monkeypatch, module_factory):
+    """Execute a generated test with the supplied module implementation."""
+    from Basilisk import moduleTemplates
+
+    draft.create()
+    name = draft.generator.moduleName
+    class_name = name if draft.extension == ".c" else draft.generator._className
+    monkeypatch.setattr(
+        moduleTemplates, name, SimpleNamespace(**{class_name: module_factory}), raising=False
+    )
+    namespace = runpy.run_path(str(draft.destination / "_UnitTest" / f"test_{name}.py"))
+    namespace[f"test_{name}"]()
+
+
+@pytest.mark.parametrize("module_name", [
+    "draftExample", "simulation", "process", "reader", "np", "messaging", "module_under_test",
+])
+def test_generated_smoke_checks_pass_for_native_drafts(draft, monkeypatch, module_name):
+    """Run native drafts even when their names match test locals or imports."""
+    from Basilisk.moduleTemplates import autoCModule, autoCppModule
+
+    draft.generator.moduleName = module_name
+    draft.destination = draft.destination.with_name(module_name)
+    factory = autoCModule.autoCModule if draft.extension == ".c" else autoCppModule.AutoCppModule
+    _run_generated_smoke_test(draft, monkeypatch, factory)
+
+
+@pytest.mark.parametrize("run_simulation", [True, False])
+def test_generated_smoke_checks_without_messages(draft, monkeypatch, run_simulation):
+    """Require scheduled execution even for a draft without message interfaces."""
+    from Basilisk.architecture import sysModel
+    from Basilisk.utilities import SimulationBaseClass
+
+    draft.generator.inMsgList = []
+    draft.generator.outMsgList = []
+    if run_simulation:
+        _run_generated_smoke_test(draft, monkeypatch, sysModel.SysModel)
+    else:
+        monkeypatch.setattr(SimulationBaseClass.SimBaseClass, "ExecuteSimulation", lambda self: None)
+        with pytest.raises(AssertionError, match="Module did not run"):
+            _run_generated_smoke_test(draft, monkeypatch, sysModel.SysModel)
+
+
+@pytest.mark.parametrize("write_output", [False, True])
+def test_generated_smoke_checks_reject_missing_or_stale_writes(draft, monkeypatch, write_output):
+    """Reject an executing module that omits writes or always timestamps them zero."""
+    from Basilisk.architecture import messaging, sysModel
+
+    draft.generator.inMsgList = []
+    faulty_output = draft.generator.outMsgList[-1]["var"]
+
+    class BrokenWriter(sysModel.SysModel):
+        """Publish missing or stale outputs using real Basilisk message objects."""
+
+        def __init__(self):
+            """Create the output interfaces specified by the generated test."""
+            super().__init__()
+            for message in draft.generator.outMsgList:
+                setattr(self, message["var"], getattr(messaging, message["type"])())
+
+        def UpdateState(self, current_sim_nanos):
+            """Write every output correctly except the final message interface."""
+            for message in draft.generator.outMsgList:
+                is_faulty = message["var"] == faulty_output
+                if is_faulty and not write_output:
+                    continue
+                write_time = 0 if is_faulty else current_sim_nanos  # [ns]
+                output = getattr(self, message["var"])
+                output.write(output.zeroMsgPayload, write_time, self.moduleID)
+
+    error = "write times" if write_output else "was never written"
+    with pytest.raises(AssertionError, match=f"{faulty_output} {error}"):
+        _run_generated_smoke_test(draft, monkeypatch, BrokenWriter)

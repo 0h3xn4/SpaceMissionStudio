@@ -17,7 +17,6 @@
 
  */
 #include "moduleTemplates/cppModuleTemplate/cppModuleTemplate.h"
-#include <iostream>
 #include "architecture/utilities/linearAlgebra.h"
 
 /*! This is the constructor for the module class.  It sets default variable
@@ -38,9 +37,9 @@ CppModuleTemplate::~CppModuleTemplate()
  */
 void CppModuleTemplate::Reset(uint64_t CurrentSimNanos)
 {
-    /*! - reset any required variables */
-    this->dummy = 0.0;
-    bskLogger.bskLog(BSK_INFORMATION, "Variable dummy set to %f in reset.",this->dummy);
+    /*! Reset the runtime counter; preserve the user-configured sampleConfigVector. */
+    this->updateCounter = 0.0;
+    bskLogger.bskLog(BSK_INFORMATION, "Variable updateCounter set to %f in reset.",this->updateCounter);
 
     /* zero output message on reset */
     CModuleTemplateMsgPayload outMsgBuffer={};       /*!< local output message copy */
@@ -48,18 +47,14 @@ void CppModuleTemplate::Reset(uint64_t CurrentSimNanos)
 }
 
 
-/*! This is the main method that gets called every time the module is updated.  Provide an appropriate description.
-
- */
 void CppModuleTemplate::UpdateState(uint64_t CurrentSimNanos)
 {
-    double Lr[3];                                   /*!< [unit] variable description */
-    CModuleTemplateMsgPayload outMsgBuffer;       /*!< local output message copy */
+    // Zero the output buffer each update to avoid publishing uninitialized fields.
+    CModuleTemplateMsgPayload outMsgBuffer = this->dataOutMsg.zeroMsgPayload;
     CModuleTemplateMsgPayload inMsgBuffer;        /*!< local copy of input message */
-    double  inputVector[3];
+    double inputVector[3];                       /*!< [-] sample input vector */
 
-    // always zero the output buffer first
-    outMsgBuffer = this->dataOutMsg.zeroMsgPayload;
+    // Use a zero vector when the optional input is not connected.
     v3SetZero(inputVector);
 
     /*! - Read the optional input messages */
@@ -68,15 +63,12 @@ void CppModuleTemplate::UpdateState(uint64_t CurrentSimNanos)
         v3Copy(inMsgBuffer.dataVector, inputVector);
     }
 
-    /*! - Add the module specific code */
-    v3Copy(inputVector, Lr);
-    this->dummy += 1.0;
-    Lr[0] += this->dummy;
+    // Sample math: copy the input vector and add the counter to its first component.
+    v3Copy(inputVector, outMsgBuffer.dataVector);
+    this->updateCounter += 1.0;  // [-]
+    outMsgBuffer.dataVector[0] += this->updateCounter;
 
-    /*! - store the output message */
-    v3Copy(Lr, outMsgBuffer.dataVector);
-
-    /*! - write the module output message */
+    /*! - Write the module output message */
     this->dataOutMsg.write(&outMsgBuffer, this->moduleID, CurrentSimNanos);
 
     /* this logging statement is not typically required.  It is done here to see in the
@@ -85,23 +77,23 @@ void CppModuleTemplate::UpdateState(uint64_t CurrentSimNanos)
 
 }
 
-void CppModuleTemplate::setDummy(double value)
+void CppModuleTemplate::setUpdateCounter(double value)
 {
     // check that value is in acceptable range
     if (value > 0) {
-        this->dummy = value;
+        this->updateCounter = value;
     } else {
-        bskLogger.bskError("CppModuleTemplate: dummy variable must be strictly positive, you tried to set %f", value);
+        bskLogger.bskError("CppModuleTemplate: updateCounter variable must be strictly positive, you tried to set %f", value);
     }
 }
 
-void CppModuleTemplate::setDumVector(std::array<double, 3> value)
+void CppModuleTemplate::setSampleConfigVector(std::array<double, 3> value)
 {
     // check that value is in acceptable range
     for (size_t i = 0; i < value.size(); i++) {
         if (value[i] <= 0.0) {
-            bskLogger.bskError("CppModuleTemplate: dumVariable variables must be strictly positive");
+            bskLogger.bskError("CppModuleTemplate: sampleConfigVector components must be strictly positive");
         }
     }
-    this->dumVector = value;
+    this->sampleConfigVector = value;
 }
