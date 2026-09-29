@@ -27,26 +27,48 @@ wheel to PyPI, and installing it that way genuinely works.
 
 **1. Prerequisites**
 
-* Linux, Python 3.9+.
-* `python3 -m venv` (or your preferred environment tool) -- everything
+* Linux or Windows 11, Python 3.9+. Basilisk's own prebuilt-wheel support
+  matrix (`../docs/source/Install.rst`) explicitly covers both: "Windows:
+  Windows 10/11 (x86_64)" and "Linux: Manylinux 2.24+ (x86_64, aarch64)"
+  -- macOS is also listed there but not a target for missionStudio's own
+  install scripts below (nothing prevents `pip install` from working on
+  it too, just not independently verified for this project).
+* `python -m venv` (or your preferred environment tool) -- everything
   below assumes a virtualenv so it doesn't touch your system Python.
+  (Linux commands below use `python3`/`pip3`-equivalent `python`/`pip`
+  once the venv is active, matching what actually ran in this project's
+  own Linux development sandbox; on Windows, use the `python`/`pip`
+  installed by the official python.org or Microsoft Store installer.)
 
 **2. Install Basilisk**
 
+Linux/macOS:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install "bsk[all]"
 ```
 
+Windows (PowerShell):
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install "bsk[all]"
+```
+
 This is Basilisk's own recommended install path (see `../docs/source/Install.rst`
 in this checkout) -- a prebuilt wheel from PyPI, no compiler or Conan
-required. It was genuinely run in this project's development sandbox: the
-wheel downloads and installs cleanly, and every Basilisk module/class this
-app's code imports (across all three phases) was confirmed present.
-Building from source is still possible and documented
-(`../docs/source/Build.rst`) if you need an unpublished feature or a
-locally-modified Basilisk, but it's no longer the first thing to reach for.
+required, published for both platforms above. The Linux command was
+genuinely run in this project's development sandbox: the wheel downloads
+and installs cleanly, and every Basilisk module/class this app's code
+imports (across every phase) was confirmed present. The Windows command
+was not independently run in this project (this development sandbox is
+Linux-only) -- it follows Basilisk's own documented Windows install path
+exactly, but is flagged here rather than claimed as verified end-to-end;
+please report any issues. Building from source is still possible and
+documented (`../docs/source/Build.rst`) if you need an unpublished
+feature or a locally-modified Basilisk, but it's no longer the first
+thing to reach for on either platform.
 
 **3. Install missionStudio**
 
@@ -55,10 +77,17 @@ cd missionStudio
 pip install -e ".[dev,gui]"
 ```
 
+(Same command on Windows, once the venv above is active.)
+
 (Or skip steps 2-3 and run `packaging/install.sh --basilisk-wheel "bsk[all]"`
-instead, which does both in one shot into its own private venv and adds a
-desktop launcher -- see `packaging/README.md`. That flag genuinely works
-now, for the same reason step 2 does.)
+on Linux, or `packaging/install.ps1 -BasiliskWheel "bsk[all]"` on Windows,
+instead -- either does both in one shot into its own private venv and
+adds a launcher (a desktop entry on Linux, a Start Menu shortcut on
+Windows) -- see `packaging/README.md` for exactly what's verified on
+each platform. The Linux script and its `--basilisk-wheel` flag
+genuinely work, for the same reason step 2 does; the Windows script is
+new for the 1.0.0 release and carries the same not-independently-run
+caveat as the Windows command above.)
 
 **4. Check it's working**
 
@@ -3090,6 +3119,46 @@ specifically:
   itself, and `tests/test_two_body_validation.py`'s analytical check,
   still need to be run once on a machine with ordinary internet access.
 
+## Version 1.0.0
+
+The first tagged release. What changed for it, and what "1.0.0" actually
+means here:
+
+* **A real end-to-end run, on a real Basilisk install, finally happened**
+  -- the one specific gap the "What's next" section below used to call
+  out (this development sandbox's network policy blocks the NAIF SPICE
+  kernel host, so a full run past kernel loading was never independently
+  confirmed here). A real user ran the full `05_formation_flying_phasing.json`
+  template -- both `StationKeepingController` and `PhasingKeepingController`
+  active, Vizard live-streaming on -- to 100% completion (`t=604800.0 s`
+  of `604800.0 s`, the full 7 simulated days) with no errors. That
+  finding a real, previously-unreproducible crash along the way (see the
+  eclipse-investigation-turned-red-herring sections above, and "The
+  actual root cause, found for real: not eclipse at all" for the fix) and
+  then confirming a clean full run afterward is the actual end-to-end
+  verification this project didn't have before.
+* **Cross-platform install.** `python -m venv` + `pip install "bsk[all]"`
+  + `pip install -e ".[dev,gui]"` (the "Getting started" section above)
+  works identically on Linux and Windows 11 -- Basilisk's own prebuilt
+  wheels are published for both (`../docs/source/Install.rst`'s "Prebuilt
+  wheel availability" table), and missionStudio's own code was already
+  written with per-OS awareness where it matters (`gui/vizard_launcher.py`'s
+  `_candidate_roots()`/`_EXECUTABLE_NAME` branch on `sys.platform` for
+  finding the external Vizard app; `Path.home()`, never a raw `$HOME`/
+  POSIX assumption, for every user-data location). `packaging/install.ps1`/
+  `build_wheel.ps1` are new this release -- direct PowerShell ports of
+  the already-verified `install.sh`/`build_wheel.sh`, giving Windows the
+  same one-command install + Start Menu shortcut experience Linux has had
+  since Phase 3. Per this project's own verification discipline: the
+  Linux install scripts and the Linux Basilisk-wheel install have been
+  run for real; their Windows counterparts have not (no Windows
+  environment has ever been available in this development sandbox) --
+  see `packaging/README.md`'s "Windows support" section for exactly
+  what that does and doesn't cover, and please report anything that
+  doesn't work as documented on a real Windows 11 machine.
+* **Version bumped** `0.1.0.dev0` -> `1.0.0` in `pyproject.toml` and
+  `missionstudio/__init__.py`.
+
 ## What's next
 
 Phase 4 (see "What Phase 4 adds" above) responded to the first round of
@@ -3115,13 +3184,13 @@ not yet built:
 Beyond that, the "Known limitations" list above is the rest of the honest
 map: a handful of schema-valid-but-not-wired-up options (celestial-body
 `locationPointing` targets, thrusters, magnetic torque rods, non-Earth
-spherical harmonics/magnetometer), navigation error modeling, richer Monte
-Carlo retention, and -- the one requiring something this development
-sandbox's network policy specifically blocks -- a full simulation run past
-SPICE kernel loading, to get the first true end-to-end confirmation
-(including `test_two_body_validation.py`'s analytical check, and the new
-Phase 4 power-budget/link-budget/station-keeping/phasing-keeping/
-Vizard-panel wiring) on top of everything up to that point already being
-verified against a real Basilisk install. None of it is blocked on a
-design decision; each item is scoped and documented at its own call site
-for whoever picks it up next.
+spherical harmonics/magnetometer), navigation error modeling, and richer
+Monte Carlo retention. (This paragraph used to also list "a full
+simulation run past SPICE kernel loading, to get the first true
+end-to-end confirmation" as blocked on this development sandbox's
+network policy -- see "Version 1.0.0" above: that confirmation has since
+happened for real, on a real user's machine, including the exact
+station-keeping/phasing-keeping/Vizard-panel wiring this paragraph used
+to flag as unconfirmed.) None of the remaining items is blocked on a
+design decision; each is scoped and documented at its own call site for
+whoever picks it up next.
