@@ -430,8 +430,18 @@ class SimulationService:
         # entirely, which let those bridges be garbage-collected while
         # still C++-task-registered -- undefined behavior that could (and
         # did) surface as an unrelated-looking crash much later.
+        #
+        # _viz_generic_storage_list/_viz_generic_sensor_list: the same
+        # retention requirement, found the same way, for the GenericStorage
+        # ("Propellant"/battery panels)/GenericSensor (access-window label)
+        # objects enable_vizard() builds -- see that function's own
+        # docstring, second "Real bug found" note, for why these also
+        # need a persistent Python reference despite looking like
+        # "plain data" structs.
         self._viz = None
         self._viz_access_indicator_bridges = None
+        self._viz_generic_storage_list = None
+        self._viz_generic_sensor_list = None
 
     @property
     def spacecraft_handles(self) -> Dict[str, "_SpacecraftHandle"]:
@@ -958,7 +968,12 @@ class SimulationService:
                 for sc_config in scenario.spacecraft if sc_config.vizard_model_path is not None
             }
             try:
-                self._viz, self._viz_access_indicator_bridges = vizard.enable_vizard(
+                (
+                    self._viz,
+                    self._viz_access_indicator_bridges,
+                    self._viz_generic_storage_list,
+                    self._viz_generic_sensor_list,
+                ) = vizard.enable_vizard(
                     self.scSim, dyn_task_name, sc_objects_in_order, self.vizard_request,
                     rw_effectors_by_spacecraft=rw_effectors_in_order,
                     ground_stations=self._ground_locations, central_body_name=gravity.central_body,
