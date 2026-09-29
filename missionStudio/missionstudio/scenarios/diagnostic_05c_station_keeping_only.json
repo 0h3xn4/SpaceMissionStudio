@@ -1,5 +1,5 @@
 {
-  "name": "05 - Formation flying (phasing control)",
+  "name": "DIAGNOSTIC - 05 formation flying, station_keeping only",
   "epoch_utc": "2030-01-01T00:00:00",
   "simulation_mode": "orbit_only",
   "gravity": {
@@ -142,18 +142,7 @@
         "propellant_kg": 5.0,
         "eclipse_sunlit_threshold": 0.99
       },
-      "phasing_keeping": {
-        "chief_spacecraft": "chief-1",
-        "target_separation_km": [
-          50.0
-        ],
-        "reconfiguration_interval_days": 90.0,
-        "tolerance_fraction": 0.1,
-        "restore_tolerance_fraction": 0.02,
-        "correction_window_days": 21.0,
-        "max_drift_days": 90.0,
-        "max_delta_semi_major_axis_km": 3.0
-      },
+      "phasing_keeping": null,
       "constant_thrust": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
@@ -192,6 +181,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "Two spacecraft in near-identical orbits, 'follower-1' actively holding a fixed in-track separation behind chief 'chief-1' using phasing_keeping -- a closed-loop controller that measures the along-track separation and fires small along-track burns to correct drift, on top of its OWN station_keeping (phasing_keeping always needs station_keeping configured on the same spacecraft -- see PhasingKeepingConfig's own docstring for why: phasing needs altitude held steady first, or a semi-major-axis mismatch would make along-track drift and true phasing error indistinguishable).\n\nWhat to look at: after running, compare 'follower-1.position_N' and 'chief-1.position_N' -- the along-track (velocity-direction) separation should stay near target_separation_km despite neither orbit being perfectly matched to start, a basic model of formation-flying/rendezvous-proximity-operations control (e.g. trailing satellite formations, or a servicer holding station behind a target). 'missionstudio run' also prints a phasing delta-V breakdown in its station-keeping summary (see README, 'Running the CLI').\n\nTry changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single -element list holds one separation for the whole run, more elements step through a schedule), or chief-1's own orbit to start with a larger initial mismatch and watch follower-1 correct it.",
+  "description": "Third diagnostic scenario, NOT a permanent template. Findings so far: diagnostic_05_no_orbit_maintenance.json (no force effector at all) ran clean for the full 7 days. diagnostic_05b_constant_thrust_only.json (a simple constant force, same magnitude/direction, same mass-bookkeeping pattern, but no eclipse gating, no altitude/error smoothing history, and no sharing with a second controller) ALSO ran clean for the full 7 days.\n\nThis isolates the one remaining structural difference: identical orbits/duration/rate/integrator/gravity, but follower-1 has ONLY station_keeping configured -- no phasing_keeping at all, so no thruster arbitration, no second controller sharing the same ExtForceTorque effector and propellant tank. station_keeping DOES still have eclipse-gating and altitude-smoothing history, unlike the constant_thrust diagnostic.\n\nIf this crashes, the trigger is in station_keeping's own logic (eclipse-gating and/or altitude-smoothing), independent of sharing a thruster with a second controller. If it does NOT crash, that implicates the two-controllers-sharing-one-thruster/arbitration mechanism specifically -- i.e. something about phasing_keeping being present and sharing station_keeping's effector, not either controller's logic alone.",
   "schema_version": 1
 }

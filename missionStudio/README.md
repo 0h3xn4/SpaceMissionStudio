@@ -1838,9 +1838,21 @@ station-keeping, zero-velocity) state, call `UpdateState()` directly,
 and confirm it returns cleanly with zero commanded thrust instead of
 reaching `rv2elem()` -- plus one confirming the guard doesn't change
 behavior for the ordinary finite-state path. 590 passed, 60 skipped in
-this sandbox (four more skipped, matching the four new tests). Not
-independently confirmed against the user's own real Basilisk build yet
--- next step is asking them to retry template '05'.
+this sandbox (four more skipped, matching the four new tests).
+
+**Confirmed for real** on the user's own Basilisk build: the fix itself
+worked first try -- `UpdateState()` returned cleanly with no crash on
+every non-finite/degenerate-state test, exactly as designed. Three of
+the four new tests still failed, but only on an assertion detail: a
+real `ExtForceTorque`'s `extForce_N` reads back as a nested `[[0.0],
+[0.0], [0.0]]` column-vector shape, not the flat `[0.0, 0.0, 0.0]` list
+these tests assumed -- fixed with a small `_flat()` helper. That same
+real run also re-confirmed every other fix from this session still
+holds: both sun-ephemeris-validation directions, all four
+`should_cancel` checkpoints, `run_live` cancellation, the toolbar split,
+and templates '05'/'06'/'07' all loading/validating/round-tripping
+cleanly (639 passed, 8 skipped, only the three assertion-shape failures
+above, now fixed).
 
 ## A toolbar action invisible on one real platform
 
@@ -1873,6 +1885,724 @@ that environment), but the fix removes the mechanism (window-width
 -dependent single-row overflow) entirely rather than patching around a
 guessed cause, so it should hold regardless of the exact platform
 details.
+
+## Template '05' crash recurred -- added a debug-logging mode
+
+The "root-caused" fix above turned out not to be the whole story: the user
+hit the **same** `basic_string::_M_create`/`std::bad_alloc` crash again on
+template '05', on a build that already had the `orbit_maintenance.py`
+finiteness guards deployed and confirmed working (per that section's own
+"Confirmed for real" note). That rules out the guarded `rv2elem()` call
+sites as the *only* source -- there is some other path into this crash
+that guarding those two call sites didn't cover, and guessing at more
+call sites blind, the same way the first fix was found, was not working.
+
+What actually blocked root-causing it further: this app had **no
+diagnostic output anywhere**. Every background-thread failure (`RunWorker`,
+`MonteCarloWorker`, the kernel-fetch worker) was caught with a bare
+`except Exception as exc: self.failed.emit(str(exc))` -- the GUI shows a
+one-line message, nothing is logged, and the terminal the user launched
+`missionstudio-gui` from prints nothing but Unity's own startup noise. A
+native crash inside a SWIG director callback (see above) doesn't even
+leave that much -- there is no Python traceback to catch in the first
+place. Direct user request: "would be good, if you could add some kind of
+debug mode, that outputs everything that happens in the terminal and also
+saves it in a log file."
+
+Added `missionstudio/logging_setup.py`: a single `configure_logging()`
+entry point, called once as the very first line of both `cli.main()` and
+`gui.app.main()` (idempotent -- `cli.main()` dispatching into
+`gui.app.main()` for `missionstudio gui` must not double up handlers).
+It attaches two handlers to the root logger -- a `FileHandler` at
+`~/.missionstudio/logs/missionstudio_<UTC timestamp>.log` (`DEBUG` level,
+so nothing is filtered out of the file) and a `StreamHandler` on stderr
+(`INFO` level, so the terminal stays readable) -- and installs
+`sys.excepthook` so an exception that would otherwise just crash silently
+is logged with its full traceback before the process exits. The three
+background-worker `except Exception` catch-alls (`run_worker.py` x2,
+`kernel_status_widget.py`) now call `logger.exception(...)` before
+emitting their `failed` signal, so a worker failure's full traceback lands
+in the log file, not just the one-line message the GUI dialog shows.
+`main_window.py`'s "Simulation failed"/"Monte Carlo failed" dialogs now
+also name the current log file's path directly in the dialog text, so the
+next report doesn't depend on the user knowing where to look.
+
+This does not, by itself, fix the template '05' crash -- a crash
+originating inside a SWIG director callback can still take the whole
+process down before Python-level logging gets a chance to run (the same
+reason `orbit_maintenance.py`'s guards can only degrade gracefully, never
+raise). But it turns every *other* class of failure -- anything that
+raises a normal Python exception anywhere in this app, including on a
+background thread -- into something with an actual traceback to read
+afterward, and it is the only way forward for the next reproduction: if
+the crash again leaves nothing in the log file, that itself narrows it
+back down to "inside Basilisk's C++/SWIG layer, not this app's Python
+code," which the two conflicting crash signatures already suggested but
+didn't confirm.
+
+**Verification:** `tests/test_logging_setup.py` (7 tests, no
+Basilisk/Qt dependency, run unconditionally) cover log-file creation,
+idempotency, an exception logged via `logger.exception()` landing in the
+file with its full traceback, and the `sys.excepthook` install. Three new
+`tests/gui/test_main_window.py` tests confirm the failure dialogs mention
+the log file's path when logging is configured and omit the hint
+otherwise. Running `cli.main()` directly (as `tests/test_cli.py` already
+does, dozens of times, without a subprocess) now triggers a real
+`configure_logging()` call every time this suite runs -- an autouse
+`tests/conftest.py` fixture isolates it per test (resets
+`logging_setup`'s internal state, redirects `Path.home()` to a per-test
+`tmp_path` so nothing touches this machine's real
+`~/.missionstudio/logs`, and restores the root logger's handlers/level
+and `sys.excepthook` afterward) so no test leaks a stale `StreamHandler`
+bound to a since-closed, pytest-captured `stderr` into any later test.
+600 passed, 60 skipped in this sandbox. Not yet confirmed against a real
+Basilisk build -- that confirmation depends on the user reproducing the
+template '05' crash again and sharing the new log file's contents, which
+is the actual blocker on finishing the root-cause fix.
+
+**If you hit this (or any other) crash:** the log file's path is printed
+at GUI/CLI startup and is also named directly in any "Simulation
+failed"/"Monte Carlo failed" dialog. Check
+`~/.missionstudio/logs/missionstudio_<timestamp>.log` (the most recent
+one) for a full traceback before reporting a crash -- it will have far
+more detail than whatever the dialog or terminal showed on their own.
+
+## Template '05' crash, actually root-caused this time
+
+The logging mode above paid off immediately: the user reproduced the
+crash and the new log file's traceback showed something genuinely
+different from every earlier assumption in this project's history --
+
+```
+RuntimeError: std::bad_alloc
+  File ".../missionstudio/engine/service.py", line 1023, in run_live
+    self.scSim.ExecuteSimulation()
+  File ".../Basilisk/utilities/SimulationBaseClass.py", line 2006, in ExecuteSimulation
+    self.TotalSim.StepUntilStop(...)
+  File ".../Basilisk/architecture/sim_model.py", line 1524, in StepUntilStop
+    return _sim_model.SimModel_StepUntilStop(self, SimStopTime, stopPri)
+```
+
+A clean, catchable Python `RuntimeError` -- not a raw native crash with no
+Python frame at all. That directly contradicts this project's own earlier
+theory (written into `orbit_maintenance.py`'s guard comments): that a
+Python exception escaping `UpdateState()` (a SWIG director callback) is
+undefined behavior, and that's what produced the two different crash
+signatures. Reading Basilisk's actual C++ source
+(`src/architecture/system_model/sim_model.cpp`) shows that theory was
+wrong -- `SimThreadExecution`'s worker-thread loop wraps every tick in
+`catch (...) { threadException = std::current_exception(); }`, and the
+parent thread cleanly `std::rethrow_exception`s it, which SWIG surfaces
+as an ordinary Python exception. No UB; this project's Basilisk version
+has real cross-thread exception safety.
+
+The ACTUAL mechanism, found by then reading
+`src/simulation/dynamics/_GeneralModuleFiles/svIntegratorAdaptiveRungeKutta.h`
+(the code behind `rkf45`/`rkf78`, the integrators this project's
+templates use): once the integrated state goes non-finite (NaN/inf, from
+any cause), `computeMaxRelativeError()` returns NaN. The step-acceptance
+check `maxRelError <= 1.` is then always false (every comparison against
+NaN is false in IEEE 754), so `integrate()`'s `while (time < startingTime
++ desiredTimeStep)` loop never advances `time` and never exits. Worse,
+the "shrink the step and retry" fallback that would normally recover from
+a rejected step can't either: `std::min`/`std::max` called with a NaN
+first argument return that same NaN argument (both are implemented as
+`(b < a) ? b : a`, and any `< NaN` comparison is false), so the computed
+`newTimeStep` stays NaN forever too. The result is a genuine infinite
+C++ loop, re-evaluating the same NaN state and allocating fresh `Eigen`
+temporaries every iteration, until the process's heap is exhausted --
+`std::bad_alloc` (a clean allocation failure) on one run, heap corruption
+(`basic_string::_M_create`, an unrelated allocation tripping over an
+already-exhausted/corrupted heap) on another: same root cause, whichever
+allocation happens to be the one that finally fails. This also explains
+the near-instant crash timing (the whole thing happens inside one C++
+call, a tight allocate-and-retry loop with no artificial delay) regardless
+of how much simulated time had already completed successfully before it.
+
+**What is NOT the cause, now confirmed:** the `orbit_maintenance.py`
+finiteness guards (the earlier fix) were never wrong to add -- a
+non-finite spacecraft state was never safe input to `rv2elem()` -- but
+they were never going to be *sufficient* either. The state can go
+non-finite entirely inside Basilisk's own equations-of-motion/integrator,
+strictly between one tick's guarded read and the next, with no Python
+-level hook in between to catch it. `orbit_maintenance.py`'s own comments
+are corrected to reflect this (and to drop the wrong "UB" claim).
+
+**What this project CAN fix**, since the underlying integrator bug lives
+in Basilisk's own C++ (not something this app controls, and not
+something a from-source rebuild is practical to depend on here -- see
+this README's own "Environment honesty note" on why a from-source build
+has historically been avoided): turn the resulting crash into an
+immediately actionable message instead of a bare native exception string.
+New `engine.service.raise_clear_execution_error()` wraps every
+`scSim.ExecuteSimulation()` call in this codebase (`SimulationService.run()`/
+`run_live()`, and all three call sites in `MissionEngine._advance_to()`/
+`_run_propagate_event()`) in `try`/`except RuntimeError`, re-raising as a
+`SimulationServiceError` that explains the actual mechanism above and
+points at the concrete things that commonly cause a state to go
+non-physical in the first place (a runaway commanded force/torque -- check
+station-keeping/phasing-keeping/constant-thrust configuration for a sign
+or magnitude error -- or an orbit decaying into the central body).
+`SimulationService.run_live()` also now logs progress (`INFO`, sim time
+and percent complete) after every chunk, and logs an `ERROR` with exactly
+how far the mission clock got before a failure -- so a future crash's log
+file will show precisely which portion of the run diverged, rather than
+leaving that as a guess.
+
+This still doesn't identify *why* template '05' specifically ends up with
+a non-finite state in the first place -- that remains open, and would
+need either a reproducible local Basilisk build (not available in this
+sandbox) or the user narrowing down which of the two spacecraft's
+controllers (or plain two-body dynamics) is responsible from a future,
+now-far-more-informative log file. But "Run failed: std::bad_alloc" with
+nothing else to go on is no longer where this ends.
+
+**Verification:** `tests/test_service_execution_errors.py` (3 tests) and
+one new test in `tests/test_mission_engine.py`
+(`test_propagate_translates_execute_simulation_runtime_error`), all
+`requires_basilisk` (auto-skipped in this sandbox): construct a real
+`SimulationService`/`MissionEngine`, monkeypatch the real, already-built
+`scSim.ExecuteSimulation` to raise `RuntimeError("std::bad_alloc")` (an
+injected failure -- reproducing the actual integrator bug isn't a
+reliable thing to build a fast unit test around), and confirm a
+`SimulationServiceError` mentioning "non-physical" is raised with the
+original exception preserved as `__cause__`. 600 passed, 64 skipped in
+this sandbox (4 more skipped, matching the 4 new tests).
+
+**Confirmed for real** on the user's own Basilisk build: 655 passed, 1
+failed, 8 skipped. The one failure was a bug in the new MissionEngine
+test, not in the production fix --
+`test_propagate_translates_execute_simulation_runtime_error` asserted
+that `SimulationServiceError` propagates out of `engine.run()`
+unwrapped, but `MissionEngine._run_command()`'s existing generic
+`except Exception` handler (the same one that already wraps, say, a
+script-block exception -- see
+`test_script_block_exception_is_wrapped_in_mission_engine_error`) wraps
+ANY non-`MissionEngineError`/`MissionEngineCancelled` exception into a
+path-qualified `MissionEngineError` -- correct, existing behavior the
+test just modeled wrong. Fixed by asserting `MissionEngineError`
+instead (whose message still contains the clear "non-physical"
+explanation). `SimulationService.run()`/`run_live()`'s own two tests,
+which are not wrapped by anything, passed as written the first time.
+
+## Template '05' crash, narrowed further -- last-known-state diagnostic
+
+The clear-error fix above paid off immediately: the user reproduced the
+crash again, and the new error and log showed something genuinely
+useful for the first time --
+
+```
+run_live: ExecuteSimulation failed at t=10080.0 s of 604800.0 s (1.7% complete)
+```
+
+The failure is in the very FIRST live chunk (`run_live`'s default chunk
+size for this scenario -- `max(dynamics_task_rate_s, duration_days*86400
+/60)` -- works out to 10080 s, about 336 dynamics ticks). 10080 s is
+under two orbital periods for this scenario's ~550 km circular orbit
+(period ≈ 5740 s) -- so whatever drives the state non-finite happens
+almost immediately, not from a slow multi-day drift. That rules out a
+large class of otherwise-plausible explanations (e.g. propellant
+depletion, a multi-day accumulated phasing error) -- there simply isn't
+enough elapsed time for those.
+
+Reasoning through `orbit_maintenance.py`'s actual numbers for this
+template by hand (`target_altitude_km=550`, `thrust_n=0.05`,
+`target_separation_km=50`, `max_delta_semi_major_axis_km=3.0`) suggests
+the commanded maneuvers themselves are tiny (a back-of-envelope
+phasing correction here works out to on the order of tens of METERS of
+semi-major-axis change, a few cm/s of delta-v) -- nowhere near large
+enough on their own to explain a near-instant divergence. One real,
+separate finding from this exercise: `PhasingKeepingConfig.
+target_separation_km`'s docstring and validation (`schema/scenario.py`)
+define it as a distance strictly "ahead of the chief" (validated `> 0`
+only, no way to express "behind"), but template '05's own description
+and initial conditions (follower's `true_anomaly_deg=-0.5` vs chief's
+`0.0`) explicitly set up and describe a TRAILING formation. Worth fixing
+as its own follow-up (either allowing a signed value, or documenting
+that "ahead"/"behind" is just a label and the schedule is always
+interpreted as the magnitude of `mB - mA`), but the hand-computed
+maneuver size shows this specific mismatch is not large enough to be
+what crashes here.
+
+Without a local Basilisk build to actually step through this, further
+narrowing by hand-reasoning about the physics has reached its limit --
+what's actually needed is the state at the exact moment it goes
+non-finite, which no existing diagnostic captured (the failing tick
+itself is never recorded at all -- see `raise_clear_execution_error`'s
+own docstring for why). New `SimulationService.log_last_known_state()`,
+called right before `raise_clear_execution_error` re-raises at all four
+`ExecuteSimulation()` call sites, logs (`ERROR`) the LAST successfully
+recorded sample for every spacecraft straight from each handle's own
+recorder/controller logs -- position/velocity, and (when configured)
+station-keeping's altitude/burn-on/propellant and phasing-keeping's
+separation error/state-machine state -- deliberately bypassing
+`_extract_results()`/`_osculating_elements()` (which would itself raise
+on a non-finite sample) so this works even if the last state is already
+bad. This is the closest thing to a debugger breakpoint available
+without one: the next crash's log file will show exactly where each
+spacecraft was, what each controller was doing, and how far each
+propellant tank had been drawn down, one tick before Basilisk's own
+stepping failed.
+
+**Verification:** two new tests in `tests/test_service_execution_errors.py`
+(`requires_basilisk`, auto-skipped in this sandbox) -- one confirms the
+method doesn't raise before any tick has completed (logs "no samples
+recorded yet" instead), the other runs a few real dynamics ticks first
+and confirms the logged text actually contains `r_BN_N=`/`v_BN_N=` data.
+600 passed, 66 skipped in this sandbox (2 more skipped, matching the 2
+new tests). Not yet confirmed against a real Basilisk build -- that
+confirmation depends on the user reproducing the crash again and sharing
+the new log, which will finally show the exact last-good state rather
+than just which chunk failed.
+
+## Template '05' crash -- root cause found and fixed at the template level
+
+The last-known-state diagnostic paid off immediately -- the user's next
+crash log showed:
+
+```
+follower-1: last recorded state before failure -- t=30.000 s, r_BN_N=[...] m, v_BN_N=[...] m/s
+follower-1: phasing_keeping last tick -- t=30.000 s, error=-0.0882 deg, state=BURN_OUT, ...
+```
+
+The state at t=30 s (the very FIRST dynamics tick) is completely sane --
+hand-verified against a from-scratch two-body propagation in plain numpy
+(no Basilisk needed) that matched the logged r/v to 6+ significant
+digits. The failure happens between t=30 s and t=60 s -- the SECOND
+tick, as early as this scenario's finest possible resolution can show.
+
+That ruled out slow drift/depletion explanations and pointed at the
+`phasing_keeping` error value itself: -0.0882 degrees, when the actual
+along-track separation between these two near-identical orbits (0.5
+degrees apart by construction) plus the 50 km/6928 km target works out to
+-0.9135 degrees by hand -- a ~10x, suspiciously specific discrepancy.
+Root cause, found by reading `orbitalMotion.rv2elem()`'s real algorithm
+(`src/utilities/orbitalMotion.py`): this template's two orbits were
+defined with `eccentricity=0.0` EXACTLY. `rv2elem()` has a dedicated
+branch for a genuinely circular orbit (`e < 1e-11`) that measures the
+along-track phase from the ascending node -- numerically stable. But this
+scenario's real, propagated eccentricity (perturbed by the sun
+third-body gravity this project added earlier to fix a different bug,
+and by the phasing controller's own commanded thrust) only needs to
+drift a hair above that extremely tight threshold to fall onto a
+DIFFERENT branch, which measures the same angle from the eccentricity
+vector's direction instead -- numerically meaningless once eccentricity
+is that close to zero, since that direction becomes dominated by
+floating-point noise rather than physics. Reproducing the real crash's
+logged state through that unstable branch by hand gave
+argument-of-periapsis values 160 vs 184 degrees apart for two spacecraft
+that are physically 0.5 degrees apart -- a ~24 degree spurious
+"separation," matching the instability's fingerprint exactly.
+
+**A first attempt at this fix was wrong and has been reverted:**
+replacing `PhasingKeepingController`'s call into `rv2elem()` with a
+custom, hand-written along-track-angle computation. That is exactly the
+kind of change this project does not make -- orbit mechanics goes through
+Basilisk, not a parallel implementation of it, however numerically
+well-reasoned. The actually-correct fix is at the TEMPLATE level: this
+scenario asked for an EXACTLY circular orbit, which is itself an edge
+case Basilisk's own `rv2elem()` only handles safely below an extremely
+tight, real-perturbation-sensitive eccentricity threshold. Both orbits
+now use `eccentricity=0.001` (about 7 km of altitude variation, well
+inside `station_keeping`'s 2 km deadband once smoothed over one orbital
+period -- see `StationKeepingController.UpdateState()`'s own boxcar
+average, which exists for exactly this kind of periodic, non-decay
+variation) instead of `0.0` -- large enough to keep `rv2elem()` reliably
+on its normal, stable branch for the whole run (comfortably above any
+perturbation-induced noise), small enough not to meaningfully change the
+scenario's own "near-identical orbits" story. `scripts/_generate_templates.py`
+is the source of truth (see that script's own comment on
+`build_05_formation_flying_phasing()`'s chief-1 orbit for the full
+reasoning); `05_formation_flying_phasing.json` was regenerated from it,
+not hand-edited.
+
+**This does not, by itself, prove the crash is fully resolved** -- there
+may be a second contributing factor this investigation hasn't isolated.
+But it is a definite, real, well-evidenced bug in how this ONE template
+was configured (an exactly-circular orbit is a genuine Basilisk edge
+case, not something Basilisk itself is wrong about), fixed the way this
+project fixes that class of problem: by giving Basilisk's own,
+unmodified math a configuration it handles well, not by working around
+it.
+
+**Verification:** `tests/test_scenario_templates.py`/
+`tests/gui/test_scenario_templates_gui.py`'s existing template
+round-trip tests cover `05_formation_flying_phasing.json` structurally
+(schema-valid, round-trips through the GUI editor) and pass unchanged --
+this is a numeric-value-only change, not a structural one. 600 passed,
+66 skipped in this sandbox (matching the count before this fix -- no new
+tests needed; the actual regression check is a real Basilisk run of
+template '05' no longer crashing, or crashing with a materially
+different error/last-known-state, which only the user's own build can
+confirm).
+
+## Audit: every other place a degenerate/zero state could reach Basilisk
+
+Direct follow-up request after the template '05' investigation: check the
+whole codebase for other places a similar "zero" (or other degenerate)
+input could break something, now that one real instance was found. Two
+more were found, both in `engine/orbit_maintenance.py`, both existing
+gaps in an ALREADY-established defensive pattern (`StationKeepingController.
+UpdateState()`'s own guard checks BOTH non-finite AND exactly-zero
+velocity before dividing by it) rather than new problems introduced by
+anything in this investigation:
+
+1. **`PhasingKeepingController.UpdateState()`** only checked for
+   NaN/inf, not for `vA`/`vB` being exactly zero -- `vHatB = vB /
+   np.linalg.norm(vB)` a few lines later would divide by zero, and
+   `orbitalMotion.rv2elem()` (called just before that, to compute the
+   phasing error) also divides by velocity-derived quantities
+   internally. Its own existing guard comment on `StationKeepingController`
+   even said "Same reasoning as PhasingKeepingController.UpdateState()'s
+   own matching guard" -- which was no longer true once written, since
+   that guard never actually got the zero-velocity check. Fixed by
+   adding it, matching `StationKeepingController`'s exact pattern.
+
+2. **`ConstantFrameThrustController.UpdateState()`** (the `constant_thrust`
+   config -- not currently used by any bundled template, but a fully
+   supported, documented feature a user can configure) had **no guard at
+   all**: neither a finite check nor a zero-velocity one. Its
+   `_vnb_basis()`/`_rtn_basis()` helpers (VNB/RTN frame construction)
+   divide by `norm(vVec)` (both frames), `norm(rVec)` (RTN), and
+   `norm(cross(rVec, vVec))` (both -- the orbit-normal magnitude, zero
+   whenever r and v happen to be parallel, e.g. a purely radial
+   trajectory, which neither an individual finite check nor a
+   zero-velocity check alone would catch). Fixed with a guard covering
+   all three degenerate cases, same "command no thrust, hold state"
+   pattern as the other two controllers.
+
+Also checked and found NOT to need a fix, with the reasoning for each:
+
+* **`engine.service._osculating_elements()`** (the OTHER
+  `orbitalMotion.rv2elem()` call site in this codebase) hits the exact
+  same near-circular/near-equatorial classical-elements singularity, but
+  its output only feeds plots/CSV export, never a commanded force -- a
+  "wrong-looking reported angle" is not a "the simulation crashes"
+  problem, and this was already correctly documented as an inherent,
+  accepted limitation of osculating classical elements (not something a
+  per-sample computation could avoid) rather than a bug, well before this
+  audit.
+* **`mission_engine.py`'s periapsis/apoapsis event detector**
+  (`radial_velocity = dot(r, v) / np.linalg.norm(r)`) divides by
+  `norm(r)`, which is only zero if a spacecraft's position has already
+  reached the central body's exact center -- a state that requires the
+  orbit to have already gone catastrophically non-physical by some OTHER
+  cause first, not an independent trigger the way an ordinary near-circular
+  or radial-trajectory configuration is.
+* **`link_budget.py`'s free-space-path-loss** divides by nothing risky (a
+  physical constant, the speed of light); `np.log10(range_m)` would only
+  misbehave at `range_m == 0` (spacecraft exactly co-located with a
+  ground station -- not a real orbital state), and even then only
+  produces a nonsensical reported number, not a crash, for the same
+  "reporting-only, not fed back into dynamics" reason as
+  `_osculating_elements()`.
+* **`engine.constellation`'s Walker-pattern math**
+  (`raan_spread/num_planes`, `360/sats_per_plane`, etc.) divides by
+  request parameters that `ConstellationRequest.validate()` already
+  requires to be positive (see `test_request_validation_rejects_bad_input`)
+  before any of this math runs -- pure Python arithmetic, not
+  Basilisk-facing, and already schema-guarded.
+* **`engine/fsw.py`** (attitude guidance/control wiring) has no custom
+  vector-normalization math at all -- it only configures Basilisk's own
+  `hillPoint`/`velocityPoint`/`mrpFeedback`/etc. modules directly,
+  consistent with this project's convention of never reimplementing
+  Basilisk's own math.
+
+Also documented (not a code fix): `PhasingKeepingConfig`'s own docstring
+(`schema/scenario.py`) now states the "use a small nonzero eccentricity,
+not exactly 0.0" caveat directly, so a user authoring their own
+phasing-keeping scenario (not just the bundled template) has a chance to
+avoid this landmine before hitting it for real.
+
+**Verification:** 5 new tests in `tests/test_orbit_maintenance.py`
+(`requires_basilisk`, auto-skipped in this sandbox) --
+`test_phasing_keeping_skips_thrust_on_zero_velocity` (the new
+`PhasingKeepingController` guard), and four for
+`ConstantFrameThrustController`:
+`test_constant_thrust_skips_on_nan_state`,
+`test_constant_thrust_skips_on_zero_velocity`,
+`test_constant_thrust_skips_on_parallel_r_and_v` (the case neither a
+finite check nor a zero-velocity check alone would catch), and
+`test_constant_thrust_runs_normally_with_finite_state` (confirms the new
+guard doesn't change behavior for the ordinary case). 600 passed, 71
+skipped in this sandbox (5 more skipped, matching the 5 new tests). Not
+yet confirmed against a real Basilisk build.
+
+## Template '05' crash persists after the eccentricity fix -- isolating the cause
+
+The eccentricity fix's OWN target bug is confirmed fixed: the user's next
+crash log shows `phasing_keeping` reporting `error=-0.9125 deg` -- almost
+exactly the true physical separation (hand-computed: -0.9135 deg), not
+the wildly wrong `-0.0882 deg` from before. But **the crash still
+happens, at the exact same point** (t=30 s to t=60 s, the first real
+dynamics tick). That rules out the phasing-error noise as the (sole)
+trigger -- it was a real, separate, worth-fixing bug, but not the reason
+this scenario crashes.
+
+One side effect of the fix, visible in this same log, that hadn't been
+exercised before: `station_keeping` is now ACTIVELY BURNING
+(`burn_on=True`) at t=30 s, where it previously was not. Both spacecraft
+start at `true_anomaly_deg=0` -- with the new `eccentricity=0.001`,
+that's PERIAPSIS, the lowest point of the orbit, about 7 km below the
+mean/target altitude. `StationKeepingController`'s altitude smoothing
+only has ONE sample on the very first tick, so it immediately sees
+"6.9 km below deadband" and fires -- a real, if minor, side effect of the
+eccentricity fix worth knowing about even independent of the crash
+investigation.
+
+That the crash persists with an entirely DIFFERENT controller now doing
+the (small, bounded, ordinary) commanded burning is itself informative:
+it suggests the trigger may have nothing to do with WHICH
+`engine.orbit_maintenance` controller fires, or possibly nothing to do
+with `engine.orbit_maintenance` at all. To find out directly rather than
+keep guessing from either side, this repository now also includes
+`missionstudio/scenarios/diagnostic_05_no_orbit_maintenance.json` -- NOT
+a bundled template (it does not appear in the GUI's Load Scenario tab;
+open it via Open/Browse, or `missionstudio run
+missionstudio/scenarios/diagnostic_05_no_orbit_maintenance.json` from
+the CLI). It is otherwise IDENTICAL to `05_formation_flying_phasing.json`
+(same two near-circular, 45-degree-inclination, sun-perturbed orbits,
+same 7-day/30-second-tick/rkf78 settings) with `station_keeping` and
+`phasing_keeping` removed entirely from `follower-1` -- plain two-body
+-plus-sun-third-body dynamics for both spacecraft, no custom force
+effector active on either one at all.
+
+**If this diagnostic scenario ALSO crashes** around the same t=30-60 s
+window, that proves the crash has nothing to do with
+`engine.orbit_maintenance` -- something in the core gravity/integrator
+setup for two co-located, sun-perturbed, `orbit_only`-mode spacecraft is
+the actual trigger, and the investigation moves to `engine.service.build()`
+and Basilisk's own dynamics/gravity wiring instead. **If it does NOT
+crash**, that rules core dynamics out and points the investigation back
+at the force-effector wiring itself -- e.g. `StationKeepingController`'s
+own burn, or two controllers sharing one `ExtForceTorque` object.
+
+**Result, confirmed by the user: this diagnostic ran the FULL 7 days with
+no crash at all** (`run_live: 100.0% complete`, no error). Conclusive:
+the crash is NOT in core gravity/integrator/two-spacecraft setup -- it
+requires a force effector actually being active on follower-1. Rules out
+an entire class of hypothesis (sun ephemeris timing, task priority
+ordering, generic two-spacecraft interaction) and narrows the
+investigation specifically to `engine.orbit_maintenance`'s force
+-effector wiring or control logic.
+
+## Second diagnostic: isolating which part of orbit_maintenance is responsible
+
+Both real crashes so far had SOME `orbit_maintenance` controller
+actively commanding nonzero thrust through follower-1's `ExtForceTorque`
+effector at the failing tick (phasing's `BURN_OUT` state in the first
+crash, station-keeping's altitude burn in the second) -- but those two
+controllers share more than just "a force": the same propellant/mass
+-bookkeeping pattern (`engine.propellant_bookkeeping.
+apply_propellant_burn`, which writes `scObject.hub.mHub` every tick,
+including on non-thrusting ticks), the same `ExtForceTorque` effector
+object (phasing shares station-keeping's), and each has its OWN extra
+logic on top (station-keeping's altitude-deadband/smoothing/eclipse
+gating; phasing's drift-orbit state machine and thruster arbitration).
+
+New `missionstudio/scenarios/diagnostic_05b_constant_thrust_only.json`
+(same non-template placement as the first diagnostic) isolates which
+part: identical orbits/duration/rate/integrator/gravity, but follower-1
+has ONLY `constant_thrust` configured (a small constant 0.05 N prograde
+burn -- same magnitude used elsewhere in this template) instead of
+`station_keeping`/`phasing_keeping`. `ConstantFrameThrustController` is
+about as simple as a force effector in this codebase gets: no state
+machine, no altitude smoothing, no thruster arbitration, no eclipse
+gating -- just a fixed-direction force and the same shared
+mass-bookkeeping write every tick.
+
+**If this ALSO crashes**, the trigger is in the shared force-effector/
+mass-bookkeeping mechanism common to all three controllers (most likely
+suspect: the every-tick `scObject.hub.mHub` write, possibly interacting
+with the RK78 adaptive integrator's own internal substepping in a way
+that's fine for `missionAnalysis`'s original, coarser-task-rate version
+of this pattern but not for running it on the SAME task as the dynamics
+integration itself, which is what `engine.orbit_maintenance`'s own
+module docstring already flags as the one deliberate difference from the
+ported original). **If it does NOT crash**, the trigger is specifically
+in `StationKeepingController`'s or `PhasingKeepingController`'s own extra
+logic, not the shared mechanism -- narrowing to the altitude-smoothing/
+thruster-arbitration/eclipse-gating code neither shares with
+`ConstantFrameThrustController`.
+
+**Result, confirmed by the user: this diagnostic ALSO ran the full 7 days
+with no crash.** Rules out the shared mass-bookkeeping mechanism -- the
+trigger is specifically in `StationKeepingController`'s and/or
+`PhasingKeepingController`'s own extra logic (eclipse-gating,
+altitude/error-smoothing history, or the two-controllers-sharing-one
+-thruster arbitration), none of which `ConstantFrameThrustController`
+has.
+
+## Third diagnostic: station-keeping alone, no sharing with a second controller
+
+One structural difference between the two clean diagnostics and the real
+crash stands out: template '05' has TWO controllers
+(`StationKeepingController` + `PhasingKeepingController`) sharing ONE
+`ExtForceTorque` effector and one propellant tank, with explicit
+thruster-arbitration logic (`thrusterHeldByAltCtrl`) deciding which one's
+`extForce_N` write wins each tick -- neither of the two clean diagnostics
+tested that sharing at all (constant_thrust is the only controller on its
+spacecraft). Comparing `build_station_keeping()`/`build_constant_thrust()`
+directly shows their `ExtForceTorque` wiring is otherwise structurally
+identical (same `addDynamicEffector`/`AddModelToTask` pattern, no
+priority difference) -- ruling out a wiring bug as the remaining
+explanation.
+
+New `missionstudio/scenarios/diagnostic_05c_station_keeping_only.json`
+isolates the sharing question directly: identical to the real template
+except `phasing_keeping` is removed from follower-1 entirely --
+`station_keeping` alone, with its own eclipse-gating and
+altitude-smoothing history intact, but no second controller and no
+thruster arbitration.
+
+**If this crashes**, the trigger is in `station_keeping`'s own logic
+(eclipse-gating and/or altitude-smoothing), independent of any sharing.
+**If it does NOT crash**, that implicates the two-controllers-sharing-one
+-effector/arbitration mechanism specifically -- something about
+`phasing_keeping` being present and sharing `station_keeping`'s effector,
+not either controller's logic in isolation.
+
+**Result, confirmed by the user: `station_keeping` alone crashes, at the
+identical point, with identical state.** Conclusive: NOT the
+two-controllers-sharing-one-effector mechanism (there's only one
+controller here) -- the trigger is specifically in
+`StationKeepingController`'s own logic.
+
+## Fourth diagnostic: eclipse machinery present vs. actually read
+
+Comparing the one clean diagnostic (`constant_thrust` alone) against the
+one crashing diagnostic (`station_keeping` alone) with everything else
+held equal (same thrust magnitude 0.05 N, same VNB-prograde direction,
+same mass-bookkeeping write, same fuel-tank message, both start applying
+nonzero force on their very first tick): the one remaining code
+difference is eclipse-gating.
+`StationKeepingController.UpdateState()` reads
+`self.eclipseInMsg.isLinked()` / `.shadowFactor` every tick;
+`ConstantFrameThrustController` has no eclipse message reader at all --
+and because `constant_thrust` alone doesn't trigger
+`engine.service.build()`'s `needs_eclipse` condition
+(`power`/`station_keeping`/`enable_srp`), that earlier clean diagnostic
+never even built the shared `Eclipse()` model in the first place.
+
+New `missionstudio/scenarios/diagnostic_05d_constant_thrust_with_eclipse_model.json`
+isolates whether it's the mere PRESENCE of that machinery, or the ACT of
+reading it, that matters: `constant_thrust` alone again (no eclipse
+message reader, same as the clean diagnostic), but with `enable_srp=True`
+added -- this forces `needs_eclipse` true and builds the real shared
+`Eclipse()` model/SRP effector, exactly as `station_keeping` does,
+WITHOUT `constant_thrust` itself ever reading `eclipseInMsg`.
+
+**If this crashes**, the `Eclipse()`/SRP machinery itself is implicated,
+independent of which controller reads it -- something about that model's
+construction or its interaction with the integrator. **If it does NOT
+crash**, that points specifically at `station_keeping`'s/
+`phasing_keeping`'s own act of reading `eclipseInMsg.isLinked()`/
+`.shadowFactor` from within their `UpdateState()` callback as the actual
+trigger -- an unusual but very specific, actionable finding to chase down
+next (e.g. in how `EclipseMsgReader()` behaves when read from a Python
+`SysModel` callback versus a C++ one).
+
+**Result, confirmed by the user: this diagnostic ran the full 7 days with
+no crash.** Fully exonerates the `Eclipse()`/SRP machinery itself --
+narrows the trigger to the ACT of reading `eclipseInMsg` from a custom
+Python `UpdateState()` callback, specifically via
+`StationKeepingController`'s/`PhasingKeepingController`'s own
+`.shadowFactor` read.
+
+## A deprecated-field theory that turned out not to hold on a real build
+
+Reading Basilisk's own C++/SWIG source (not this project's code) turned
+up the actual field. `EclipseMsgPayload.shadowFactor`
+(`src/architecture/msgPayloadDefC/EclipseMsgPayload.h`) is DEPRECATED in
+favor of `illuminationFactor` (same value, same semantics -- confirmed by
+Basilisk's own unit test,
+`src/simulation/environment/eclipse/_UnitTest/test_eclipse.py`'s
+`test_shadow_vs_illumination_alias_and_deprecation_behavior`, with a
+removal deadline of 2026-12-31).
+
+**Correction, since an earlier revision of this section named a specific
+internal mechanism that turned out to be wrong -- caught by going back
+and verifying it directly against Basilisk's generator source rather
+than leaving the claim standing on inference:** the generic
+`swig_deprecated.i`/`_inject_deprecated_property` machinery (which DOES
+re-inject a class-level `property()` on every read, and was this
+project's first guess) is NOT what backs `shadowFactor`/
+`illuminationFactor`. That field has its own hand-written, one-off
+aliasing block, specific to `EclipseMsg` alone among every message type
+(`src/architecture/messaging/msgAutoSource/msgInterfacePy.i.in`, the
+`if "{type}" == "EclipseMsg":` block): it assigns
+`EclipseMsgPayload.illuminationFactor`/`.shadowFactor` as plain
+`property()` objects on the class exactly ONCE, at Python import time --
+not re-injected per read, per tick, or per instance. So the specific
+"repeated class mutation from a hot loop" story in an earlier revision of
+this section does not hold up, and no other confirmed mechanism has
+replaced it: what Basilisk's own C++/SWIG layer does internally that
+makes reading this one deprecated property unsafe from a Python
+`SysModel` callback is NOT established here, only that it empirically is
+-- proven by elimination, not inferred from a plausible-sounding
+mechanism. Four separate diagnostic scenarios agree: `constant_thrust`
+(no eclipse reader at all) ran clean; the SRP effector with the SAME
+shared `Eclipse()` model present, read only in C++, ran clean;
+`station_keeping` alone -- the one thing that reads `.shadowFactor` from
+Python every tick -- reliably crashed at the identical point every time.
+That is the actual evidence for this fix; the mechanism inside Basilisk
+remains an open question, not something this project's investigation
+resolved.
+
+**This theory did not survive contact with a real build.** Switching to
+`.illuminationFactor` was pushed and the user tried it -- and it failed
+immediately with `AttributeError: 'EclipseMsgPayload' object has no
+attribute 'illuminationFactor'`. That field does not exist at all on
+their installed Basilisk build, which means: their build predates
+`illuminationFactor` being added, `shadowFactor` was never deprecated in
+their actual runtime (there is no aliasing/deprecation machinery on a
+build that doesn't have the new name to alias to), and this project's
+`illuminationFactor`/`shadowFactor` deprecation story -- while accurate
+for the LATEST Basilisk source tree available for reading in this
+environment -- was never the right frame for what is actually installed
+on the user's machine. This project does not pin an exact Basilisk
+version (see `pyproject.toml`'s own comment on why), so a fix that only
+works against one specific source-tree snapshot was never going to be
+correct in the first place.
+
+**What this means for the original crash: the root cause is still
+open.** The diagnostic sequence that isolated eclipse-reading as the
+empirical trigger (`constant_thrust` clean, SRP-with-eclipse-model clean,
+`station_keeping` alone reliably crashing) is still valid evidence -- it
+ran on the user's real, unchanged Basilisk build throughout, reading
+`.shadowFactor` the entire time (the only field that build has). But the
+explanation for WHY reading it crashes cannot be "it's deprecated and
+unstable," because on this build it isn't deprecated at all -- it's
+simply the current, only, ordinary field. Whatever actually makes
+reading the eclipse message from a Python `SysModel` callback unsafe on
+this specific installed build remains unidentified.
+
+**Fixed for real, scoped correctly this time:** new
+`_eclipse_illumination_fraction()` in `engine/orbit_maintenance.py` tries
+`.illuminationFactor` first (Basilisk's current documented name, per this
+checkout's own source) and falls back to `.shadowFactor` only on
+`AttributeError` (i.e. only on a Basilisk build old enough not to have
+the new name at all) -- both `StationKeepingController.UpdateState()`
+and `PhasingKeepingController.UpdateState()` now go through it. This does
+NOT claim to fix the underlying crash (it can't, without knowing the real
+mechanism) -- it only makes this one read tolerant of both Basilisk API
+generations instead of hard-crashing with an `AttributeError` on an
+older build, which is what the previous, now-reverted `.illuminationFactor`
+-only version did. Expect the ORIGINAL crash (the one `diagnostic_05c_
+station_keeping_only.json` reliably reproduced, reading `.shadowFactor`
+either way) to still occur on the next run -- this fixes the regression
+this project itself introduced, not the crash the investigation started
+with.
+
+**Verification:** two new tests,
+`test_eclipse_illumination_fraction_prefers_new_name` and
+`test_eclipse_illumination_fraction_falls_back_to_old_name` (the second
+one directly modeling the real user's build: a stub payload object with
+`shadowFactor` but no `illuminationFactor` attribute at all), in
+`tests/test_orbit_maintenance.py` (`requires_basilisk`, auto-skipped in
+this sandbox since even constructing the stub payload's consumer needs
+the module's Basilisk imports to succeed). 600 passed, 73 skipped in
+this sandbox (2 more skipped, matching the 2 new tests).
 
 ## Repository layout
 

@@ -1,5 +1,5 @@
 {
-  "name": "05 - Formation flying (phasing control)",
+  "name": "DIAGNOSTIC - 05 formation flying, constant_thrust plus eclipse model present",
   "epoch_utc": "2030-01-01T00:00:00",
   "simulation_mode": "orbit_only",
   "gravity": {
@@ -124,7 +124,7 @@
       "enable_drag": false,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -134,27 +134,19 @@
       "control_params": {},
       "power": null,
       "rf_link": null,
-      "station_keeping": {
-        "target_altitude_km": 550.0,
-        "deadband_km": 2.0,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": {
+        "frame": "VNB",
+        "direction": [
+          1.0,
+          0.0,
+          0.0
+        ],
         "thrust_n": 0.05,
         "isp_s": 1500.0,
-        "propellant_kg": 5.0,
-        "eclipse_sunlit_threshold": 0.99
+        "propellant_kg": 5.0
       },
-      "phasing_keeping": {
-        "chief_spacecraft": "chief-1",
-        "target_separation_km": [
-          50.0
-        ],
-        "reconfiguration_interval_days": 90.0,
-        "tolerance_fraction": 0.1,
-        "restore_tolerance_fraction": 0.02,
-        "correction_window_days": 21.0,
-        "max_drift_days": 90.0,
-        "max_delta_semi_major_axis_km": 3.0
-      },
-      "constant_thrust": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -192,6 +184,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "Two spacecraft in near-identical orbits, 'follower-1' actively holding a fixed in-track separation behind chief 'chief-1' using phasing_keeping -- a closed-loop controller that measures the along-track separation and fires small along-track burns to correct drift, on top of its OWN station_keeping (phasing_keeping always needs station_keeping configured on the same spacecraft -- see PhasingKeepingConfig's own docstring for why: phasing needs altitude held steady first, or a semi-major-axis mismatch would make along-track drift and true phasing error indistinguishable).\n\nWhat to look at: after running, compare 'follower-1.position_N' and 'chief-1.position_N' -- the along-track (velocity-direction) separation should stay near target_separation_km despite neither orbit being perfectly matched to start, a basic model of formation-flying/rendezvous-proximity-operations control (e.g. trailing satellite formations, or a servicer holding station behind a target). 'missionstudio run' also prints a phasing delta-V breakdown in its station-keeping summary (see README, 'Running the CLI').\n\nTry changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single -element list holds one separation for the whole run, more elements step through a schedule), or chief-1's own orbit to start with a larger initial mismatch and watch follower-1 correct it.",
+  "description": "Fourth diagnostic scenario, NOT a permanent template. Findings so far: no force effector at all -> clean. constant_thrust alone (no eclipse reading, since ConstantFrameThrustController has no eclipse message reader at all) -> clean. station_keeping ALONE (no phasing_keeping, no sharing/arbitration) -> CRASHES at the identical point, ruling out the two-controller-sharing-one-effector mechanism.\n\nThe one remaining difference between the clean constant_thrust diagnostic and the crashing station_keeping-alone one: station_keeping reads an eclipse message every tick (self.eclipseInMsg.isLinked() / .shadowFactor) for its eclipse-gated reboost; constant_thrust does not (and, since constant_thrust does not trigger engine.service.build()'s needs_eclipse condition, the shared Eclipse() model was never even built in that earlier diagnostic).\n\nThis scenario isolates whether the mere PRESENCE of the eclipse model/machinery is the trigger, independent of whether our own controller reads it: follower-1 has ONLY constant_thrust configured (same as before -- no eclipse reading, same as the clean diagnostic), but ALSO has enable_srp=True, which forces engine.service.build()'s needs_eclipse condition true and builds the real shared Eclipse() model/SRP effector, exactly as station_keeping does -- just without constant_thrust itself ever reading eclipseInMsg.\n\nIf this crashes, the Eclipse()/SRP machinery itself is implicated, independent of which controller reads it. If it does NOT crash, that points specifically at station_keeping's/phasing_keeping's own act of READING eclipseInMsg.isLinked()/.shadowFactor from within their UpdateState() callback as the trigger.",
   "schema_version": 1
 }

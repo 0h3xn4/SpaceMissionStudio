@@ -1,5 +1,5 @@
 {
-  "name": "05 - Formation flying (phasing control)",
+  "name": "DIAGNOSTIC - 05 formation flying, constant_thrust only",
   "epoch_utc": "2030-01-01T00:00:00",
   "simulation_mode": "orbit_only",
   "gravity": {
@@ -134,27 +134,19 @@
       "control_params": {},
       "power": null,
       "rf_link": null,
-      "station_keeping": {
-        "target_altitude_km": 550.0,
-        "deadband_km": 2.0,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": {
+        "frame": "VNB",
+        "direction": [
+          1.0,
+          0.0,
+          0.0
+        ],
         "thrust_n": 0.05,
         "isp_s": 1500.0,
-        "propellant_kg": 5.0,
-        "eclipse_sunlit_threshold": 0.99
+        "propellant_kg": 5.0
       },
-      "phasing_keeping": {
-        "chief_spacecraft": "chief-1",
-        "target_separation_km": [
-          50.0
-        ],
-        "reconfiguration_interval_days": 90.0,
-        "tolerance_fraction": 0.1,
-        "restore_tolerance_fraction": 0.02,
-        "correction_window_days": 21.0,
-        "max_drift_days": 90.0,
-        "max_delta_semi_major_axis_km": 3.0
-      },
-      "constant_thrust": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -192,6 +184,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "Two spacecraft in near-identical orbits, 'follower-1' actively holding a fixed in-track separation behind chief 'chief-1' using phasing_keeping -- a closed-loop controller that measures the along-track separation and fires small along-track burns to correct drift, on top of its OWN station_keeping (phasing_keeping always needs station_keeping configured on the same spacecraft -- see PhasingKeepingConfig's own docstring for why: phasing needs altitude held steady first, or a semi-major-axis mismatch would make along-track drift and true phasing error indistinguishable).\n\nWhat to look at: after running, compare 'follower-1.position_N' and 'chief-1.position_N' -- the along-track (velocity-direction) separation should stay near target_separation_km despite neither orbit being perfectly matched to start, a basic model of formation-flying/rendezvous-proximity-operations control (e.g. trailing satellite formations, or a servicer holding station behind a target). 'missionstudio run' also prints a phasing delta-V breakdown in its station-keeping summary (see README, 'Running the CLI').\n\nTry changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single -element list holds one separation for the whole run, more elements step through a schedule), or chief-1's own orbit to start with a larger initial mismatch and watch follower-1 correct it.",
+  "description": "Second diagnostic scenario, NOT a permanent template. The first diagnostic (diagnostic_05_no_orbit_maintenance.json, no force effector at all) ran the full 7 days with no crash -- proving the crash is tied to a force effector being active on follower-1, not core gravity/integrator setup.\n\nThis one isolates WHICH PART of that: identical orbits/duration/rate/integrator/gravity to 05_formation_flying_phasing.json, but follower-1 has ONLY constant_thrust configured (a small constant 0.05N prograde burn, same magnitude used elsewhere in template 05) -- no station_keeping, no phasing_keeping, none of their state machines, altitude smoothing, thrust arbitration, or eclipse gating. It still shares the exact same propellant/mass-bookkeeping pattern (engine.propellant_bookkeeping.apply_propellant_burn, writing scObject.hub.mHub every tick) all three orbit_maintenance controllers use.\n\nIf this crashes the same way, the trigger is in the shared force-effector/mass-bookkeeping mechanism itself (used by all three controllers), not in station_keeping/phasing_keeping's own extra logic. If it does NOT crash, that points specifically at StationKeepingController/PhasingKeepingController's own logic (state machine, altitude smoothing, thrust arbitration, or eclipse gating) as the actual trigger.",
   "schema_version": 1
 }

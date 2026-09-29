@@ -119,6 +119,28 @@ def _wrap_pm_pi(angle_rad: float) -> float:
     return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def _eclipse_illumination_fraction(eclipse_payload) -> float:
+    """[-] 0 = fully eclipsed, 1 = fully sunlit, from a real
+    ``EclipseMsgPayload``.
+
+    Real crash report: ``illuminationFactor`` (this project's own source
+    tree copy of Basilisk documents it as the current field name --
+    ``src/architecture/msgPayloadDefC/EclipseMsgPayload.h``) does not
+    exist at all on a real user's installed Basilisk build --
+    ``AttributeError: 'EclipseMsgPayload' object has no attribute
+    'illuminationFactor'`` -- meaning that build predates the field being
+    added; only the older ``shadowFactor`` name exists there. This
+    project does not pin an exact Basilisk version (see
+    ``pyproject.toml``'s own comment on why), so both must work: try the
+    current name first, fall back to the older one only if it is genuinely
+    absent on the installed build.
+    """
+    try:
+        return eclipse_payload.illuminationFactor
+    except AttributeError:
+        return eclipse_payload.shadowFactor
+
+
 class StationKeepingController(sysModel.SysModel):
     """Independent altitude/SMA station-keeping for one spacecraft -- see
     this module's docstring and ``schema.scenario.StationKeepingConfig``'s
@@ -236,7 +258,7 @@ class StationKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsg.isLinked():
-            inSun = self.eclipseInMsg().shadowFactor > self.sunlitThreshold
+            inSun = _eclipse_illumination_fraction(self.eclipseInMsg()) > self.sunlitThreshold
 
         thrustMag = self.thrustN if (self.burnOn and inSun) else 0.0  # [N]
         if thrustMag > 0.0 and self.propellant <= 1e-9:
@@ -461,27 +483,19 @@ class PhasingKeepingController(sysModel.SysModel):
         rA, vA = np.array(stateA.r_BN_N), np.array(stateA.v_BN_N)
         rB, vB = np.array(stateB.r_BN_N), np.array(stateB.v_BN_N)
 
-        # Real crash found on an actual run: orbitalMotion.rv2elem() (called
-        # via _mean_anomaly below) has a genuine bug in ITS OWN NaN-input
-        # guard (src/utilities/orbitalMotion.py sets ClassicElements.AN/.AP,
-        # neither of which is a real slot on that class -- see
-        # engine.service._osculating_elements's matching comment) -- it
-        # crashes with AttributeError instead of returning a clean NaN
-        # result. Reached from here, that AttributeError would escape a
-        # SWIG director callback (UpdateState() itself), which is
-        # undefined behavior, not a clean Python exception -- confirmed by
-        # two DIFFERENT native crash signatures (basic_string::_M_create,
-        # std::bad_alloc) from the exact same scenario on different runs,
-        # the classic symptom of memory corruption rather than a
-        # deterministic failure. Never call it with non-finite input:
-        # command no thrust and hold state this tick instead (the
-        # non-finite state is either read before either spacecraft's
-        # dynamics has published a first real sample yet, or the
-        # simulation has already gone non-physical -- either way, nothing
-        # useful can be computed from it, but there is no safe way to
-        # raise from inside a director callback either).
-        if not (np.all(np.isfinite(rA)) and np.all(np.isfinite(vA))
-                and np.all(np.isfinite(rB)) and np.all(np.isfinite(vB))):
+        # Same reasoning as StationKeepingController.UpdateState()'s own
+        # matching guard: a non-finite state (from either spacecraft) must
+        # never propagate into a commanded force -- command no thrust and
+        # hold state this tick instead. Also guards vA/vB against being
+        # exactly zero -- a real gap found by audit: this method reads
+        # vB's norm to compute a burn direction further down
+        # (`vHatB = vB / np.linalg.norm(vB)`), and _mean_anomaly() below
+        # feeds vA/vB into orbitalMotion.rv2elem(), which also divides by
+        # velocity-derived quantities internally -- either was previously
+        # only checked for NaN/inf, not for exactly zero, unlike this
+        # class's own StationKeepingController sibling.
+        if not (np.all(np.isfinite(rA)) and np.all(np.isfinite(vA)) and np.linalg.norm(vA) > 0.0
+                and np.all(np.isfinite(rB)) and np.all(np.isfinite(vB)) and np.linalg.norm(vB) > 0.0):
             if self.extForceEffectorB is not None:
                 self.extForceEffectorB.extForce_N = [0.0, 0.0, 0.0]
             self.tLog.append(t)
@@ -508,7 +522,17 @@ class PhasingKeepingController(sysModel.SysModel):
 
         inSun = True
         if self.eclipseInMsgB.isLinked():
-            inSun = self.eclipseInMsgB().shadowFactor > self.sunlitThreshold
+            # See _eclipse_illumination_fraction's own docstring: a real
+            # crash investigation initially pinned this on
+            # EclipseMsgPayload.shadowFactor being deprecated in favor of
+            # illuminationFactor -- wrong, or at least not confirmed,
+            # since a real user's installed Basilisk build turned out not
+            # to have illuminationFactor AT ALL (an AttributeError, not a
+            # deprecation warning), meaning shadowFactor was never
+            # deprecated there in the first place. The actual root cause
+            # of the original crash remains open; this call site is
+            # simply tolerant of both Basilisk API generations now.
+            inSun = _eclipse_illumination_fraction(self.eclipseInMsgB()) > self.sunlitThreshold
 
         # Thruster arbitration: altitude keeping owns the effector whenever
         # it is actively burning. Log telemetry and return without
@@ -753,6 +777,25 @@ class ConstantFrameThrustController(sysModel.SysModel):
         scState = self.scStateInMsg()
         rVec = np.array(scState.r_BN_N)  # [m]
         vVec = np.array(scState.v_BN_N)  # [m/s]
+
+        # Same "never feed a degenerate state into a commanded force"
+        # reasoning as StationKeepingController's/PhasingKeepingController's
+        # own matching guards -- a real gap found by audit: this class had
+        # NO guard at all. _vnb_basis()/_rtn_basis() (called just below)
+        # divide by norm(vVec) (both frames), norm(rVec) (RTN only), and
+        # norm(cross(rVec, vVec)) (both frames, the orbit-normal magnitude
+        # -- zero whenever rVec/vVec happen to be parallel, e.g. a purely
+        # radial trajectory, not just when either one is individually
+        # zero). Command no thrust and hold state this tick instead.
+        if not (np.all(np.isfinite(rVec)) and np.all(np.isfinite(vVec))
+                and np.linalg.norm(rVec) > 0.0 and np.linalg.norm(vVec) > 0.0
+                and np.linalg.norm(np.cross(rVec, vVec)) > 0.0):
+            if self.extForceEffector is not None:
+                self.extForceEffector.extForce_N = [0.0, 0.0, 0.0]
+            self.tLog.append(t)
+            self.propellantLog.append(self.propellant)
+            self.deltaVLog.append(self._cumulativeDv)
+            return
 
         axis1, axis2, axis3 = _vnb_basis(rVec, vVec) if self.frame == "VNB" else _rtn_basis(rVec, vVec)
         dirHat_N = self.direction[0] * axis1 + self.direction[1] * axis2 + self.direction[2] * axis3
