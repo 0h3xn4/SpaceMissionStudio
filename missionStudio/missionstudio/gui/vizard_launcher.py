@@ -16,14 +16,15 @@
 #  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-"""Locating and launching the external Vizard application -- a separate,
-non-Python Unity app (see ``docs/source/Vizard/VizardDownload.rst`` in
-this checkout) that is NOT bundled with or installable via missionStudio.
-This module only starts the standalone process and hands back a way to
-tell whether it's still running; actually feeding it simulation data (a
-playback ``.bin`` file or a live stream) is ``engine.vizard``'s job,
-wired through ``SimulationService`` via ``gui.vizard_dialog.VizardRequest``
--- entirely separate from starting the app itself.
+"""Locating, fetching, and launching the external Vizard application -- a
+separate, non-Python Unity app (see ``docs/source/Vizard/VizardDownload.rst``
+in this checkout) that is NOT bundled with missionStudio's own Python
+package. This module only starts the standalone process and hands back a
+way to tell whether it's still running; actually feeding it simulation
+data (a playback ``.bin`` file or a live stream) is ``engine.vizard``'s
+job, wired through ``SimulationService`` via
+``gui.vizard_dialog.VizardRequest`` -- entirely separate from starting
+the app itself.
 
 Vizard's own download instructions say only "install the program in the
 typical Applications folder or Desktop" -- there's no single guaranteed
@@ -32,18 +33,36 @@ install path, so :func:`find_vizard_executable` is inherently best
 :func:`remember_vizard_executable` call first (an exact answer the user
 already gave us), then falls back to guessing a small set of common
 per-OS install locations, and returns ``None`` if neither turns up
-anything -- at which point the caller (``gui.vizard_status_widget``) asks
-the user to browse for it once.
+anything -- at which point the caller (``gui.main_window.MainWindow
+.on_launch_vizard``) offers :func:`fetch_vizard` (automatic download) or
+a manual browse prompt.
+
+Real user request: "seamlessly integrate" Basilisk and Vizard instead of
+building/installing each separately. A true single build step isn't
+realistic (Vizard's own repository has no scripted/CLI build path at
+all -- only an interactive Unity Editor GUI workflow, checked directly,
+not assumed) and the two are deliberately separate PROCESSES at runtime
+regardless (Vizard can play back a saved ``.bin`` file with zero
+Basilisk involvement). What IS realistic, and what :func:`fetch_vizard`
+does: skip building Vizard from source entirely by downloading AVS's own
+published pre-built binary for this platform -- the exact same
+``Vizard_<platform>.zip`` links ``docs/source/Vizard/VizardDownload.rst``
+already points a human to, just fetched automatically instead.
 """
 
 from __future__ import annotations
 
+import stat
 import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QThread, Signal
 
 _SETTINGS_KEY = "vizard/executable_path"
 
@@ -108,6 +127,162 @@ def _search_candidate_roots() -> Optional[Path]:
     return None
 
 
+class VizardFetchError(Exception):
+    """Raised when fetching/installing a pre-built Vizard binary fails --
+    network, HTTP, a corrupt/unsafe zip, or "extracted fine but no
+    recognizable executable was inside it" are all reported here with a
+    specific reason. Never returns a partial/unusable install for the
+    caller to discover only later.
+    """
+
+
+# The exact three links docs/source/Vizard/VizardDownload.rst in the
+# Basilisk checkout publishes -- AVS's own pre-built Vizard binaries, not
+# a third-party mirror. sys.platform branching matches _EXECUTABLE_NAME's
+# own above (darwin / win* / else-linux).
+_DOWNLOAD_URLS = {
+    "darwin": "https://hanspeterschaub.info/bskFiles/Vizard_macOS.zip",
+    "win": "https://hanspeterschaub.info/bskFiles/Vizard_Windows64.zip",
+    "linux": "https://hanspeterschaub.info/bskFiles/Vizard_Linux.zip",
+}
+
+DEFAULT_FETCH_DIR = Path.home() / ".cache" / "missionStudio" / "vizard"
+
+# [bytes] A Unity build is typically a few hundred MB -- cap well above
+# that so a legitimate download never trips this, but refuse to buffer an
+# unbounded response into memory. Same convention/value as
+# engine.spaceweather's own _MAX_DOWNLOAD_BYTES, scaled up for a much
+# larger expected payload (a Unity application build vs. a CSV).
+_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024  # [bytes] read size for cooperative cancellation between chunks
+
+
+def _download_url_for_platform() -> str:
+    if sys.platform == "darwin":
+        return _DOWNLOAD_URLS["darwin"]
+    if sys.platform.startswith("win"):
+        return _DOWNLOAD_URLS["win"]
+    return _DOWNLOAD_URLS["linux"]
+
+
+def _safe_extract(zip_path: Path, extract_dir: Path) -> None:
+    """``zipfile.extractall()`` with an explicit zip-slip guard -- refuses
+    ANY entry whose name resolves outside ``extract_dir`` (an absolute
+    path, or one using ``..`` to escape it) rather than relying solely on
+    the extraction library's own built-in sanitization. The download URL
+    itself is a hardcoded, trusted constant (not user-supplied), so this
+    is defense in depth, not a response to a specific known issue with
+    AVS's own published Vizard archives.
+    """
+    extract_dir = extract_dir.resolve()
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.namelist():
+            resolved = (extract_dir / member).resolve()
+            if extract_dir not in resolved.parents and resolved != extract_dir:
+                raise VizardFetchError(f"{zip_path} contains an unsafe entry {member!r} (escapes {extract_dir})")
+        zf.extractall(extract_dir)
+
+
+def fetch_vizard(dest_dir: Optional[Path] = None, timeout_s: float = 30.0,
+                  should_cancel: Optional[Callable[[], bool]] = None,
+                  on_status: Optional[Callable[[str], None]] = None) -> Path:
+    """Downloads and extracts AVS's own pre-built Vizard binary for this
+    platform (see this module's own docstring -- the same links
+    ``docs/source/Vizard/VizardDownload.rst`` already publishes for a
+    human to follow manually) into ``dest_dir`` (default
+    :data:`DEFAULT_FETCH_DIR`), then returns the path to the extracted
+    executable. Raises :class:`VizardFetchError` on any failure -- never
+    returns a partial/unusable path.
+
+    ``should_cancel``, checked between each ``_DOWNLOAD_CHUNK_BYTES``
+    chunk read, is the same cooperative-cancellation idiom
+    ``gui.run_worker.RunWorker`` already uses for a running simulation --
+    never a forced thread kill, which could leave a half-written file
+    (see :class:`VizardFetchWorker`, this function's own GUI-thread
+    wrapper, for where a real ``threading.Event`` comes from). A
+    cancelled fetch raises :class:`VizardFetchError` too (with a message
+    saying so), the same single error-reporting path as any other
+    failure -- there is no separate "was it cancelled or did it
+    genuinely fail" signal for the caller to check.
+
+    NOT exercised end-to-end in this development sandbox --
+    ``hanspeterschaub.info`` is blocked by this environment's outbound
+    -network policy (the same host, confirmed blocked elsewhere in this
+    project -- ``engine.kernels``'s own SPICE-kernel fetch uses it as a
+    backup URL). Written directly against ``VizardDownload.rst``'s
+    documented links and Vizard's own documented ``.zip`` contents;
+    verify on first real-network use.
+    """
+    dest_dir = Path(dest_dir) if dest_dir else DEFAULT_FETCH_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    url = _download_url_for_platform()
+    zip_name = url.rsplit("/", 1)[-1]
+    zip_path = dest_dir / zip_name
+
+    if on_status:
+        on_status(f"Downloading {url} ...")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+            chunks = []
+            total = 0
+            while True:
+                if should_cancel is not None and should_cancel():
+                    raise VizardFetchError("download cancelled")
+                chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_DOWNLOAD_BYTES:
+                    raise VizardFetchError(
+                        f"{url} response exceeded {_MAX_DOWNLOAD_BYTES} bytes -- refusing to buffer an "
+                        f"unbounded download"
+                    )
+                chunks.append(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise VizardFetchError(f"could not download {url}: {exc}") from exc
+    data = b"".join(chunks)
+
+    tmp = zip_path.with_suffix(zip_path.suffix + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(zip_path)  # atomic-ish: never leave a half-written file at zip_path
+
+    extract_dir = dest_dir / zip_name.removesuffix(".zip")
+    if on_status:
+        on_status(f"Extracting to {extract_dir} ...")
+    try:
+        _safe_extract(zip_path, extract_dir)
+    except zipfile.BadZipFile as exc:
+        raise VizardFetchError(f"{zip_path} is not a valid zip file: {exc}") from exc
+
+    executable = _search_one_root(extract_dir)
+    if executable is None:
+        raise VizardFetchError(
+            f"downloaded and extracted {url} to {extract_dir}, but could not find a {_EXECUTABLE_NAME} "
+            f"inside it -- the download may be corrupt, or Vizard's published .zip layout has changed."
+        )
+    if sys.platform != "win32" and executable.is_file():
+        # zip extraction doesn't reliably preserve the executable bit --
+        # confirmed necessary for the Linux .x86_64 binary. A no-op on
+        # macOS, where launch_vizard() resolves the .app bundle's own
+        # Contents/MacOS/<binary> separately and chmods nothing itself.
+        mode = executable.stat().st_mode
+        executable.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return executable
+
+
+def _search_one_root(root: Path) -> Optional[Path]:
+    """Same shallow-search idiom as :func:`_search_candidate_roots` (the
+    root itself, plus one level of subdirectories) -- Vizard's published
+    .zip layout (a bare binary vs. nested inside its own folder) isn't
+    documented, so this doesn't assume a specific structure.
+    """
+    for candidate in (root / _EXECUTABLE_NAME, *sorted(root.glob(f"*/{_EXECUTABLE_NAME}"))):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def find_vizard_executable(settings: Optional[QSettings] = None) -> Optional[Path]:
     """Returns a path to the Vizard executable/app bundle, or ``None`` if
     it can't be found automatically.
@@ -165,3 +340,48 @@ def launch_vizard(executable_path: Path, direct_comm_address: Optional[str] = No
     if direct_comm_address:
         args += ["-directComm", direct_comm_address]
     return subprocess.Popen(args)
+
+
+class VizardFetchWorker(QThread):
+    """Runs :func:`fetch_vizard` on a background thread, the same
+    ``QThread`` + cooperative-cancellation pattern
+    ``gui.run_worker.RunWorker`` already uses for a running simulation --
+    a multi-hundred-MB download must not freeze the GUI's event loop, and
+    a user-initiated cancel must not risk a half-written file the way a
+    forced ``QThread.terminate()`` could.
+
+    ``gui.main_window.MainWindow.on_launch_vizard`` runs this inside a
+    local, blocking ``QEventLoop`` (not by connecting to its signals and
+    returning immediately) specifically so that method's own existing
+    synchronous ``bool`` return contract -- also relied on by
+    ``on_run()``'s live-stream gate -- needs no changes: from every
+    existing caller's point of view, fetching Vizard is just a slower
+    version of the browse-a-path prompt it already blocks on.
+    """
+
+    finished_ok = Signal(str)  # str(Path) to the fetched executable
+    failed = Signal(str)
+    status = Signal(str)  # human-readable progress text (download vs. extract phase)
+
+    def __init__(self, dest_dir: Optional[Path] = None, parent=None):
+        super().__init__(parent)
+        self.dest_dir = dest_dir
+        self._cancel_requested = threading.Event()
+
+    def request_cancel(self) -> None:
+        """Thread-safe -- see this class's own docstring on why this is
+        cooperative, not a forced kill.
+        """
+        self._cancel_requested.set()
+
+    def run(self) -> None:
+        try:
+            executable = fetch_vizard(
+                self.dest_dir,
+                should_cancel=self._cancel_requested.is_set,
+                on_status=self.status.emit,
+            )
+        except VizardFetchError as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(str(executable))

@@ -2856,3 +2856,79 @@ templates (`04`/`05`/`07`/`08`) need real network access to CelesTrak
 disclosed plainly in each file's own `description` and in this
 project's README, not a silent gap.
 
+## "Seamlessly integrate Basilisk and Vizard" -- auto-fetching a pre-built binary
+
+Real user request: merge the Basilisk and Vizard repositories/builds so
+neither has to be set up separately. Investigated both repositories
+directly (not assumed) before answering: Basilisk builds via CMake +
+SWIG + Python; Vizard's OWN repository has no scripted/CLI build path
+at all -- only an interactive Unity Editor GUI workflow (install Unity
+Hub, install a specific licensed Unity Editor version, open the
+project, click through a "Build Profiles" panel per platform; no CI
+config, no build scripts exist in that repo). A single build step that
+produces both isn't realistic without the user already having Unity
+Editor installed and licensed, which this project cannot do on their
+behalf. The two are also deliberately separate PROCESSES at runtime --
+Vizard plays back a saved `.bin` file with zero Basilisk involvement by
+design, not as an artifact of being separate repos.
+
+Asked the user what would actually make this feel seamless; answer: skip
+building Vizard from source entirely, auto-fetch AVS's own pre-built
+binary instead. `docs/source/Vizard/VizardDownload.rst` (in this
+Basilisk checkout) already publishes exactly that -- three fixed,
+per-platform `.zip` links a human downloads and unzips manually.
+
+**`gui/vizard_launcher.py`** gained `fetch_vizard()`: downloads the
+correct-platform `.zip`, extracts it with an explicit zip-slip guard
+(`_safe_extract` -- refuses any entry that would resolve outside the
+extraction directory; the URL itself is a hardcoded trusted constant,
+not user-supplied, so this is defense in depth, not a response to a
+known issue), locates the executable inside (same shallow-search idiom
+`find_vizard_executable` already used), and sets the executable bit on
+non-Windows platforms (zip extraction doesn't reliably preserve it).
+Chunked, cooperatively-cancellable reads (`should_cancel`, checked
+between chunks) -- the same pattern `gui.run_worker.RunWorker` already
+uses for a running simulation, never a forced thread kill. Raises
+`VizardFetchError` on any failure (network, corrupt zip, no executable
+found, cancelled) -- one error-reporting path, never a silent partial
+install.
+
+**`VizardFetchWorker`** (`QThread`) wraps it for the GUI.
+**`MainWindow._locate_or_fetch_vizard`**/**`_fetch_vizard_with_progress`**
+wire it into `on_launch_vizard()`'s existing "not found" branch: a
+`QMessageBox` now offers "Download Vizard" alongside the original
+"Browse...", and the download runs behind a modal, cancellable progress
+dialog -- implemented as a NESTED `QEventLoop` (not connecting to the
+worker's signals and returning immediately) specifically so
+`on_launch_vizard()`'s existing synchronous `bool` return contract
+(also relied on by `on_run()`'s live-stream gate) needed no changes.
+
+**Real bug caught while testing this, not a network issue:** the first
+version assumed `QEventLoop.quit()` called BEFORE `exec()` would make
+the very next `exec()` call return immediately. Confirmed the hard way
+(a test using a synchronous fake worker hung indefinitely) that this is
+wrong -- Qt's own documented behavior is that `quit()` is a no-op if
+the loop isn't running yet. Only matters for a worker that happens to
+finish synchronously inside `start()` (never the real, genuinely
+-threaded case, where `start()` returns almost instantly, well before
+any background work could finish) -- fixed by checking whether the
+outcome was already populated before calling `loop.exec()` at all.
+
+**Verification:** `tests/gui/test_vizard_launcher.py` grew by 14 tests
+(`fetch_vizard`'s download/extract/error paths, `_safe_extract`'s
+zip-slip guard on both a malicious and a normal zip, `VizardFetchWorker`'s
+signal wiring) -- network always mocked
+(`urllib.request.urlopen` never touches the real
+`hanspeterschaub.info`, confirmed blocked by this project's development
+sandbox elsewhere, e.g. `engine.kernels`'s own SPICE-kernel fetch using
+the same host as a backup URL). `tests/gui/test_main_window.py` grew by
+7 (the new `QMessageBox` routing, the progress-dialog flow's success/
+failure paths, using a fake `QObject`-based worker rather than a real
+`QThread` -- mirrors this file's own existing `RunWorker`-patching
+convention). 667 passed, 99 skipped in this sandbox. The real
+network fetch itself is unverified end-to-end here (same sandbox
+network-policy limitation as CelesTrak/SPICE elsewhere in this
+project) -- written directly against `VizardDownload.rst`'s documented
+links and Vizard's own documented `.zip` contents; verify on first
+real-network use.
+

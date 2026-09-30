@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Optional
 
-from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEventLoop, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QSplitter,
     QStyle,
     QTabWidget,
@@ -60,6 +62,7 @@ from .scenario_editor import ScenarioEditorWidget
 from .vizard_dialog import VizardDialog
 from .vizard_launcher import (
     DEFAULT_LIVE_STREAM_ADDRESS,
+    VizardFetchWorker,
     find_vizard_executable,
     launch_vizard,
     remember_vizard_executable,
@@ -507,6 +510,110 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("Vizard enabled for the next run.")
 
+    def _locate_or_fetch_vizard(self) -> Optional[Path]:
+        """Called only when :func:`find_vizard_executable` came up empty.
+        Offers "Download Vizard" (automatic -- see
+        ``gui.vizard_launcher``'s own module docstring on the real user
+        request this answers) alongside the original manual "Browse...".
+        Returns the resolved, already-``remember_vizard_executable``'d
+        path, or ``None`` if the user cancelled/dismissed both options or
+        a download genuinely failed (an error dialog was already shown in
+        that case) -- :meth:`on_launch_vizard` treats that exactly like
+        its own previous "user cancelled the browse prompt" case.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Vizard not found")
+        box.setText(
+            "Vizard wasn't found automatically. missionStudio can download AVS's own pre-built Vizard "
+            "for this platform, or you can browse for an existing install."
+        )
+        download_button = box.addButton("Download Vizard", QMessageBox.ButtonRole.AcceptRole)
+        browse_button = box.addButton("Browse...", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is download_button:
+            return self._fetch_vizard_with_progress()
+
+        if clicked is browse_button:
+            path_str, _selected_filter = QFileDialog.getOpenFileName(self, "Locate the Vizard application")
+            if not path_str:
+                return None
+            executable = Path(path_str)
+            remember_vizard_executable(executable)
+            return executable
+
+        return None
+
+    def _fetch_vizard_with_progress(self) -> Optional[Path]:
+        """Runs :class:`~.vizard_launcher.VizardFetchWorker` on a
+        background thread while blocking THIS method (not the whole
+        event loop -- see below) behind a modal, cancellable progress
+        dialog. Blocking here, rather than connecting to the worker's
+        signals and returning immediately, keeps :meth:`on_launch_vizard`'s
+        existing synchronous ``bool`` return contract (also relied on by
+        :meth:`on_run`'s live-stream gate) unchanged -- see
+        ``VizardFetchWorker``'s own docstring.
+
+        A nested ``QEventLoop`` (not a plain blocking call) is what makes
+        this safe: it keeps pumping Qt's event loop -- repainting the
+        progress dialog, handling the Cancel button -- while genuinely
+        waiting for the worker thread, rather than freezing the whole GUI
+        for the download's duration.
+        """
+        progress = QProgressDialog("Downloading Vizard...", "Cancel", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        worker = VizardFetchWorker(parent=self)
+        loop = QEventLoop()
+        outcome: dict = {}
+
+        def on_status(message: str) -> None:
+            progress.setLabelText(message)
+
+        def on_finished_ok(path_str: str) -> None:
+            outcome["path"] = path_str
+            loop.quit()
+
+        def on_failed(message: str) -> None:
+            outcome["error"] = message
+            loop.quit()
+
+        worker.status.connect(on_status)
+        worker.finished_ok.connect(on_finished_ok)
+        worker.failed.connect(on_failed)
+        progress.canceled.connect(worker.request_cancel)  # cooperative -- see VizardFetchWorker's own docstring
+
+        worker.start()
+        progress.show()
+        # QEventLoop.quit() is a no-op if the loop isn't running YET (Qt's
+        # own documented behavior, confirmed the hard way -- a first
+        # version of this method assumed quit()-before-exec() would make
+        # the next exec() return immediately, which hung instead): a real
+        # QThread's start() returns almost instantly, well before its
+        # background run() has a chance to emit finished_ok/failed, so
+        # this only matters for a worker that happens to finish
+        # SYNCHRONOUSLY inside start() itself. Checking outcome first
+        # covers exactly that case without affecting the real one.
+        if not outcome:
+            loop.exec()
+        progress.close()
+        worker.wait()
+
+        if "path" in outcome:
+            executable = Path(outcome["path"])
+            remember_vizard_executable(executable)
+            return executable
+
+        error = outcome.get("error", "download cancelled")
+        if error != "download cancelled":
+            QMessageBox.critical(self, "Could not download Vizard", error)
+        return None
+
     def on_launch_vizard(self) -> bool:
         """Starts the external Vizard application -- a no-op if an
         instance already running is already suitable (see below).
@@ -575,11 +682,9 @@ class MainWindow(QMainWindow):
 
         executable = find_vizard_executable()
         if executable is None:
-            path_str, _selected_filter = QFileDialog.getOpenFileName(self, "Locate the Vizard application")
-            if not path_str:
+            executable = self._locate_or_fetch_vizard()
+            if executable is None:
                 return False
-            executable = Path(path_str)
-            remember_vizard_executable(executable)
         try:
             self._vizard_process = launch_vizard(executable, direct_comm_address=direct_comm_address)
         except OSError as exc:

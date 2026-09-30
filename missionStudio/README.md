@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 644 tests
+  exercised either way -- `pytest tests/` runs and passes 667 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -288,8 +288,10 @@ not an abstract single number), ground-station access-window indicators
 -- all driven by real, already-simulated values, not static snapshots,
 with Vizard's own native live current/max readout on every panel),
 custom 3D models per spacecraft (purely cosmetic), and a **Launch
-Vizard** action that starts the external application itself, not just
-configures what feeds it.
+Vizard** action that starts the external application itself (offering
+to download AVS's own pre-built binary automatically if none can be
+found -- see "Running the CLI" above), not just configures what feeds
+it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
@@ -435,7 +437,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 644 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 667 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 99 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
@@ -542,9 +544,18 @@ verified, not just designed to behave that way.
 
 Two more commands worth knowing: **Launch Vizard** (Run menu/toolbar,
 GUI only) starts the external Vizard application itself, separate from
-configuring how a run feeds it; **Abort Simulation** (Run menu, GUI
-only, also while a Monte Carlo batch or Mission Sequence is running)
-cooperatively cancels an in-progress run between simulation chunks or
+configuring how a run feeds it -- if it can't be found automatically
+(a remembered path, or a short list of common per-OS install
+locations), a dialog offers **Download Vizard** (fetches AVS's own
+pre-built binary for your platform, the same links
+`docs/source/Vizard/VizardDownload.rst` in the Basilisk checkout
+publishes for a human to follow manually -- see
+`missionstudio/gui/vizard_launcher.py`'s own module docstring for why a
+true single-build-step integration with Basilisk isn't realistic, and
+what this does instead) alongside the original **Browse...** for an
+existing install; **Abort Simulation** (Run menu, GUI only, also while
+a Monte Carlo batch or Mission Sequence is running) cooperatively
+cancels an in-progress run between simulation chunks or
 mission-sequence commands -- never a forced kill, so partial results
 from before the cancellation are kept, not discarded. Full detail on
 both in `HISTORY.md`.
