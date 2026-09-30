@@ -3100,3 +3100,104 @@ passed, 99 skipped. Not yet re-confirmed visually against a live
 Vizard window by the user -- that's the natural next real-machine
 check.
 
+## Result plots: titles/axes/legends, mean orbital elements, and a per-category unit policy
+
+Real user feedback on the result plots, all in one request: "they shall
+convey more information"; "should all have titles and more descriptive
+axes names and legends"; add plots of AVERAGED (not just osculating/
+"true") orbital elements, pointing at STK's "Brouwer-Lyd Mean (Short)"
+data provider as the reference concept; "delta-V shall always be
+displayed in m/s"; "altitudes, semi-major axes shall be displayed in
+km"; "state vector elements shall be displayed in meters for position
+and m/s for velocity".
+
+**The unit-display part directly reversed an earlier decision.** This
+project's own Plotly-migration work (see above) had added one blanket
+rule: every series recorded in "m"/"m/s" displays in km/km-s on the
+plot. That rule can't satisfy this new request at all -- it's keyed on
+the literal unit STRING, but position (km requested: NO, stay meters)
+and semi-major axis (km requested: YES) are both recorded in plain
+"m"; velocity (stay m/s) and delta-V (stay m/s) are both plain "m/s".
+Fixed by replacing that blanket rule with `results_widget._categorize()`,
+which keys off what each named series actually *is* (its category:
+state vector, orbit element, controller delta-V, ground-station access,
+...), each with its own explicit, independently-chosen unit -- not a
+per-unit-string rule at all. An unrecognized/future series still falls
+back to the OLD blanket rule (`_legacy_display()`), so nothing regresses
+silently for a series this registry hasn't been taught about yet.
+
+**Titles/axis names/legends**: every one of the ~30 series categories
+`engine.service`/`engine.link_budget` produce (position, velocity, all
+6 osculating + 6 new mean orbital elements, attitude, body rate, sun
+heading, control torque, reaction wheel speeds, every sensor type,
+battery, all three controllers' delta-V/propellant/altitude/state,
+ground-station access/slant-range/elevation/azimuth/link-margin) now
+gets a real descriptive title (spacecraft name + a human category name,
+e.g. "sat-1: Osculating Semi-Major Axis" instead of the bare
+"sat-1.orbit_elements.semi_major_axis" dotted key), a y-axis label
+combining a plain-English quantity name with its display unit (e.g.
+"Semi-major axis [km]"), and legend entries relabeled from raw column
+codes where that helps ("x"/"y"/"z" -> "X"/"Y"/"Z", "raw"/"smoothed" ->
+"Raw"/"Smoothed (filtered)", "cumulative_delta_v" -> "Delta-V"). Orbit
+-element angles (inclination/RAAN/argument of periapsis/true anomaly)
+and ground-station elevation/azimuth additionally display in degrees,
+not Basilisk's native radians -- matching every angle INPUT field this
+app's own Scenario Editor already uses.
+
+**Mean orbital elements**: the user's own reference (STK's "Brouwer-Lyd
+Mean (Short)" data provider) describes a Brouwer-Lyddane-family mean
+-element theory; rather than write a bespoke implementation of that
+(real orbital-mechanics code this project's own standing rule is never
+to hand-write/guess), checked what Basilisk itself ships first --
+`orbitalMotion.clMeanOscMap()`, a real, already-used-elsewhere-in
+-Basilisk first-order-J2 osculating<->mean mapping (Schaub & Junkins,
+*Analytical Mechanics of Space Systems*; the exact same tool Basilisk's
+own `meanOEFeedback` FSW module uses for closed-loop mean-element
+control). Conceptually the same "strip the once-per-orbit J2 wobble off
+the true elements" idea the user's own STK reference describes, built
+from a tool Basilisk ships and Basilisk's own FSW code already trusts,
+not invented here. `engine.service._mean_elements()` calls it per
+-sample (sign=-1: osc -> mean) alongside the existing per-sample
+osculating-element loop, publishing `.orbit_elements_mean.*` series
+only when a real J2 term is actually being modeled (Earth, spherical
+-harmonics degree >= 2) -- a point-mass-only central body has no J2
+short-period oscillation in its simulated motion to remove, so applying
+the map there would inject an artificial correction instead of
+stripping out a real one, which `SimulationService`'s own gating
+avoids entirely rather than computing something misleading.
+
+Known, inherited (not introduced) limitation, documented directly in
+`_mean_elements()`'s own docstring: first-order J2 mean-element theory
+has a genuine mathematical singularity at the critical inclination
+(~63.4/~116.6 deg) and degrades near 0/180 deg -- the same well-known
+caveat STK's own Brouwer-Lyddane-based "Mean" elements carry. A
+scenario at/near either inclination can show NaN/spiky mean-element
+samples; Plotly leaves a gap for a NaN rather than erroring, so this is
+a visible plot artifact, not a crash.
+
+**Verification:** the core math was checked directly against a real
+Basilisk build (this development sandbox has one, unlike most of this
+project's work, which needed a real user's machine) -- for a real
+non-degenerate LEO orbit (a=7000 km, e=0.01, i=45 deg, away from every
+singular inclination), osc-vs-mean semi-major axis differs by ~3.7 km
+(matching the expected order of magnitude for a J2 short-period term at
+this altitude, `J2*(Re/a)^2*a`), and a round-trip through
+`clMeanOscMap` with the sign flipped back (mean -> osc) recovers the
+original osculating elements to ~1.8 m / ~8e-7 (e) / ~3e-7 rad (i) --
+confirming both the math AND that this code calls `clMeanOscMap` with
+the correct sign for "osc -> mean" (easy to get backwards, and nothing
+else would have caught it). The gravity-setup wiring
+(`central_body.radEquator` matching `orbitalMotion.REQ_EARTH*1000`
+exactly) was also checked directly. Two new tests in
+`tests/test_osculating_elements.py` encode these exact confirmed
+numbers as regression tolerances (not guessed bounds). 24 tests in
+`tests/gui/test_results_widget.py` cover the new per-category display
+policy, including the two inverted-behavior regression guards (position
+-in-meters, velocity-in-m/s) and new delta-V/altitude/mean-element
+tests. Full suite: 674 passed, 101 skipped. NOT yet run end-to-end
+through a full `SimulationService.run()` with live SPICE/network (this
+sandbox's network policy denies `naif.jpl.nasa.gov`, the same
+limitation noted throughout this project's history) -- the isolated
+Basilisk-API-level verification above is real, but the full wiring
+through an actual multi-sample run hasn't been watched end-to-end here.
+

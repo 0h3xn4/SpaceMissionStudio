@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 671 tests
+  exercised either way -- `pytest tests/` runs and passes 674 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -233,7 +233,12 @@ docstring for why not Jacchia-Roberts too: Basilisk has no such model)
 and SRP (per spacecraft, on that spacecraft's own "Orbit / mass" tab),
 a selectable integrator (`euler`/`rk2`/`rkf45`/`rkf78`), and osculating
 Keplerian elements computed and exported alongside inertial
-position/velocity at every sample. NRLMSISE-00 drag can also use a
+position/velocity at every sample -- plus, when a real J2 term is
+actually modeled (Earth with spherical-harmonics degree >= 2), MEAN
+(first-order-J2, osc -> mean) elements alongside the osculating ones,
+via Basilisk's own `orbitalMotion.clMeanOscMap` (the same tool its
+`meanOEFeedback` FSW module uses -- not a bespoke implementation).
+NRLMSISE-00 drag can also use a
 CONSERVATIVE, sustained-worst-case margin (a chosen percentile -- e.g.
 95th -- of REAL historical CelesTrak F10.7/Ap data, held constant
 across the whole scenario, never a fabricated number) instead of
@@ -437,9 +442,9 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 671 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 674 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 99 whose premise is
+full PySide6 GUI, run headless) and skips 101 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 

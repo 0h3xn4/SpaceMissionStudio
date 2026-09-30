@@ -74,20 +74,33 @@ feel sluggish on a real machine for a long/fast-updating run, the
 incremental-update approach is the documented next step, not something
 ruled out here.
 
-Two independent display choices, both user feedback, both PLOT-only
-(``export_csv()``/``_on_export()`` below keep writing exactly what
-``TimeSeries`` holds -- raw SI units, elapsed seconds -- since a CSV a
-user hands to another tool should stay unambiguous, not follow a
-plot-only display preference):
+Display choices below are all PLOT-only (``export_csv()``/``_on_export()``
+keep writing exactly what ``TimeSeries`` holds -- raw SI units, elapsed
+seconds -- since a CSV a user hands to another tool should stay
+unambiguous, not follow a plot-only display preference):
 
-* Length/length-rate series (``units in {"m", "m/s"}`` -- position,
-  velocity, altitude, slant range, delta-V, ...) are shown in km/km-s,
-  not raw meters -- meter-scale numbers on an orbit-scale plot were the
-  complaint (e.g. a LEO position plot's y-axis in the millions).
-  ``_DISPLAY_UNIT_CONVERSIONS`` is deliberately narrow: everything else
-  (accelerometer m/s^2, torque N*m, angles rad/deg, ...) is left as
-  ``TimeSeries`` already has it, since km-scale units would be actively
-  worse there, not better.
+* Per-category unit display (``_categorize()``, replacing an earlier
+  blanket "every m/m-s series -> km/km-s" rule this project's own
+  earlier version used): real user feedback was that the blanket rule
+  went too far -- it converted the state vector (position/velocity) AND
+  delta-V to km/km-s along with genuinely orbit-scale quantities like
+  altitude and semi-major axis, but the explicit ask was the opposite
+  for the first two ("delta-V shall always be displayed in m/s",
+  "state vector elements shall be displayed in meters for position and
+  m/s for velocity") while keeping it for the second two ("altitudes,
+  semi-major axes shall be displayed in km"). Both can't be satisfied by
+  one rule keyed on the literal unit string alone (position and
+  semi-major axis are both recorded in plain "m"; velocity and delta-V
+  are both plain "m/s") -- ``_categorize()`` keys off what each named
+  series actually *is* instead (see its own docstring), with each
+  category's own explicit unit choice, and only an uncategorized/future
+  series (``_legacy_display()``) falls back to the old blanket rule.
+  Orbital angle elements (inclination/RAAN/argument of periapsis/true
+  anomaly, osculating and mean alike) additionally display in degrees,
+  not Basilisk's native radians -- matching every angle INPUT field this
+  app's own Scenario Editor already uses (e.g. ``inclination_deg``), and
+  part of the same "convey more information" feedback that asked for
+  titles/axis names/legends on every plot (see ``_categorize()``).
 * The x-axis defaults to elapsed time (hours since the scenario epoch,
   as before) but can be switched to absolute epoch (UTC datetimes,
   ``series.time_s`` added to the epoch :meth:`set_result`/
@@ -99,6 +112,7 @@ plot-only display preference):
 
 from __future__ import annotations
 
+import math
 import os
 
 # See module docstring's "Running as root" section -- MUST happen before
@@ -107,9 +121,10 @@ import os
 if hasattr(os, "geteuid") and os.geteuid() == 0:
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional
 
 import plotly.graph_objects as go
 from PySide6.QtCore import QUrl
@@ -118,12 +133,13 @@ from PySide6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QLabel, QMess
 
 from ..engine.results import ResultSet, TimeSeries
 
-# unit -> (display unit, divisor) -- see module docstring for why this is
-# narrowly scoped to length/length-rate units only.
-_DISPLAY_UNIT_CONVERSIONS = {
-    "m": ("km", 1000.0),
-    "m/s": ("km/s", 1000.0),
-}
+_RAD2DEG = 180.0 / math.pi
+
+# "x"/"y"/"z" columns mean the same thing (an inertial-frame or body-frame
+# vector component) everywhere they appear in this app's own series
+# (position/velocity/body-rate/sun-heading/torque -- see engine.service),
+# so every vector-column series below reuses this one label map.
+_XYZ_LABELS = {"x": "X", "y": "Y", "z": "Z"}
 
 # Categorical series colors -- the first three slots of a validated,
 # colorblind-safe 8-hue palette (Claude's dataviz skill,
@@ -144,16 +160,221 @@ _EMPTY_STATE_TEXT = "#8A93A3"  # same color the previous matplotlib empty-state 
 _FONT_FAMILY = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
 
-def _display_units(series: TimeSeries) -> Tuple["object", str]:
-    """Returns ``(data, unit_label)`` for PLOTTING -- ``series.data``
-    itself/``series.units`` unchanged unless a km-scale conversion
-    applies (see ``_DISPLAY_UNIT_CONVERSIONS``).
+@dataclass(frozen=True)
+class _SeriesDisplay:
+    """Everything :meth:`ResultsWidget._build_figure` needs to render one
+    named series descriptively, beyond what the bare :class:`TimeSeries`
+    itself already carries -- see :func:`_categorize`'s own docstring for
+    where these come from. ``factor`` multiplies ``series.data`` for
+    display only -- ``export_csv``/``_on_export`` never see it, matching
+    this module's "display choices are plot-only" policy (module
+    docstring). ``standalone_title`` is set for a category (access-window/
+    link-margin series) whose own title already names every identifying
+    detail -- everything else gets the owning spacecraft's name (the
+    series name's own first dotted segment) prefixed automatically.
     """
-    conversion = _DISPLAY_UNIT_CONVERSIONS.get(series.units)
-    if conversion is None:
-        return series.data, series.units
-    display_unit, divisor = conversion
-    return series.data / divisor, display_unit
+
+    title: str
+    y_label: str
+    unit: str
+    factor: float = 1.0
+    columns: Optional[Dict[str, str]] = None
+    standalone_title: bool = False
+
+
+def _vector_display(name: str) -> Optional[_SeriesDisplay]:
+    """State-vector and attitude/actuator vector series -- every one of
+    these already has ("x","y","z") or equivalent columns in
+    ``engine.service``. Position/velocity display in raw meters/m-s (NOT
+    km/km-s) per explicit user request ("state vector elements shall be
+    displayed in meters for position and m/s for velocity") -- a REVERSAL
+    of this module's own earlier km-conversion decision for exactly these
+    two series, which real user feedback showed went too far (see module
+    docstring). Body rate/torque/etc. are left in Basilisk's own native
+    units -- only position/velocity/delta-V/altitude/semi-major axis were
+    named in that feedback.
+    """
+    if name.endswith(".position_N"):
+        return _SeriesDisplay("Inertial Position (ECI)", "Position", "m", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".velocity_N"):
+        return _SeriesDisplay("Inertial Velocity (ECI)", "Velocity", "m/s", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".attitude_sigma_BN"):
+        return _SeriesDisplay("Attitude (MRP, Body to Inertial)", "MRP component", "-")
+    if name.endswith(".body_rate_omega_BN_B"):
+        return _SeriesDisplay("Body Angular Rate", "Angular rate", "rad/s", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".sun_heading_body"):
+        return _SeriesDisplay("Sun Heading (Body Frame)", "Unit vector component", "-", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".control_torque"):
+        return _SeriesDisplay("Commanded Control Torque", "Torque", "N*m", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".rw_speeds"):
+        return _SeriesDisplay("Reaction Wheel Speeds", "Wheel speed", "rad/s")
+    if name.endswith(".battery_charge"):
+        return _SeriesDisplay("Battery State of Charge", "Charge", "W*hr", 1.0, {"charge": "Charge"})
+    if name.endswith(".battery_net_power"):
+        return _SeriesDisplay("Battery Net Power", "Net power", "W", 1.0, {"net_power": "Net power"})
+    return None
+
+
+def _orbit_element_display(name: str) -> Optional[_SeriesDisplay]:
+    """The 6 osculating + 6 mean (first-order-J2) Keplerian element
+    series ``engine.service._extract_results`` produces --
+    ``.orbit_elements.*`` (per-sample ``orbitalMotion.rv2elem``, already
+    existed) and ``.orbit_elements_mean.*`` (new: Basilisk's own
+    ``orbitalMotion.clMeanOscMap``, osc -> mean, the same analytic J2
+    short-period-removal its ``meanOEFeedback`` FSW module uses --
+    conceptually the averaged-element idea the user pointed at via STK's
+    "Brouwer-Lyddane Mean (Short)" data provider, built from a tool
+    Basilisk itself ships rather than a bespoke implementation; see
+    ``engine.service``'s own gating for why this is only computed when
+    the scenario's central body actually has a modeled J2 term).
+
+    Semi-major axis displays in km ("altitudes, semi-major axes shall be
+    displayed in km"); the four angles (inclination/RAAN/argument of
+    periapsis/true anomaly) display in degrees, matching every angle
+    INPUT field this app's own Scenario Editor already uses (e.g.
+    ``inclination_deg``) even though ``engine.service`` records them in
+    Basilisk's native radians.
+    """
+    specs = [
+        ("semi_major_axis", "Semi-Major Axis", "Semi-major axis", "km", 0.001),
+        ("eccentricity", "Eccentricity", "Eccentricity", "-", 1.0),
+        ("inclination", "Inclination", "Inclination", "deg", _RAD2DEG),
+        ("raan", "RAAN", "RAAN", "deg", _RAD2DEG),
+        ("arg_periapsis", "Argument of Periapsis", "Argument of periapsis", "deg", _RAD2DEG),
+        ("true_anomaly", "True Anomaly", "True anomaly", "deg", _RAD2DEG),
+    ]
+    for field, title_suffix, y_label, unit, factor in specs:
+        if name.endswith(f".orbit_elements.{field}"):
+            return _SeriesDisplay(f"Osculating {title_suffix}", y_label, unit, factor)
+        if name.endswith(f".orbit_elements_mean.{field}"):
+            return _SeriesDisplay(f"Mean (first-order J2) {title_suffix}", y_label, unit, factor)
+    return None
+
+
+_CONTROLLER_TITLES = {
+    "station_keeping": "Station-Keeping",
+    "phasing_keeping": "Phasing-Keeping",
+    "constant_thrust": "Constant-Thrust",
+}
+
+
+def _controller_display(name: str) -> Optional[_SeriesDisplay]:
+    """``"{sc}.<controller>.<field>"`` series from
+    ``engine.orbit_maintenance``'s three controllers. ``.delta_v`` is
+    handled identically across all three (one shared branch below) and
+    ALWAYS displays in raw m/s -- "delta-V shall always be displayed in
+    m/s" -- a REVERSAL of this module's own earlier blanket km/s
+    conversion, which real user feedback showed was wrong for delta-V
+    specifically even though it shares the literal "m/s" unit string
+    with velocity (see module docstring).
+    """
+    for key, label in _CONTROLLER_TITLES.items():
+        marker = f".{key}."
+        if marker not in name:
+            continue
+        field = name.rsplit(".", 1)[-1]
+        if field == "delta_v":
+            return _SeriesDisplay(f"{label} Cumulative Delta-V", "Cumulative delta-V", "m/s", 1.0,
+                                   {"cumulative_delta_v": "Delta-V"})
+        if field == "propellant_remaining":
+            return _SeriesDisplay(f"{label} Propellant Remaining", "Propellant mass", "kg")
+        if field == "altitude":
+            return _SeriesDisplay(f"{label} Altitude Tracking", "Altitude", "km", 0.001,
+                                   {"raw": "Raw", "smoothed": "Smoothed (filtered)"})
+        if field == "burn_on":
+            return _SeriesDisplay(f"{label} Thruster State", "Burn on (1) / off (0)", "-")
+        if field == "separation_error":
+            # Already recorded in degrees (engine.service: units="deg") --
+            # factor 1.0, no conversion needed.
+            return _SeriesDisplay(f"{label} Separation Error", "Angle error", "deg")
+        if field == "state":
+            return _SeriesDisplay(f"{label} Controller State", "State", "-")
+        return None
+    return None
+
+
+def _access_pair_display(name: str) -> Optional[_SeriesDisplay]:
+    """``"{gs}.access_to_{sc}.<field>"`` series (``engine.service``'s
+    access-analysis loop, plus ``engine.link_budget.link_margin_series``)
+    -- ``gs``/``sc`` recovered directly from the name (split on
+    ``".access_to_"``, the literal separator both producers use) so the
+    title names the actual ground-station/spacecraft pair. Slant range
+    displays in km, elevation/azimuth in degrees -- same length/angle
+    display policy as everywhere else in this module.
+    """
+    if ".access_to_" not in name:
+        return None
+    prefix, _, field = name.rpartition(".")
+    gs, sep, sc = prefix.partition(".access_to_")
+    if not sep:
+        return None
+    pair = f"{gs} -> {sc}"
+    if field == "has_access":
+        return _SeriesDisplay(f"Access Window: {pair}", "Has access", "-", 1.0,
+                               {"has_access": "Has access"}, standalone_title=True)
+    if field == "slant_range":
+        return _SeriesDisplay(f"Slant Range: {pair}", "Slant range", "km", 0.001, standalone_title=True)
+    if field == "elevation":
+        return _SeriesDisplay(f"Elevation: {pair}", "Elevation angle", "deg", _RAD2DEG, standalone_title=True)
+    if field == "azimuth":
+        return _SeriesDisplay(f"Azimuth: {pair}", "Azimuth angle", "deg", _RAD2DEG, standalone_title=True)
+    if field == "link_margin_db":
+        return _SeriesDisplay(f"Link Margin: {pair}", "Link margin", "dB", 1.0, standalone_title=True)
+    return None
+
+
+def _sensor_display(name: str, series: TimeSeries) -> Optional[_SeriesDisplay]:
+    """``"{sc}.sensor.{sensor_name}[.accel|.gyro]"`` series -- the sensor
+    NAME is user-chosen (``schema.scenario``'s sensor config), so unlike
+    every other category here the series name alone can't say which
+    sensor TYPE produced it; ``series.columns``/``series.units``
+    (already distinct per sensor type in ``engine.service``'s own
+    recording code) disambiguate instead.
+    """
+    if ".sensor." not in name:
+        return None
+    if name.endswith(".accel"):
+        sensor_name = name[: -len(".accel")].rsplit(".sensor.", 1)[-1]
+        return _SeriesDisplay(f"IMU Accelerometer: {sensor_name}", "Acceleration", series.units, 1.0,
+                               dict(_XYZ_LABELS))
+    if name.endswith(".gyro"):
+        sensor_name = name[: -len(".gyro")].rsplit(".sensor.", 1)[-1]
+        return _SeriesDisplay(f"IMU Gyroscope: {sensor_name}", "Angular rate", series.units, 1.0,
+                               dict(_XYZ_LABELS))
+    sensor_name = name.rsplit(".sensor.", 1)[-1]
+    if tuple(series.columns) == ("q0", "q1", "q2", "q3"):
+        return _SeriesDisplay(f"Star Tracker Attitude: {sensor_name}", "Quaternion component", "-")
+    if tuple(series.columns) == ("output",):
+        return _SeriesDisplay(f"Coarse Sun Sensor: {sensor_name}", "Output", "-")
+    if series.units == "T":
+        return _SeriesDisplay(f"Magnetometer: {sensor_name}", "Magnetic field", "T", 1.0, dict(_XYZ_LABELS))
+    return None
+
+
+def _categorize(name: str, series: TimeSeries) -> Optional[_SeriesDisplay]:
+    """Display metadata for every series ``engine.service``/
+    ``engine.link_budget`` are known to produce -- ``None`` for anything
+    else, which :func:`_legacy_display` falls back on: raw series name as
+    title, ``series.units`` unconverted except the ORIGINAL narrow m/m-s
+    -> km/km-s rule this module shipped with before this per-category
+    system replaced it (see module docstring). That fallback means an
+    uncategorized/future series still renders reasonably -- exactly as it
+    would have before this feature existed -- rather than erroring or
+    looking unfinished.
+    """
+    for fn in (_vector_display, _orbit_element_display, _controller_display, _access_pair_display):
+        result = fn(name)
+        if result is not None:
+            return result
+    return _sensor_display(name, series)
+
+
+_LEGACY_UNIT_CONVERSIONS = {"m": ("km", 0.001), "m/s": ("km/s", 0.001)}
+
+
+def _legacy_display(name: str, series: TimeSeries) -> _SeriesDisplay:
+    display_unit, factor = _LEGACY_UNIT_CONVERSIONS.get(series.units, (series.units, 1.0))
+    return _SeriesDisplay(title=name, y_label="", unit=display_unit, factor=factor, standalone_title=True)
 
 
 def _plotlyjs_path() -> Path:
@@ -274,14 +495,16 @@ class ResultsWidget(QWidget):
         return time_s / 3600.0, "Elapsed time [hr]"
 
     def _build_figure(self, name: str, series: TimeSeries) -> go.Figure:
-        display_data, display_unit = _display_units(series)
+        display = _categorize(name, series) or _legacy_display(name, series)
+        display_data = series.data * display.factor
         x_values, x_label = self._x_axis_values(series.time_s)
         is_datetime_axis = self.x_axis_combo.currentData() == "epoch" and x_label == "Epoch (UTC)"
 
         fig = go.Figure()
+        column_labels = display.columns or {}
         for i, column in enumerate(series.columns):
             fig.add_trace(go.Scatter(
-                x=x_values, y=display_data[:, i], mode="lines", name=column,
+                x=x_values, y=display_data[:, i], mode="lines", name=column_labels.get(column, column),
                 line=dict(color=_SERIES_COLORS[i % len(_SERIES_COLORS)], width=2),
             ))
 
@@ -289,7 +512,8 @@ class ResultsWidget(QWidget):
             gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR, linecolor=_GRID_COLOR,
             tickfont=dict(color=_INK_MUTED), title_font=dict(color=_INK_MUTED),
         )
-        y_axis = dict(axis_common, title_text=f"[{display_unit}]" if display_unit else None)
+        y_title = f"{display.y_label} [{display.unit}]" if display.y_label else (f"[{display.unit}]" if display.unit else None)
+        y_axis = dict(axis_common, title_text=y_title)
         x_axis = dict(axis_common, title_text=x_label)
         if not is_datetime_axis:
             # Both fix the exact complaint that started this: matplotlib's
@@ -307,8 +531,10 @@ class ResultsWidget(QWidget):
             x_axis["exponentformat"] = "none"
             x_axis["separatethousands"] = True
 
+        subject = name.split(".", 1)[0]
+        title_text = display.title if display.standalone_title else f"{subject}: {display.title}"
         fig.update_layout(
-            title=dict(text=name, font=dict(size=16, color=_INK_PRIMARY, family=_FONT_FAMILY)),
+            title=dict(text=title_text, font=dict(size=16, color=_INK_PRIMARY, family=_FONT_FAMILY)),
             xaxis=x_axis,
             yaxis=y_axis,
             font=dict(family=_FONT_FAMILY, color=_INK_PRIMARY),

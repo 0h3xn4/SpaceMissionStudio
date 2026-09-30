@@ -113,18 +113,24 @@ def test_set_live_result_grows_the_plotted_data(widget):
     assert len(widget.figure.data[0].x) > first_trace_length
 
 
-def test_position_series_plots_in_km_not_m(widget):
+def test_position_series_plots_in_raw_meters(widget):
+    """Regression guard for a real, explicit user request ("state vector
+    elements shall be displayed in meters for position and m/s for
+    velocity") that REVERSED this module's own earlier km-conversion
+    decision for exactly these two series -- see results_widget's module
+    docstring and _vector_display()'s own docstring.
+    """
     rs = _sample_result_set()
     raw_x_m = rs.series["sat-1.position_N"].data[:, 0]
 
     widget.set_result(rs)
 
     plotted_x = np.asarray(widget.figure.data[0].y)
-    np.testing.assert_allclose(plotted_x, raw_x_m / 1000.0)
-    assert widget.figure.layout.yaxis.title.text == "[km]"
+    np.testing.assert_allclose(plotted_x, raw_x_m)
+    assert widget.figure.layout.yaxis.title.text == "Position [m]"
 
 
-def test_velocity_series_plots_in_km_s_not_m_s(widget):
+def test_velocity_series_plots_in_raw_m_s(widget):
     rs = _sample_result_set()
     raw_vx_m_s = rs.series["sat-1.velocity_N"].data[:, 0]
 
@@ -132,8 +138,76 @@ def test_velocity_series_plots_in_km_s_not_m_s(widget):
     widget.series_combo.setCurrentIndex(1)  # "sat-1.velocity_N"
 
     plotted_x = np.asarray(widget.figure.data[0].y)
-    np.testing.assert_allclose(plotted_x, raw_vx_m_s / 1000.0)
-    assert widget.figure.layout.yaxis.title.text == "[km/s]"
+    np.testing.assert_allclose(plotted_x, raw_vx_m_s)
+    assert widget.figure.layout.yaxis.title.text == "Velocity [m/s]"
+
+
+def test_delta_v_series_always_plots_in_m_s_not_km_s():
+    """Regression guard for the explicit "delta-V shall always be
+    displayed in m/s" request -- delta-V shares the literal "m/s" unit
+    string with velocity, which is exactly why the old blanket
+    unit-string-keyed conversion got this wrong (see module docstring).
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.engine.results import ResultSet, TimeSeries
+    from missionstudio.gui.results_widget import ResultsWidget
+
+    QApplication.instance() or QApplication([])
+    w = ResultsWidget()
+    rs = ResultSet(scenario_name="demo")
+    raw_dv = np.linspace(0, 42.0, 5)
+    rs.add(TimeSeries("sat-1.station_keeping.delta_v", np.linspace(0, 100, 5), ("cumulative_delta_v",),
+                       raw_dv.reshape(-1, 1), units="m/s"))
+    w.set_result(rs)
+
+    plotted = np.asarray(w.figure.data[0].y)
+    np.testing.assert_allclose(plotted, raw_dv)
+    assert w.figure.layout.yaxis.title.text == "Cumulative delta-V [m/s]"
+
+
+def test_altitude_and_semi_major_axis_series_plot_in_km():
+    """"altitudes, semi-major axes shall be displayed in km" -- both are
+    recorded in raw meters by engine.service (matching every other
+    Basilisk-facing SI field), so the km conversion is display-only here.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.engine.results import ResultSet, TimeSeries
+    from missionstudio.gui.results_widget import ResultsWidget
+
+    QApplication.instance() or QApplication([])
+    w = ResultsWidget()
+    rs = ResultSet(scenario_name="demo")
+    raw_a_m = np.linspace(7.0e6, 7.1e6, 5)
+    rs.add(TimeSeries("sat-1.orbit_elements.semi_major_axis", np.linspace(0, 100, 5), ("a",),
+                       raw_a_m.reshape(-1, 1), units="m"))
+    w.set_result(rs)
+
+    plotted = np.asarray(w.figure.data[0].y)
+    np.testing.assert_allclose(plotted, raw_a_m / 1000.0)
+    assert w.figure.layout.yaxis.title.text == "Semi-major axis [km]"
+    assert w.figure.layout.title.text == "sat-1: Osculating Semi-Major Axis"
+
+
+def test_mean_orbital_element_series_is_plotted_and_labeled_distinctly_from_osculating():
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.engine.results import ResultSet, TimeSeries
+    from missionstudio.gui.results_widget import ResultsWidget
+
+    QApplication.instance() or QApplication([])
+    w = ResultsWidget()
+    rs = ResultSet(scenario_name="demo")
+    raw_i_rad = np.linspace(0.9, 0.95, 5)
+    rs.add(TimeSeries("sat-1.orbit_elements_mean.inclination", np.linspace(0, 100, 5), ("i",),
+                       raw_i_rad.reshape(-1, 1), units="rad"))
+    w.set_result(rs)
+
+    plotted = np.asarray(w.figure.data[0].y)
+    np.testing.assert_allclose(plotted, np.degrees(raw_i_rad))
+    assert w.figure.layout.yaxis.title.text == "Inclination [deg]"
+    assert w.figure.layout.title.text == "sat-1: Mean (first-order J2) Inclination"
 
 
 def test_dimensionless_series_is_not_unit_converted(widget):

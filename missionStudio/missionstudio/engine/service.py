@@ -386,6 +386,58 @@ def _osculating_elements(mu: float, r_bn_n: np.ndarray, v_bn_n: np.ndarray) -> D
     return {"a": a, "e": e, "i": i, "raan": raan, "argp": argp, "true_anomaly": true_anomaly}
 
 
+def _mean_elements(oe: Dict[str, np.ndarray], req: float, j2: float) -> Dict[str, np.ndarray]:
+    """First-order J2 MEAN classical orbital elements, mapped pointwise
+    from the already-computed OSCULATING elements (``_osculating_elements``
+    above) via Basilisk's own ``orbitalMotion.clMeanOscMap`` (sign=-1:
+    osculating -> mean) -- the exact same analytic short-period-removal
+    Basilisk's own ``meanOEFeedback`` FSW module uses for closed-loop mean
+    -element control, not a bespoke implementation written for this app.
+    Conceptually the same idea as e.g. STK's "Brouwer-Lyddane Mean
+    (Short)" data provider the user pointed at when asking for this: strip
+    the once-per-orbit J2 wobble from the true (osculating) elements so a
+    plot shows how the orbit is actually drifting, not that wobble on top
+    of it. Real per-user-request feature, not speculative -- see
+    ``SimulationService``'s own gating below for when ``req``/``j2`` are
+    even set (only once a real J2 term is actually being modeled).
+
+    Known limitation, inherited directly from the underlying first-order
+    J2 theory (documented in ``clMeanOscMap``'s own reference, Schaub &
+    Junkins' "Analytical Mechanics of Space Systems"), not introduced
+    here: this mapping has a genuine mathematical singularity at the
+    critical inclination (~63.4 deg / ~116.6 deg, where ``1 - 5*cos(i)^2
+    == 0``) and degrades near i=0/180 deg -- the same well-known caveat
+    STK's own Brouwer-Lyddane-based "Mean" elements carry. A scenario
+    whose inclination sits at/near either value can show NaN/spiky mean
+    -element samples; Plotly simply leaves a gap for a NaN sample rather
+    than erroring, so this is a visible plot artifact, not a crash.
+    """
+    n = oe["a"].shape[0]
+    a = np.empty(n)
+    e = np.empty(n)
+    i = np.empty(n)
+    raan = np.empty(n)
+    argp = np.empty(n)
+    true_anomaly = np.empty(n)
+    osc = orbitalMotion.ClassicElements()
+    mean = orbitalMotion.ClassicElements()
+    for k in range(n):
+        osc.a = oe["a"][k]
+        osc.e = oe["e"][k]
+        osc.i = oe["i"][k]
+        osc.Omega = oe["raan"][k]
+        osc.omega = oe["argp"][k]
+        osc.f = oe["true_anomaly"][k]
+        orbitalMotion.clMeanOscMap(req, j2, osc, mean, -1)
+        a[k] = mean.a
+        e[k] = mean.e
+        i[k] = mean.i
+        raan[k] = mean.Omega
+        argp[k] = mean.omega
+        true_anomaly[k] = mean.f
+    return {"a": a, "e": e, "i": i, "raan": raan, "argp": argp, "true_anomaly": true_anomaly}
+
+
 @dataclass
 class _SpacecraftHandle:
     name: str
@@ -417,6 +469,14 @@ class SimulationService:
         self.vizard_request = vizard_request
         self.scSim: Optional[SimulationBaseClass.SimBaseClass] = None
         self.mu: Optional[float] = None
+        # Set below, during gravity setup, only when a real J2 term is
+        # actually being modeled for the central body -- see that
+        # assignment's own comment and _mean_elements()'s docstring for
+        # why mean-element series are skipped entirely otherwise (None
+        # here means "don't compute/publish .orbit_elements_mean.* for
+        # this run").
+        self.mean_elements_req: Optional[float] = None
+        self.mean_elements_j2: Optional[float] = None
         self._handles: Dict[str, _SpacecraftHandle] = {}
         self._sun_state_out_msg = None
         self._ground_locations: Dict[str, object] = {}
@@ -539,6 +599,24 @@ class SimulationService:
         mu = central_body.mu
         self.mu = mu
         self.grav_factory = grav_factory
+
+        if gravity.central_body == "earth" and gravity.central_body_degree >= 2:
+            # A real J2 (degree-2 zonal) term is only actually present in
+            # the propagated dynamics once spherical-harmonics gravity is
+            # active with degree >= 2 (Phase 0's Earth-only GGM03S field,
+            # enforced above to be Earth-only already) -- a point-mass-only
+            # central body has no J2 short-period oscillation in its
+            # simulated motion for clMeanOscMap to remove, so computing
+            # "mean elements" there would inject an artificial correction
+            # rather than strip out a real one. central_body.radEquator is
+            # the exact equatorial radius this run's own gravity model
+            # uses (not a separately-looked-up constant, so it can never
+            # drift out of sync with it); J2_EARTH is Basilisk's own
+            # standard constant (orbitalMotion.py), matching the standard
+            # value (~1.08263e-3) to the precision this first-order theory
+            # needs.
+            self.mean_elements_req = central_body.radEquator
+            self.mean_elements_j2 = orbitalMotion.J2_EARTH
 
         spice_time_string = time_system.utc_iso_to_spice_string(scenario.epoch_utc)
         self.spice_object = kernels.build_spice_interface(grav_factory, spice_time_string, epoch_in_msg=True)
@@ -1200,6 +1278,27 @@ class SimulationService:
             result.add(TimeSeries(f"{name}.orbit_elements.arg_periapsis", t_s, ("argp",), oe["argp"], units="rad"))
             result.add(TimeSeries(f"{name}.orbit_elements.true_anomaly", t_s, ("true_anomaly",),
                                    oe["true_anomaly"], units="rad"))
+
+            # Mean (first-order J2, osc -> mean) elements alongside the
+            # osculating ones above -- see _mean_elements()'s own
+            # docstring for what this is/isn't, and self.mean_elements_req's
+            # assignment above for when it's actually computed. Per-user
+            # request: "plots of averaged orbital elements, not only the
+            # 'true' ones".
+            if self.mean_elements_req is not None:
+                mean_oe = _mean_elements(oe, self.mean_elements_req, self.mean_elements_j2)
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.semi_major_axis", t_s, ("a",),
+                                       mean_oe["a"], units="m"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.eccentricity", t_s, ("e",),
+                                       mean_oe["e"], units="-"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.inclination", t_s, ("i",),
+                                       mean_oe["i"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.raan", t_s, ("raan",),
+                                       mean_oe["raan"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.arg_periapsis", t_s, ("argp",),
+                                       mean_oe["argp"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.true_anomaly", t_s, ("true_anomaly",),
+                                       mean_oe["true_anomaly"], units="rad"))
 
             if handle.nav_recorder is not None:
                 nav_t_s = handle.nav_recorder.times() * macros.NANO2SEC
