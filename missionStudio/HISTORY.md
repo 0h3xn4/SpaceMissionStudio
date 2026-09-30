@@ -3584,3 +3584,52 @@ own module docstring), but the picker/toolbar row above it, and the
 entire Mission Output tab, render and were inspected as images. Full
 suite: 710 passed, 101 skipped.
 
+## Kernel Status tab: a table whose own header didn't fit, and an error message that made it worse
+
+Follow-up request: "check the rest of the app for other UX issues".
+First checked every other dialog with a "kind"/"pattern" selector for
+the same shown-regardless-of-relevance bug class the Monte Carlo
+dispersion dialog had -- none found (constellation/phasing-formation
+dialogs use every field unconditionally; `spacecraft_editor.py`'s
+optional sections are all CHECKABLE `QGroupBox`es, which already
+auto-disable their own contents when unchecked, the correct pattern).
+Then rendered the tabs/widgets not yet looked at directly: Load
+Scenario (clean), and the Kernel Status tab, which had a real, two
+-layer bug.
+
+**The table's own column headers didn't fit.** `KernelStatusWidget`'s
+4-column table used a blanket `QHeaderView.ResizeMode.Stretch` on every
+column -- found by actually populating the table and looking at it:
+"Cache last modified (UTC)" (by far the longest header) rendered
+truncated on BOTH ends ("ache last modified (UTC"), while "Kernel" sat
+in a column much wider than its content needed, since Stretch forces
+every column to the exact same width regardless of what's in it. Fixed
+by stretching only "Path" (the one column whose content -- real
+filesystem paths -- genuinely benefits from claiming the remaining
+space) and sizing the other three to their own content
+(`ResizeToContents`).
+
+**Fixing that uncovered a second problem**: the "Available" column
+embedded the full error message inline (`f"NO: {status.error}"`), so
+once its own sizing was fixed to `ResizeToContents`, a single long
+error message (e.g. "download failed: connection refused") now forced
+THAT column wide instead -- stealing width right back from "Path", the
+more important column to keep readable. Fixed by showing just "NO" in
+the cell and moving the full error to the item's tooltip (the same
+"short status at a glance, detail on demand" pattern `gui.feedback`'s
+inline-validation already uses). Added the same tooltip to the "Path"
+cell itself while at it: `Stretch`-mode columns can't be interactively
+widened by the user the way `Interactive`-mode ones can, so a
+genuinely long real path can still end up visually truncated with no
+way to fix it except hovering.
+
+**Verification:** rendered the table both empty and populated (with
+synthetic `KernelStatus`-shaped data -- duck-typed via
+`SimpleNamespace`, since the real dataclass needs a Basilisk import
+this sandbox doesn't have) and looked at the PNGs before and after each
+fix. 3 new tests: every column's actual `sectionResizeMode()` matches
+the intended per-column policy (not just "some column somewhere
+stretches"), the unavailable-kernel row's cell text is exactly "NO"
+with the real error as its tooltip, and the path cell's tooltip holds
+the untruncated path. Full suite: 713 passed, 101 skipped.
+
