@@ -3343,3 +3343,38 @@ skipped, including the one `requires_basilisk`-marked phasing-formation
 toast test, re-run directly against this sandbox's real Basilisk build
 (`/tmp/bsk_venv4`) rather than left unverified.
 
+## "Propagation setup" summary: from three pipe-joined lines to a labeled form
+
+Real user feedback, with a screenshot: the "Propagation setup" group's
+read-only summary (`ScenarioEditorWidget._refresh_propagation_summary`)
+rendered as three unlabeled, ``" | "``-joined lines in a single QLabel
+(``"earth | spherical harmonics (degree 10) | +sun, moon"``, etc.) --
+"looks incredibly unfinished, raw and unprofessional and very cluttered
+and doesnt help the user understanding what those values stand for".
+Checked directly: correct complaint -- this was the ONE settings
+summary in the whole app built as free text instead of the labeled
+field-name/value rows every other panel already uses
+(`spacecraft_editor.py`, `ground_station_editor.py`, and
+`PropagationSetupDialog` ITSELF, the exact dialog this summary is
+summarizing).
+
+**Fixed** by replacing the single `QLabel` with a `QFormLayout` of
+label/value rows, rebuilt on every refresh (row count varies -- the
+third-body-perturbers and space-weather rows only appear when
+relevant). Every row label is copied VERBATIM from
+`PropagationSetupDialog`'s own `form.addRow(...)` calls ("Central
+body", "Integrator", "Dynamics task rate [s]", "Duration [days]",
+"Atmosphere model", ...) -- the summary and the dialog that edits it
+now use identical terminology instead of two different ways of saying
+the same thing.
+
+**Verification:** rendered the actual widget headless
+(`QT_QPA_PLATFORM=offscreen`, `QGroupBox.grab()` to a PNG) and looked
+at it directly rather than trusting the code -- confirmed it now reads
+as a clean label/value table instead of the cluttered original. Two
+existing tests that asserted against the old single-label `.text()`
+were updated (a small `_propagation_summary_text()` test helper
+flattens the new form's rows back into one string so the same substring
+assertions still work), plus one new test asserting every expected row
+label is actually present. Full suite: 696 passed, 101 skipped.
+

@@ -18,6 +18,25 @@ def widget(qtbot):
     return w
 
 
+def _propagation_summary_text(widget) -> str:
+    """Flattens the "Propagation setup" group's labeled QFormLayout rows
+    (see ScenarioEditorWidget._refresh_propagation_summary -- replaced a
+    single free-text QLabel per real user feedback that it read as
+    "cluttered" and unlabeled) into one string, so existing substring
+    assertions against the old single-label text keep working unchanged.
+    """
+    form = widget._propagation_form
+    parts = []
+    for row in range(form.rowCount()):
+        label_item = form.itemAt(row, form.ItemRole.LabelRole)
+        field_item = form.itemAt(row, form.ItemRole.FieldRole)
+        if label_item is not None and label_item.widget() is not None:
+            parts.append(label_item.widget().text())
+        if field_item is not None and field_item.widget() is not None:
+            parts.append(field_item.widget().text())
+    return " ".join(parts)
+
+
 def test_default_state_is_invalid_with_no_spacecraft(widget):
     assert "⚠" in widget.validation_label.text()
     assert "spacecraft" in widget.validation_label.text().lower()
@@ -72,8 +91,30 @@ def test_simulation_mode_combo_drives_spacecraft_list_provider(widget):
 
 
 def test_propagation_summary_reflects_defaults(widget):
-    assert "earth" in widget.propagation_summary_label.text()
-    assert "point-mass" in widget.propagation_summary_label.text()
+    text = _propagation_summary_text(widget)
+    assert "earth" in text
+    assert "Point-mass" in text
+
+
+def test_propagation_summary_has_labeled_rows_not_a_single_free_text_line(widget):
+    """Regression guard for the actual complaint (a screenshot of three
+    unlabeled, pipe-joined lines): every row must carry its own field
+    label, matching PropagationSetupDialog's own terminology exactly
+    (same strings -- see that dialog's form.addRow() calls) so the
+    summary and the dialog that edits it never say the same thing two
+    different ways.
+    """
+    form = widget._propagation_form
+    labels = [
+        form.itemAt(row, form.ItemRole.LabelRole).widget().text()
+        for row in range(form.rowCount())
+    ]
+    assert "Central body" in labels
+    assert "Gravity model" in labels
+    assert "Integrator" in labels
+    assert "Dynamics task rate [s]" in labels
+    assert "Duration [days]" in labels
+    assert "Atmosphere model" in labels
 
 
 def test_edit_propagation_setup_updates_state_and_emits_changed(widget, qtbot, monkeypatch):
@@ -98,7 +139,7 @@ def test_edit_propagation_setup_updates_state_and_emits_changed(widget, qtbot, m
         widget._on_edit_propagation_setup()
 
     assert widget._gravity.central_body_degree == 4
-    assert "harmonics" in widget.propagation_summary_label.text()
+    assert "harmonics" in _propagation_summary_text(widget)
 
     got = widget.to_scenario()
     assert got.gravity.central_body_degree == 4
