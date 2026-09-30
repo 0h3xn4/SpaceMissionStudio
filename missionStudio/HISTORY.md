@@ -3674,3 +3674,56 @@ also show one, and the About dialog's shown text contains both the
 real `missionstudio.__version__` string and the word "Basilisk". Full
 suite: 716 passed, 101 skipped.
 
+## App icon: from an accidental eye to a satellite, after it was shown to the user first
+
+Explicit request: "create an app icon for the app". One already
+existed (a procedurally-drawn `QPainter` icon from an earlier Phase 5
+round -- a dark central body inside a thin, inclined orbit ellipse
+with a small dot on the ring) -- rather than silently building a
+second, competing icon, it was rendered at several sizes and shown to
+the user first, who confirmed: keep the concept, but "refine it to
+read clearer at small sizes".
+
+**Diagnosed why, rather than guessing at a fix**: at 16-32px (the
+sizes this icon is actually seen at most -- window titlebar, taskbar)
+it read as a cartoon eye, not an orbit. Tried several parameter-tuning
+passes on the SAME structure first (thicker ring stroke, a bigger/
+brighter satellite dot) and rendered each one -- they made it read MORE
+eye-like, not less (a bigger, lighter dot became an eye's catchlight).
+The real problem was structural: "a filled disc centered inside a
+surrounding ring" is close to the universal flat-icon glyph for an eye
+(pupil + iris) regardless of stroke width or color, so no amount of
+tuning on that same silhouette was ever going to fix it.
+
+**Redesigned around a different silhouette instead**: a satellite
+glyph (an angular body between two solar-panel wings, plus a thin
+antenna at larger sizes) -- confirmed by rendering it at every size
+from 256px down to 16px that it stays legible and reads clearly as
+spacecraft hardware, with no closed ring-around-a-disc shape left to
+be mistaken for an eye. Also a better thematic fit for a
+*mission-analysis* tool generally than one specific orbit-and-dot.
+
+**A second real bug found along the way**: rendering the new design
+against both a light AND a dark background (not assumed -- many
+desktop taskbars are dark) showed the body's original near-black color
+nearly disappearing against a dark background. Fixed by making the
+body gold instead -- not arbitrary: real satellites commonly use
+gold-foil thermal-blanket bodies, so gold-body-next-to-blue-panels is
+representationally accurate, not just decorative, and it happens to
+have good contrast against both light and dark surfaces.
+
+Fine detail (the antenna; grid lines on the panels/body) is omitted
+below its own legibility threshold (found by rendering both and
+comparing, same as everything else here) rather than drawn at a
+thickness that just anti-aliases into noise at small sizes.
+
+**Verification:** every candidate was rendered and actually looked at
+-- individually, side by side across sizes, and against both light and
+dark backgrounds -- at every stage of this redesign, not just the
+final result. 2 new regression tests: the large-size render includes
+the specific gold body color (pinning the part of this redesign a
+generic color-count check wouldn't catch regressing), and a 16px
+render has meaningfully fewer distinct colors than a 256px one
+(confirming the size-gated detail thresholds actually take effect).
+Full suite: 718 passed, 101 skipped.
+
