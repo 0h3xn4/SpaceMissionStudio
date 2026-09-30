@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..schema.scenario import DISPERSION_KINDS_BY_QUANTITY, DISPERSION_QUANTITIES, DispersionConfig, MonteCarloConfig
+from .feedback import show_toast
 
 
 def _spin(minimum: float, maximum: float, decimals: int = 4, step: float = 1.0, value: float = 0.0) -> QDoubleSpinBox:
@@ -215,8 +216,11 @@ class DispersionListWidget(QWidget):
     def _on_add(self) -> None:
         dialog = _DispersionEditorDialog(self._spacecraft_names, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._items.append(dialog.to_dataclass())
+            item = dialog.to_dataclass()
+            self._items.append(item)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._items) - 1)
+            show_toast(self.window(), f"Added dispersion: {item.spacecraft}: {item.quantity}")
             self.changed.emit()
 
     def _on_edit(self) -> None:
@@ -225,16 +229,21 @@ class DispersionListWidget(QWidget):
             return
         dialog = _DispersionEditorDialog(self._spacecraft_names, item=self._items[row], parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._items[row] = dialog.to_dataclass()
+            item = dialog.to_dataclass()
+            self._items[row] = item
             self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated dispersion: {item.spacecraft}: {item.quantity}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
+        item = self._items[row]
         del self._items[row]
         self._refresh_list()
+        show_toast(self.window(), f"Removed dispersion: {item.spacecraft}: {item.quantity}", kind="info")
         self.changed.emit()
 
     def to_list(self) -> list:

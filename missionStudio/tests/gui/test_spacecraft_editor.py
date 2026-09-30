@@ -990,6 +990,8 @@ def test_list_widget_generate_constellation_appends_generated_spacecraft(qtbot, 
     assert len(generated) == 4
     assert all(c.dry_mass_kg == 42.0 for c in generated)  # cloned from the template
     assert len(changed_calls) == 1
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("4" in t.text() and "constellation" in t.text() for t in toasts)
 
 
 def test_list_widget_generate_constellation_uses_default_template_when_list_empty(qtbot, monkeypatch):
@@ -1118,6 +1120,8 @@ def test_list_widget_generate_phasing_formation_appends_follower(qtbot, monkeypa
     assert follower.station_keeping is not None
     assert follower.dry_mass_kg == 100.0  # cloned from the chief (also the default template)
     assert len(changed_calls) == 1
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("follower-1" in t.text() for t in toasts)
 
 
 @pytest.mark.requires_basilisk

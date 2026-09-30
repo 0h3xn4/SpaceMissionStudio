@@ -150,4 +150,34 @@ def test_dispersion_list_add_edit_remove(qtbot, monkeypatch):
 
     widget.list_widget.setCurrentRow(0)
     widget._on_remove()
+
+
+def test_dispersion_list_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.monte_carlo_editor import DispersionListWidget, _DispersionEditorDialog
+
+    widget = DispersionListWidget()
+    qtbot.addWidget(widget)
+    widget.set_spacecraft_names(["sat-1"])
+
+    def fake_exec(self):
+        self.quantity_combo.setCurrentText("dry_mass_kg")
+        self.kind_combo.setCurrentText("uniform")
+        self.bounds_lo_spin.setValue(1.0)
+        self.bounds_hi_spin.setValue(2.0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_DispersionEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    assert widget.list_widget.currentRow() == 0
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("dry_mass_kg" in t.text() and "Added" in t.text() for t in toasts)
+
+    widget.list_widget.setCurrentRow(0)
+    widget._on_remove()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("Removed" in t.text() for t in toasts)
     assert widget.to_list() == []

@@ -3296,3 +3296,50 @@ development sandbox exactly like every other GUI test in this project
 -- nothing here needed a real display or a real user's machine to
 verify.
 
+## Rolling gui/feedback.py out to every other list-editor dialog
+
+Explicit follow-up request: "roll it out to the other editor dialogs
+too" -- the toast/inline-validation primitives above had only been
+wired into `spacecraft_editor.py` as a worked example. Rolled out to
+every other dialog with the same "Add/Edit/Remove a named/unnamed list
+item" shape: `sensor_actuator_editor.py`
+(`SensorActuatorListWidget`/`_ItemEditorDialog`), `ground_station_editor.py`
+(`GroundStationListWidget`/`GroundStationEditorDialog`),
+`mission_sequence_editor.py` (`MissionSequenceEditorWidget` -- no name
+-uniqueness concept here, commands aren't named, so toasts only, no
+inline validation), and `monte_carlo_editor.py`
+(`DispersionListWidget` -- same reasoning, dispersions aren't named
+either). Also added a completion toast to
+`spacecraft_editor.py`'s two bulk-generate actions (Walker constellation,
+phasing formation) that hadn't been covered in the first pass.
+
+**The exact same data-loss bug found and fixed in
+`SpacecraftEditorDialog` turned up, unchanged, in both other named-item
+dialogs** -- not a coincidence: `sensor_actuator_editor.py`'s
+`_ItemEditorDialog` and `ground_station_editor.py`'s
+`GroundStationEditorDialog` were both written following
+`SpacecraftEditorDialog`'s own shape (their docstrings say so
+explicitly -- "mirrors ... SpacecraftListWidget's shape"), so the bug
+(`_on_accept()` closing the dialog unconditionally, with the duplicate
+-name check only happening afterward, in the now-unreachable-if-wrong
+caller) had been copied right along with the pattern it came from.
+Fixed identically in both: the dialog now takes the other items' names
+at construction, validates the Name field live as the user types
+(`textChanged` -> `mark_invalid`/`clear_invalid`), and `_on_accept()`
+checks empty/duplicate BEFORE calling `accept()`, so the dialog only
+closes once the name is actually valid. The outer checks in each list
+widget's `_on_add`/`_on_edit` are now unreachable in practice but left
+in place as a harmless second guard, matching the fix already applied
+to `SpacecraftEditorDialog`.
+
+**Verification:** every dialog's existing test suite still passes
+unchanged (the new pre-check in `_on_accept()` is never exercised by
+tests that monkeypatch `.exec()` directly to bypass it, exactly as
+already noted for `SpacecraftEditorDialog`'s own tests) plus new tests
+mirroring that same file's pattern: live inline-error-on-duplicate,
+accept-blocks-and-keeps-the-dialog-open, and toast-shown-on-add/edit/
+remove, for each rolled-out widget. Full suite: 695 passed, 101
+skipped, including the one `requires_basilisk`-marked phasing-formation
+toast test, re-run directly against this sandbox's real Basilisk build
+(`/tmp/bsk_venv4`) rather than left unverified.
+

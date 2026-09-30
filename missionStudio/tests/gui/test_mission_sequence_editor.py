@@ -186,6 +186,32 @@ def test_kind_combo_disabled_when_editing_existing_command(qtbot):
     assert not dialog.kind_combo.isEnabled()
 
 
+def test_widget_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.mission_sequence_editor import MissionSequenceEditorWidget, _CommandEditorDialog
+
+    widget = MissionSequenceEditorWidget()
+    qtbot.addWidget(widget)
+    widget.set_spacecraft_names_provider(lambda: ["sat-1"])
+
+    def fake_exec(self):
+        self.duration_days_spin.setValue(1.5)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_CommandEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("propagate" in t.text() for t in toasts)
+
+    widget.tree.setCurrentItem(widget.tree.topLevelItem(0))
+    widget._on_remove()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("Removed" in t.text() for t in toasts)
+
+
 def test_widget_add_edit_remove_top_level(qtbot, monkeypatch):
     from PySide6.QtWidgets import QDialog
 

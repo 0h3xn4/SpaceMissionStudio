@@ -1036,6 +1036,8 @@ class SpacecraftListWidget(QWidget):
 
         self._configs.extend(generated)
         self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._configs) - 1)
+        show_toast(self.window(), f"Generated {len(generated)} constellation spacecraft")
         self.changed.emit()
 
     def _on_generate_phasing_formation(self) -> None:
@@ -1079,6 +1081,8 @@ class SpacecraftListWidget(QWidget):
 
         self._configs.append(follower)
         self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._configs) - 1)
+        show_toast(self.window(), f"Generated phasing follower {follower.name!r}")
         self.changed.emit()
 
     def to_list(self) -> list[SpacecraftConfig]:

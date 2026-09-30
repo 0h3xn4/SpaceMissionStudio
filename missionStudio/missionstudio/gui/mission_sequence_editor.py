@@ -75,6 +75,7 @@ from ..schema.command import (
     SUPPORTED_STOP_CONDITIONS,
     Command,
 )
+from .feedback import show_toast
 
 # Mirrors engine.mission_engine._ASSIGNMENT_CONTROLLERS/_ASSIGNMENT_ATTRIBUTES
 # -- duplicated here (not imported) because engine.mission_engine imports
@@ -494,9 +495,11 @@ class MissionSequenceEditorWidget(QWidget):
     def _on_add(self) -> None:
         dialog = _CommandEditorDialog(parent=self, spacecraft_names=self._spacecraft_names())
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            item = self._new_item(dialog.to_dataclass())
+            command = dialog.to_dataclass()
+            item = self._new_item(command)
             self.tree.addTopLevelItem(item)
             self.tree.setCurrentItem(item)
+            show_toast(self.window(), f"Added command: {self._item_text(command)}")
             self.changed.emit()
 
     def _on_add_child(self) -> None:
@@ -508,10 +511,12 @@ class MissionSequenceEditorWidget(QWidget):
             return
         dialog = _CommandEditorDialog(parent=self, spacecraft_names=self._spacecraft_names())
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            item = self._new_item(dialog.to_dataclass())
+            command = dialog.to_dataclass()
+            item = self._new_item(command)
             parent_item.addChild(item)
             parent_item.setExpanded(True)
             self.tree.setCurrentItem(item)
+            show_toast(self.window(), f"Added child command: {self._item_text(command)}")
             self.changed.emit()
 
     def _on_edit(self) -> None:
@@ -524,17 +529,20 @@ class MissionSequenceEditorWidget(QWidget):
             new_command = dialog.to_dataclass()
             item.setData(0, Qt.ItemDataRole.UserRole, new_command)
             item.setText(0, self._item_text(new_command))
+            show_toast(self.window(), f"Updated command: {self._item_text(new_command)}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         item = self.tree.currentItem()
         if item is None:
             return
+        command = item.data(0, Qt.ItemDataRole.UserRole)
         parent_item = item.parent()
         if parent_item is None:
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         else:
             parent_item.removeChild(item)
+        show_toast(self.window(), f"Removed command: {self._item_text(command)}", kind="info")
         self.changed.emit()
 
     def _on_move(self, delta: int) -> None:

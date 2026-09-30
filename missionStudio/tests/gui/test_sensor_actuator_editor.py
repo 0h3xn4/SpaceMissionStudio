@@ -127,6 +127,59 @@ def test_item_editor_dialog_rejects_empty_name(qtbot):
         dialog.to_dataclass()
 
 
+def test_item_editor_dialog_name_field_shows_inline_error_on_duplicate(qtbot):
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS, other_names=["st-1"])
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("st-1")
+    assert dialog.name_edit.property("state") == "error"
+
+    dialog.name_edit.setText("st-2")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_item_editor_dialog_accept_blocks_and_keeps_dialog_open_on_duplicate_name(qtbot):
+    """Regression guard for the same data-loss UX bug fixed in
+    SpacecraftEditorDialog -- see that dialog's own test of the same
+    name for the full explanation.
+    """
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS, other_names=["st-1"])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("st-1")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0
+    assert dialog.name_edit.property("state") == "error"
+
+
+def test_add_via_dialog_shows_a_toast_and_selects_the_row(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.sensor_actuator_editor import SensorActuatorListWidget, _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    widget = SensorActuatorListWidget(SensorConfig, SUPPORTED_SENSOR_KINDS)
+    qtbot.addWidget(widget)
+
+    def fake_exec(self):
+        self.name_edit.setText("st-toast")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_ItemEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    assert widget.list_widget.currentRow() == 0
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("st-toast" in t.text() for t in toasts)
+
+
 def test_new_item_dialog_prefills_params_with_kind_template(qtbot):
     """Regression test: a brand-new sensor/actuator used to start with an
     empty ``{}`` params box no matter the kind, forcing a beginner to

@@ -84,6 +84,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .feedback import clear_invalid, mark_invalid, show_toast
+
 
 class _ParamSpec(NamedTuple):
     key: str
@@ -185,9 +187,11 @@ def _hint_text(kind: str) -> str:
 
 
 class _ItemEditorDialog(QDialog):
-    def __init__(self, item_cls, kind_choices, item=None, parent: QWidget | None = None):
+    def __init__(self, item_cls, kind_choices, item=None, parent: QWidget | None = None,
+                 other_names: list[str] | None = None):
         super().__init__(parent)
         self._item_cls = item_cls
+        self._other_names = other_names or []
         # A defensive copy, not the original item's own dict: _rebuild_vector_rows
         # below writes the live spin-box values back into this cache on every
         # Kind change so switching away and back never loses an edit (see that
@@ -209,6 +213,7 @@ class _ItemEditorDialog(QDialog):
         form.addRow("Kind", self.kind_combo)
 
         self.name_edit = QLineEdit(item.name if item is not None else "")
+        self.name_edit.textChanged.connect(self._on_name_changed)
         form.addRow("Name", self.name_edit)
         layout.addLayout(form)
 
@@ -315,7 +320,37 @@ class _ItemEditorDialog(QDialog):
             z.setValue(spec.example[2])
         self.params_edit.setPlainText(json.dumps(_non_vector_template_params(kind), indent=2))
 
+    def _on_name_changed(self, text: str) -> None:
+        """Live inline feedback (see gui.feedback / spacecraft_editor.py's
+        own ``_on_name_changed`` for the identical pattern this mirrors)
+        -- ``self._other_names`` is already known at construction time.
+        """
+        name = text.strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+        elif name in self._other_names:
+            mark_invalid(self.name_edit, f"{name!r} already exists")
+        else:
+            clear_invalid(self.name_edit)
+
     def _on_accept(self) -> None:
+        # Real data-loss bug this used to have, same shape as
+        # spacecraft_editor.py's SpacecraftEditorDialog (see that
+        # dialog's own _on_accept docstring): a duplicate name wasn't
+        # checked HERE, so accept() always succeeded and the dialog
+        # closed -- only THEN did the caller (SensorActuatorListWidget's
+        # _on_add/_on_edit) notice the duplicate, by which point every
+        # edit the user just made was gone. Checked here first so the
+        # dialog stays open instead.
+        name = self.name_edit.text().strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+            self.name_edit.setFocus()
+            return
+        if name in self._other_names:
+            mark_invalid(self.name_edit, f"{name!r} already exists")
+            self.name_edit.setFocus()
+            return
         try:
             self.to_dataclass()
         except ValueError as exc:
@@ -390,7 +425,8 @@ class SensorActuatorListWidget(QWidget):
         return {item.name for i, item in enumerate(self._items) if i != exclude_row}
 
     def _on_add(self) -> None:
-        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, parent=self)
+        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, parent=self,
+                                    other_names=sorted(self._existing_names()))
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_item = dialog.to_dataclass()
             if new_item.name in self._existing_names():
@@ -398,13 +434,16 @@ class SensorActuatorListWidget(QWidget):
                 return
             self._items.append(new_item)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._items) - 1)
+            show_toast(self.window(), f"Added {new_item.kind}: {new_item.name!r}")
             self.changed.emit()
 
     def _on_edit(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
-        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, item=self._items[row], parent=self)
+        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, item=self._items[row], parent=self,
+                                    other_names=sorted(self._existing_names(exclude_row=row)))
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_item = dialog.to_dataclass()
             if new_item.name in self._existing_names(exclude_row=row):
@@ -412,14 +451,18 @@ class SensorActuatorListWidget(QWidget):
                 return
             self._items[row] = new_item
             self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated {new_item.kind}: {new_item.name!r}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
+        item = self._items[row]
         del self._items[row]
         self._refresh_list()
+        show_toast(self.window(), f"Removed {item.kind}: {item.name!r}", kind="info")
         self.changed.emit()
 
     def to_list(self) -> list:
