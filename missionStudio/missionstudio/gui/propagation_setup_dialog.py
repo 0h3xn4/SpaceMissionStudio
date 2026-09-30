@@ -39,7 +39,21 @@ its own explicit enable control here:
   ``gui.spacecraft_editor.SpacecraftEditorDialog``'s "Orbit / mass" tab
   (``enable_drag``/``enable_srp``) -- already present, and already
   reachable in "orbit_only" (cannonball) mode since that tab is never
-  hidden for that mode.
+  hidden for that mode. Real user report: this wasn't discoverable --
+  looking for SRP specifically in THIS dialog and not finding it read as
+  "SRP isn't supported", not "it's one dialog over". Fixed with an
+  explicit ``QLabel`` pointer in the space-weather group below (never
+  found by reading this module's own docstring, which the user never
+  sees) rather than moving the per-spacecraft fields here, which would
+  need a spacecraft-picker of its own and duplicate
+  ``SpacecraftEditorDialog``'s existing one.
+* atmosphere-model CHOICE (``atmosphere_model_combo``) and a
+  CONSERVATIVE, historical-percentile drag margin
+  (``activity_level_combo``/``activity_percentile_spin``) -- see
+  ``schema.scenario.SpaceWeatherConfig``'s own docstring for exactly
+  what each selects and why (Basilisk has no Jacchia-Roberts model to
+  offer, checked directly against its source; the percentile margin is
+  computed from real historical CelesTrak data, never fabricated).
 
 Construct with the scenario's current ``GravityConfig``/``SimSettings``/
 ``SpaceWeatherConfig``, then read back the (possibly unchanged) values via
@@ -228,8 +242,37 @@ class PropagationSetupDialog(QDialog):
         return group
 
     def _build_space_weather_group(self, space_weather: SpaceWeatherConfig) -> QGroupBox:
-        group = QGroupBox("Space weather (drives atmospheric drag)")
+        group = QGroupBox("Atmosphere & drag")
         form = QFormLayout(group)
+
+        # Real user report: looked for solar radiation pressure in THIS
+        # dialog, didn't find it, read that as "not supported" -- it's a
+        # per-spacecraft field (needs that spacecraft's own cross-section/
+        # coefficient either way), on SpacecraftEditorDialog's "Orbit /
+        # mass" tab instead. See this module's own docstring for the full
+        # reasoning on why it stays there rather than moving here.
+        srp_pointer = QLabel(
+            "Atmospheric drag and solar radiation pressure are set PER SPACECRAFT (each needs that "
+            "spacecraft's own cross-section/coefficient) -- open a spacecraft in the scenario's "
+            "spacecraft list and look at its \"Orbit / mass\" tab, not here."
+        )
+        srp_pointer.setWordWrap(True)
+        srp_pointer.setMaximumWidth(520)
+        form.addRow(srp_pointer)
+
+        self.atmosphere_model_combo = QComboBox()
+        # (display text, schema value) -- SpaceWeatherConfig.atmosphere_model's
+        # own docstring explains why these two and not, say, Jacchia-Roberts
+        # (Basilisk has no such model at all).
+        self._atmosphere_model_items = [("NRLMSISE-00 (real space weather)", "nrlmsise00"),
+                                         ("Exponential (simple, no space weather)", "exponential")]
+        for label, _value in self._atmosphere_model_items:
+            self.atmosphere_model_combo.addItem(label)
+        self.atmosphere_model_combo.setCurrentIndex(
+            0 if space_weather.atmosphere_model == "nrlmsise00" else 1
+        )
+        self.atmosphere_model_combo.currentIndexChanged.connect(self._on_atmosphere_model_changed)
+        form.addRow("Atmosphere model", self.atmosphere_model_combo)
 
         self.space_weather_source_combo = QComboBox()
         self.space_weather_source_combo.addItems(["celestrak", "local_file", "synthetic"])
@@ -245,12 +288,61 @@ class PropagationSetupDialog(QDialog):
         local_file_row.addWidget(self.local_file_browse_button)
         form.addRow("Local file (used as fallback, or directly if source=local_file)", local_file_row)
 
+        self.activity_level_combo = QComboBox()
+        # (display text, schema value)
+        self._activity_level_items = [("Nominal (ordinary resolved space weather)", "nominal"),
+                                       ("Conservative (historical-percentile worst-case margin)", "conservative")]
+        for label, _value in self._activity_level_items:
+            self.activity_level_combo.addItem(label)
+        self.activity_level_combo.setCurrentIndex(0 if space_weather.activity_level == "nominal" else 1)
+        self.activity_level_combo.currentIndexChanged.connect(self._on_activity_level_changed)
+        form.addRow("Drag margin", self.activity_level_combo)
+
+        self.activity_percentile_spin = QDoubleSpinBox()
+        self.activity_percentile_spin.setRange(50.0, 99.9)
+        self.activity_percentile_spin.setDecimals(1)
+        self.activity_percentile_spin.setValue(space_weather.activity_percentile)
+        self.activity_percentile_spin.setToolTip(
+            "Percentile of REAL historical F10.7/Ap data (CelesTrak) to hold constant across the whole "
+            "scenario as a sustained worst-case drag assumption -- 95.0 is a common 'P95' choice; ~97.7 "
+            "approximates a mean+2-sigma figure. Needs network access to CelesTrak, or a local historical "
+            "file set as the Source above, to actually resolve."
+        )
+        form.addRow("Worst-case percentile", self.activity_percentile_spin)
+
+        self._on_atmosphere_model_changed(self.atmosphere_model_combo.currentIndex())
         self._on_space_weather_source_changed(self.space_weather_source_combo.currentText())
+        self._on_activity_level_changed(self.activity_level_combo.currentIndex())
         return group
 
+    def _on_atmosphere_model_changed(self, _index: int) -> None:
+        is_msis = self._selected_atmosphere_model() == "nrlmsise00"
+        # Exponential ignores source/local_file_path/activity_level entirely
+        # (schema.scenario.SpaceWeatherConfig's own docstring) -- greyed
+        # out rather than hidden, so switching back doesn't lose whatever
+        # the user had set.
+        self.space_weather_source_combo.setEnabled(is_msis)
+        self.local_file_edit.setEnabled(is_msis and self.space_weather_source_combo.currentText() == "local_file")
+        self.local_file_browse_button.setEnabled(
+            is_msis and self.space_weather_source_combo.currentText() == "local_file"
+        )
+        self.activity_level_combo.setEnabled(is_msis)
+        self.activity_percentile_spin.setEnabled(is_msis and self._selected_activity_level() == "conservative")
+
+    def _on_activity_level_changed(self, _index: int) -> None:
+        is_msis = self._selected_atmosphere_model() == "nrlmsise00"
+        self.activity_percentile_spin.setEnabled(is_msis and self._selected_activity_level() == "conservative")
+
+    def _selected_atmosphere_model(self) -> str:
+        return self._atmosphere_model_items[self.atmosphere_model_combo.currentIndex()][1]
+
+    def _selected_activity_level(self) -> str:
+        return self._activity_level_items[self.activity_level_combo.currentIndex()][1]
+
     def _on_space_weather_source_changed(self, source: str) -> None:
-        self.local_file_edit.setEnabled(source == "local_file")
-        self.local_file_browse_button.setEnabled(source == "local_file")
+        is_msis = self._selected_atmosphere_model() == "nrlmsise00"
+        self.local_file_edit.setEnabled(is_msis and source == "local_file")
+        self.local_file_browse_button.setEnabled(is_msis and source == "local_file")
 
     def _on_browse_local_file(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(self, "Select space-weather CSV", "", "CSV files (*.csv)")
@@ -278,6 +370,9 @@ class PropagationSetupDialog(QDialog):
         return SpaceWeatherConfig(
             source=self.space_weather_source_combo.currentText(),
             local_file_path=self.local_file_edit.text().strip() or None,
+            atmosphere_model=self._selected_atmosphere_model(),
+            activity_level=self._selected_activity_level(),
+            activity_percentile=self.activity_percentile_spin.value(),
         )
 
     def _on_accept(self) -> None:

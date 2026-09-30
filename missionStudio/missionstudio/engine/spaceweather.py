@@ -49,6 +49,33 @@ long enough. :func:`resolve` handles that the same way
 ``missionAnalysis/generate_space_weather_placeholder.py`` does: fall back
 to a synthetic, solar-cycle-shaped (but not a real forecast) profile,
 loudly warned about, never silently substituted.
+
+Conservative ("worst-case") drag margin
+----------------------------------------
+Real user request: a "95th percentile / +2 sigma" atmospheric-drag margin
+for conservative mission-design analysis. There is no such thing built
+into Basilisk's ``msisAtmosphere``/``spaceWeatherData`` -- they just
+consume whatever daily F10.7/Ap values a CSV gives them -- and this
+project has no authoritative source for a specific fixed "worst-case"
+F10.7/Ap constant to hand-code (deliberately NOT guessed; see
+``AGENTS.md``'s "never guess about Basilisk's API" spirit extended here
+to "never guess a specific physical constant either"). Real user
+decision: derive it statistically instead, from REAL historical F10.7/Ap
+records (CelesTrak's own data -- never the synthetic generator, which is
+a fabricated profile, not observed history; see
+:func:`compute_worst_case_activity`/:func:`resolve`'s own docstrings for
+the refusal that enforces this).
+
+The result -- :func:`generate_worst_case` -- is a CSV holding F10.7/Ap
+CONSTANT at the computed percentile across the whole scenario, not a
+single elevated day: the standard way this kind of margin is actually
+used in mission design is "assume sustained worst-case activity could
+happen at any point in the mission," not "the worst single day in
+history, once." ``activity_percentile`` is a plain float (default 95.0,
+matching the user's own primary phrasing), not a fixed "P95" concept, so
+a user who actually meant mean+2 sigma (~97.7th percentile under a
+normal-ish distribution) can dial it there directly -- this module never
+silently picks one interpretation over the other.
 """
 
 from __future__ import annotations
@@ -317,11 +344,165 @@ def _synthetic_cache_path(cache_dir: Optional[Path], start_utc: datetime, end_ut
     return cache_dir / name
 
 
+# A percentile computed from less than a year of history isn't a
+# meaningful "worst case" -- day-to-day/seasonal noise would dominate
+# over genuine solar-cycle variability. Not a Basilisk requirement, a
+# plain statistical sanity floor for this module's own computation.
+_MIN_HISTORICAL_DAYS = 365
+
+
+def _load_historical_activity(path) -> "tuple[np.ndarray, np.ndarray]":
+    """Read ``F10.7_OBS``/``AP_AVG`` as float arrays from a real
+    space-weather CSV (CelesTrak's own format, or a user-provided file in
+    the same layout) -- rows that fail to parse are skipped, not fatal
+    (real CelesTrak extracts have occasional blank/placeholder cells for
+    not-yet-observed recent days).
+    """
+    path = Path(path)
+    if not path.exists():
+        raise SpaceWeatherError(f"{path} does not exist")
+
+    f107_values: list = []
+    ap_values: list = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        missing = [c for c in ("F10.7_OBS", "AP_AVG") if c not in (reader.fieldnames or [])]
+        if missing:
+            raise SpaceWeatherError(f"{path} is missing required column(s) {missing} for a historical-activity "
+                                     f"percentile computation")
+        for row in reader:
+            try:
+                f107_values.append(float(row["F10.7_OBS"]))
+                ap_values.append(float(row["AP_AVG"]))
+            except (TypeError, ValueError):
+                continue  # blank/placeholder cell -- skip, not fatal
+
+    return np.array(f107_values), np.array(ap_values)
+
+
+def compute_worst_case_activity(path, percentile: float) -> "tuple[float, float, int]":
+    """Return ``(f107_percentile, ap_percentile, n_samples)`` -- the
+    requested percentile of ``F10.7_OBS``/``AP_AVG`` across every usable
+    row in the REAL historical space-weather CSV at ``path``. Raises
+    :class:`SpaceWeatherError` if there isn't enough real history to make
+    that a meaningful "worst case" figure (see :data:`_MIN_HISTORICAL_DAYS`)
+    -- never silently computes a percentile from a handful of days.
+    """
+    f107, ap = _load_historical_activity(path)
+    if len(f107) < _MIN_HISTORICAL_DAYS:
+        raise SpaceWeatherError(
+            f"{path} has only {len(f107)} usable day(s) of real F10.7/Ap history -- need at least "
+            f"{_MIN_HISTORICAL_DAYS} for a {percentile:.0f}th-percentile 'worst case' figure to be "
+            "statistically meaningful (rather than dominated by short-term noise). Use a longer historical "
+            "record (CelesTrak's SW-All.csv is the full record since 1957), or set "
+            "space_weather.activity_level back to 'nominal'."
+        )
+    return float(np.percentile(f107, percentile)), float(np.percentile(ap, percentile)), len(f107)
+
+
+def generate_worst_case(f107_percentile: float, ap_percentile: float, start_utc: datetime, end_utc: datetime,
+                         dest_path) -> Path:
+    """Write a space-weather CSV holding F10.7/Ap CONSTANT at
+    ``f107_percentile``/``ap_percentile`` across ``[start_utc, end_utc]``
+    (plus the same padding :func:`generate_synthetic` uses) -- a sustained
+    "worst case could happen at any point in the mission" assumption, per
+    :func:`compute_worst_case_activity`'s own docstring. AP1..AP8 (the
+    eight 3-hour sub-values Basilisk's loader also requires) and
+    F10.7_OBS_CENTER81 (the 81-day centered average) are set equal to the
+    same percentile values -- consistent with "sustained," not a
+    single-day spike riding on an otherwise-nominal 81-day average.
+    """
+    start = start_utc - timedelta(days=_PAD_DAYS)
+    end = end_utc + timedelta(days=_PAD_DAYS)
+    n_days = (end - start).days + 1
+    dates = [start + timedelta(days=i) for i in range(n_days)]
+
+    dest_path = Path(dest_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["DATE", "AP1", "AP2", "AP3", "AP4", "AP5", "AP6", "AP7", "AP8",
+                          "AP_AVG", "F10.7_OBS", "F10.7_OBS_CENTER81"])
+        for d in dates:
+            writer.writerow(
+                [d.strftime("%Y-%m-%d")]
+                + [f"{ap_percentile:.1f}"] * 8
+                + [f"{ap_percentile:.1f}", f"{f107_percentile:.1f}", f"{f107_percentile:.1f}"]
+            )
+    return dest_path
+
+
+def _worst_case_cache_path(cache_dir: Optional[Path], start_utc: datetime, end_utc: datetime,
+                            percentile: float) -> Path:
+    cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+    name = f"worstcase_p{percentile:g}_{start_utc:%Y%m%d}_{end_utc:%Y%m%d}.csv"
+    return cache_dir / name
+
+
+def _resolve_conservative(source: str, start_utc: datetime, end_utc: datetime,
+                           local_file_path: Optional[str], cache_dir: Optional[Path],
+                           activity_percentile: float, warnings: list) -> ResolvedSpaceWeather:
+    """The ``activity_level == "conservative"`` branch of :func:`resolve` --
+    see that function's own docstring. Split out only for readability; not
+    meant to be called directly.
+    """
+    if source == "local_file":
+        if not local_file_path:
+            raise SpaceWeatherError("space_weather.source is 'local_file' but local_file_path was not set")
+        historical_path = Path(local_file_path)
+    elif source == "synthetic":
+        raise SpaceWeatherError(
+            "space_weather.activity_level='conservative' needs REAL historical F10.7/Ap data to compute a "
+            "percentile from -- source='synthetic' has none (it's a fabricated solar-cycle-shaped profile, "
+            "not observed history). Set source to 'celestrak' or 'local_file', or activity_level back to "
+            "'nominal'."
+        )
+    elif source == "celestrak":
+        # SW-All (the full historical record since 1957), not
+        # SW-Last5Years: a meaningful "worst case" percentile wants as
+        # much real solar-cycle history as possible, not just whichever
+        # file nominal mode would have picked for its own different
+        # reason (covering the scenario's own date range).
+        try:
+            historical_path = fetch(dataset="SW-All", cache_dir=cache_dir)
+        except SpaceWeatherError as exc:
+            warnings.append(f"CelesTrak fetch of SW-All failed: {exc}")
+            historical_path = None
+            if local_file_path and Path(local_file_path).exists():
+                historical_path = Path(local_file_path)
+                warnings.append(f"CelesTrak was unavailable; used provided local_file_path as the historical "
+                                 f"basis instead: {local_file_path}")
+            if historical_path is None:
+                raise SpaceWeatherError(
+                    "space_weather.activity_level='conservative' needs real historical F10.7/Ap data "
+                    "(CelesTrak was unreachable and no usable local_file_path was provided) -- cannot "
+                    "compute a percentile without it. Provide local_file_path, or set activity_level back "
+                    "to 'nominal'."
+                ) from exc
+    else:
+        raise SpaceWeatherError(f"unknown space_weather.source {source!r}")
+
+    f107_p, ap_p, n_samples = compute_worst_case_activity(historical_path, activity_percentile)
+    path = _worst_case_cache_path(cache_dir, start_utc, end_utc, activity_percentile)
+    generate_worst_case(f107_p, ap_p, start_utc, end_utc, path)
+    warnings.append(
+        f"space weather is a CONSERVATIVE, sustained-worst-case profile: F10.7={f107_p:.1f} sfu, "
+        f"Ap={ap_p:.1f}, the {activity_percentile:.0f}th percentile of {n_samples} day(s) of REAL "
+        f"historical data from {historical_path.name}, held CONSTANT across the whole scenario duration -- "
+        "NOT real observed/forecast data for these specific dates, and by construction higher than almost "
+        "all actual days in that historical record."
+    )
+    return ResolvedSpaceWeather(path, True, warnings)
+
+
 def resolve(source: str, start_utc: datetime, end_utc: datetime,
-            local_file_path: Optional[str] = None, cache_dir: Optional[Path] = None) -> ResolvedSpaceWeather:
+            local_file_path: Optional[str] = None, cache_dir: Optional[Path] = None,
+            activity_level: str = "nominal", activity_percentile: float = 95.0) -> ResolvedSpaceWeather:
     """Top-level entry point -- resolves a ``SpaceWeatherConfig`` (see
     ``schema.scenario``) into an actual, validated CSV path Basilisk's
-    ``spaceWeatherData.loadSpaceWeatherFile()`` can load, following the
+    ``spaceWeatherData.loadSpaceWeatherFile()`` can load.
+
+    ``activity_level == "nominal"`` (the default) follows the
     user-specified fallback chain:
 
     * ``source == "local_file"``: use exactly that file; error if missing
@@ -337,8 +518,26 @@ def resolve(source: str, start_utc: datetime, end_utc: datetime,
       fallback step appends a human-readable warning to the returned
       :class:`ResolvedSpaceWeather`, so the GUI/CLI can surface exactly
       what happened rather than silently substituting data.
+
+    ``activity_level == "conservative"`` (see this module's own docstring,
+    "Conservative ('worst-case') drag margin") instead computes the
+    ``activity_percentile``-th percentile of REAL historical F10.7/Ap data
+    and returns a CSV holding that value constant across the scenario.
+    ``source`` still selects where the REAL historical data comes from
+    (``"celestrak"`` fetches ``SW-All``, the full historical record;
+    ``"local_file"`` uses ``local_file_path`` as-is) -- ``source ==
+    "synthetic"`` is refused outright here: a percentile computed from a
+    fabricated profile is not a real historical "worst case", whatever
+    the number comes out to.
     """
     warnings: list = []
+
+    if activity_level not in ("nominal", "conservative"):
+        raise SpaceWeatherError(f"unknown space_weather.activity_level {activity_level!r}")
+
+    if activity_level == "conservative":
+        return _resolve_conservative(source, start_utc, end_utc, local_file_path, cache_dir,
+                                      activity_percentile, warnings)
 
     if source == "local_file":
         if not local_file_path:

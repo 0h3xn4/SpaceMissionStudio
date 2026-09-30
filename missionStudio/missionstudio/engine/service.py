@@ -58,8 +58,10 @@ that implements it): drag, SRP, space weather. The Phase 1 GUI (see
 same reason: a control that looks like it configures simulated behavior
 but silently doesn't is worse than not offering it yet. (Phase 4, below,
 is where this gap closes: ``SpacecraftConfig.enable_drag``/``enable_srp``
-are wired up there via ``engine/spaceweather.py``'s resolver -> MSIS
-atmosphere -> ``dragDynamicEffector``/``radiationPressure``.)
+are wired up there via ``engine/spaceweather.py``'s resolver -> MSIS or
+exponential atmosphere (``SpaceWeatherConfig.atmosphere_model`` -- a later
+addition; see that schema class's own docstring) -> ``dragDynamicEffector``/
+``radiationPressure``.)
 
 Phase 2 scope
 -------------
@@ -641,43 +643,84 @@ class SimulationService:
         if needs_drag:
             if gravity.central_body != "earth":
                 raise SimulationServiceError(
-                    "atmospheric drag (enable_drag) is only wired up for 'earth' (NRLMSISE-00 has no "
-                    f"non-Earth atmosphere model here); {gravity.central_body!r} needs enable_drag=False "
+                    "atmospheric drag (enable_drag) is only wired up for 'earth' (neither atmosphere model "
+                    f"here has a non-Earth data set); {gravity.central_body!r} needs enable_drag=False "
                     "on every spacecraft."
                 )
-            from Basilisk.simulation import msisAtmosphere, spaceWeatherData, zeroWindModel
-
-            from . import spaceweather as sw
-
-            start_utc = datetime.fromisoformat(scenario.epoch_utc)
-            end_utc = start_utc + timedelta(days=sim_settings.duration_days)
-            try:
-                resolved_sw = sw.resolve(
-                    scenario.space_weather.source, start_utc, end_utc,
-                    local_file_path=scenario.space_weather.local_file_path,
-                    cache_dir=scenario.space_weather.cache_dir,
-                )
-            except sw.SpaceWeatherError as exc:
-                raise SimulationServiceError(f"could not resolve space weather for atmospheric drag: {exc}") from exc
-
-            sw_module = spaceWeatherData.SpaceWeatherData()
-            sw_module.ModelTag = "spaceWeatherData"
-            sw_module.loadSpaceWeatherFile(str(resolved_sw.path))
-            sw_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
-            self.scSim.AddModelToTask(dyn_task_name, sw_module, 400)
-
-            atmo_module = msisAtmosphere.MsisAtmosphere()
-            atmo_module.ModelTag = "msisAtmosphere"
-            atmo_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
-            atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
-            for msg_index in range(23):  # fixed count of space-weather sub-messages msisAtmosphere reads
-                atmo_module.swDataInMsgs[msg_index].subscribeTo(sw_module.swDataOutMsgs[msg_index])
-            self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            from Basilisk.simulation import zeroWindModel
 
             wind_model = zeroWindModel.ZeroWindModel()
             wind_model.ModelTag = "zeroWind"
             wind_model.planetPosInMsg.subscribeTo(central_body_state_out_msg)
             self.scSim.AddModelToTask(dyn_task_name, wind_model, 380)
+
+            # Two atmosphere models, per schema.scenario.SpaceWeatherConfig's
+            # own docstring on why exactly these two (Basilisk has no
+            # Jacchia-Roberts model at all, checked directly against its
+            # source tree -- not guessed): "nrlmsise00" (the original,
+            # only model this project used to wire up) needs the full
+            # space-weather resolution chain below; "exponential" is a
+            # simple per-planet scale-height model with no F10.7/Ap
+            # dependence, configured via Basilisk's own
+            # simSetPlanetEnvironment.exponentialAtmosphere() helper (the
+            # same one a real shipped Basilisk example --
+            # examples/scenarioDragDeorbit.py -- uses, not hand-picked
+            # constants). Both plug into the SAME addSpacecraftToModel()/
+            # envOutMsgs[] pattern below (both inherit Basilisk's common
+            # AtmosphereBase), so the per-spacecraft wiring further down
+            # this function needs no atmosphere_model branch of its own.
+            if scenario.space_weather.atmosphere_model == "exponential":
+                from Basilisk.simulation import exponentialAtmosphere
+                from Basilisk.utilities import simSetPlanetEnvironment
+
+                atmo_module = exponentialAtmosphere.ExponentialAtmosphere()
+                atmo_module.ModelTag = "exponentialAtmosphere"
+                simSetPlanetEnvironment.exponentialAtmosphere(atmo_module, "earth")
+                # Optional per AtmosphereBase's own read logic (an
+                # unlinked planetPosInMsg defaults to planet-at-origin,
+                # confirmed directly against atmosphereBase.cpp) -- wired
+                # explicitly anyway, matching msisAtmosphere's own
+                # already-verified wiring below rather than relying on
+                # this project's central body always sitting exactly at
+                # the inertial origin.
+                atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
+                self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            elif scenario.space_weather.atmosphere_model == "nrlmsise00":
+                from Basilisk.simulation import msisAtmosphere, spaceWeatherData
+
+                from . import spaceweather as sw
+
+                start_utc = datetime.fromisoformat(scenario.epoch_utc)
+                end_utc = start_utc + timedelta(days=sim_settings.duration_days)
+                try:
+                    resolved_sw = sw.resolve(
+                        scenario.space_weather.source, start_utc, end_utc,
+                        local_file_path=scenario.space_weather.local_file_path,
+                        cache_dir=scenario.space_weather.cache_dir,
+                        activity_level=scenario.space_weather.activity_level,
+                        activity_percentile=scenario.space_weather.activity_percentile,
+                    )
+                except sw.SpaceWeatherError as exc:
+                    raise SimulationServiceError(
+                        f"could not resolve space weather for atmospheric drag: {exc}") from exc
+
+                sw_module = spaceWeatherData.SpaceWeatherData()
+                sw_module.ModelTag = "spaceWeatherData"
+                sw_module.loadSpaceWeatherFile(str(resolved_sw.path))
+                sw_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
+                self.scSim.AddModelToTask(dyn_task_name, sw_module, 400)
+
+                atmo_module = msisAtmosphere.MsisAtmosphere()
+                atmo_module.ModelTag = "msisAtmosphere"
+                atmo_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
+                atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
+                for msg_index in range(23):  # fixed count of space-weather sub-messages msisAtmosphere reads
+                    atmo_module.swDataInMsgs[msg_index].subscribeTo(sw_module.swDataOutMsgs[msg_index])
+                self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            else:
+                raise SimulationServiceError(
+                    f"unknown space_weather.atmosphere_model {scenario.space_weather.atmosphere_model!r}"
+                )
 
         sc_objects_in_order: List = []
         rw_effectors_in_order: List = []

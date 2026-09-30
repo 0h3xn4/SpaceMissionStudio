@@ -204,6 +204,52 @@ def test_space_weather_local_file_requires_path():
         sc.validate()
 
 
+def test_space_weather_defaults_to_nrlmsise00_nominal():
+    sc = _minimal_scenario()
+    assert sc.space_weather.atmosphere_model == "nrlmsise00"
+    assert sc.space_weather.activity_level == "nominal"
+    assert sc.space_weather.activity_percentile == 95.0
+    sc.validate()  # defaults must themselves be valid
+
+
+def test_space_weather_rejects_unknown_atmosphere_model():
+    sc = _minimal_scenario()
+    sc.space_weather.atmosphere_model = "jacchia_roberts"  # not implemented in Basilisk -- see schema docstring
+    with pytest.raises(ScenarioValidationError, match="atmosphere_model"):
+        sc.validate()
+
+
+def test_space_weather_rejects_unknown_activity_level():
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "extreme"
+    with pytest.raises(ScenarioValidationError, match="activity_level"):
+        sc.validate()
+
+
+def test_space_weather_conservative_accepts_valid_percentile():
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "conservative"
+    sc.space_weather.activity_percentile = 97.7  # a mean+2-sigma-style figure, not just 95
+    sc.validate()
+
+
+@pytest.mark.parametrize("percentile", [10.0, 49.9, 100.0, 150.0])
+def test_space_weather_conservative_rejects_out_of_range_percentile(percentile):
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "conservative"
+    sc.space_weather.activity_percentile = percentile
+    with pytest.raises(ScenarioValidationError, match="activity_percentile"):
+        sc.validate()
+
+
+def test_space_weather_exponential_model_round_trips_through_save_load(tmp_path):
+    sc = _minimal_scenario()
+    sc.space_weather.atmosphere_model = "exponential"
+    sc.save(tmp_path / "s.json")
+    loaded = load_scenario(tmp_path / "s.json")
+    assert loaded.space_weather.atmosphere_model == "exponential"
+
+
 def test_load_scenario_missing_file_gives_clear_error(tmp_path):
     with pytest.raises(ScenarioValidationError, match="could not read file"):
         load_scenario(tmp_path / "does_not_exist.json")

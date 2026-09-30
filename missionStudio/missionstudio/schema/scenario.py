@@ -644,15 +644,56 @@ class GroundStationConfig:
 
 @dataclass
 class SpaceWeatherConfig:
-    """See engine/spaceweather.py. ``source`` selects the resolution
-    strategy; ``local_file_path`` is used (and required) only for
-    ``"local_file"``, matching the user's own fallback plan ("if fetching
-    isn't possible I'll provide the file myself").
+    """See engine/spaceweather.py and engine/service.py. ``source``
+    selects the space-weather resolution strategy; ``local_file_path`` is
+    used (and required) only for ``"local_file"``, matching the user's own
+    fallback plan ("if fetching isn't possible I'll provide the file
+    myself").
+
+    ``atmosphere_model`` selects which Basilisk atmosphere-density model
+    ``engine.service`` builds for ``enable_drag`` spacecraft:
+    ``"nrlmsise00"`` (the original, only model this project used to wire
+    up -- needs the ``source``/``activity_level`` space-weather machinery
+    below) or ``"exponential"`` (Basilisk's ``ExponentialAtmosphere``, a
+    simple per-planet scale-height model that ignores ``source``/
+    ``activity_level``/``local_file_path`` entirely -- no F10.7/Ap
+    dependence at all). ``engine.service`` configures it with Basilisk's
+    own ``simSetPlanetEnvironment.exponentialAtmosphere()`` helper (the
+    same sea-level Earth baseDensity/scaleHeight a real shipped Basilisk
+    example, ``examples/scenarioDragDeorbit.py``, uses for its own
+    exponential-model deorbit case -- not hand-picked constants). Confirmed
+    directly against real Basilisk (a standalone density-recorder run, not
+    guessed) that a single sea-level exponential decay under-predicts
+    density at typical LEO altitudes by many orders of magnitude compared
+    to NRLMSISE-00 -- an inherent limitation of this simple model, not a
+    wiring bug: pick ``"exponential"`` for speed/simplicity (e.g. a quick
+    order-of-magnitude check with no space-weather dependency), never for
+    an accurate drag/decay estimate, which needs ``"nrlmsise00"``. Real
+    user question: "why can't I select the
+    atmospheric drag model, other tools let me choose Jacchia-Roberts or
+    NRLMSISE-00" -- Basilisk (checked directly against its own
+    ``src/simulation/environment/`` tree, not assumed) ships exactly
+    three atmosphere models: ``MsisAtmosphere`` (NRLMSISE-00),
+    ``ExponentialAtmosphere``, and ``TabularAtmosphere`` (a user-supplied
+    altitude/density table, not wired up here -- would need a new file
+    -upload schema/GUI concept of its own, out of scope for this round).
+    There is no Jacchia-Roberts model in Basilisk at all, so that specific
+    option genuinely cannot be offered here.
+
+    ``activity_level``/``activity_percentile`` (``"nrlmsise00"`` only --
+    ignored for ``"exponential"``) select a CONSERVATIVE, sustained-
+    worst-case drag margin instead of the ordinary resolved space-weather
+    data: see ``engine.spaceweather``'s own docstring, "Conservative
+    ('worst-case') drag margin", for the real user request this
+    implements and exactly what it computes.
     """
 
     source: str = "celestrak"  # "celestrak" | "local_file" | "synthetic"
     local_file_path: Optional[str] = None
     cache_dir: Optional[str] = None  # defaults to engine.spaceweather's own cache dir when None
+    atmosphere_model: str = "nrlmsise00"  # "nrlmsise00" | "exponential"
+    activity_level: str = "nominal"  # "nominal" | "conservative"
+    activity_percentile: float = 95.0  # [-] percentile of REAL historical F10.7/Ap; "conservative" only
 
     def validate(self) -> None:
         _require(self.source in ("celestrak", "local_file", "synthetic"),
@@ -660,6 +701,14 @@ class SpaceWeatherConfig:
         if self.source == "local_file":
             _require(bool(self.local_file_path),
                       "space_weather.source is 'local_file' but local_file_path was not set")
+        _require(self.atmosphere_model in ("nrlmsise00", "exponential"),
+                  f"space_weather.atmosphere_model {self.atmosphere_model!r} must be 'nrlmsise00' or 'exponential'")
+        _require(self.activity_level in ("nominal", "conservative"),
+                  f"space_weather.activity_level {self.activity_level!r} must be 'nominal' or 'conservative'")
+        if self.activity_level == "conservative":
+            _require(50.0 <= self.activity_percentile < 100.0,
+                      "space_weather.activity_percentile must be in [50, 100) when activity_level is "
+                      f"'conservative' -- got {self.activity_percentile!r}")
 
 
 @dataclass

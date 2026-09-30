@@ -152,3 +152,100 @@ def test_resolve_celestrak_falls_back_when_unreachable_or_insufficient(tmp_path)
     # Whatever happened, the file it points to must itself be valid.
     result = sw.validate_file(resolved.path, start, end)
     assert result.ok, f"resolve() returned an unusable file: {result.message}"
+
+
+# -- Conservative ("worst-case") drag margin -------------------------------
+# See this module's own docstring, "Conservative ('worst-case') drag
+# margin", for the real user request this implements. generate_synthetic()
+# stands in for "a real historical CSV" purely as test data here (its
+# solar-cycle-shaped F10.7 and storm-episode Ap give a genuinely varied
+# distribution to compute a percentile over) -- compute_worst_case_activity
+# itself is source-agnostic file parsing + percentile math; the "must
+# actually BE real data" policy is enforced one layer up, in resolve()'s
+# own source handling, and tested separately below.
+
+def _write_long_history(tmp_path, years: int = 15, seed: int = 3):
+    start = datetime(2000, 1, 1)
+    end = datetime(2000 + years, 1, 1)
+    return sw.generate_synthetic(start, end, tmp_path / "history.csv", seed=seed), start, end
+
+
+def test_compute_worst_case_activity_matches_numpy_percentile(tmp_path):
+    import numpy as np
+
+    path, _start, _end = _write_long_history(tmp_path)
+    f107_all, ap_all = sw._load_historical_activity(path)
+
+    f107_p, ap_p, n_samples = sw.compute_worst_case_activity(path, 95.0)
+
+    assert n_samples == len(f107_all) == len(ap_all)
+    assert f107_p == pytest.approx(np.percentile(f107_all, 95.0))
+    assert ap_p == pytest.approx(np.percentile(ap_all, 95.0))
+
+
+def test_compute_worst_case_activity_rejects_short_history(tmp_path):
+    start, end = datetime(2030, 1, 1), datetime(2030, 6, 1)  # well under a year
+    path = sw.generate_synthetic(start, end, tmp_path / "short.csv")
+    with pytest.raises(sw.SpaceWeatherError, match="need at least"):
+        sw.compute_worst_case_activity(path, 95.0)
+
+
+def test_generate_worst_case_holds_values_constant_and_validates(tmp_path):
+    start, end = datetime(2030, 1, 1), datetime(2030, 1, 10)
+    path = sw.generate_worst_case(230.5, 45.0, start, end, tmp_path / "worst.csv")
+
+    result = sw.validate_file(path, start, end)
+    assert result.ok, result.message
+
+    import csv as _csv
+    with open(path, newline="") as f:
+        rows = list(_csv.DictReader(f))
+    assert rows  # non-empty
+    for row in rows:
+        assert float(row["F10.7_OBS"]) == pytest.approx(230.5)
+        assert float(row["F10.7_OBS_CENTER81"]) == pytest.approx(230.5)
+        assert float(row["AP_AVG"]) == pytest.approx(45.0)
+        for i in range(1, 9):
+            assert float(row[f"AP{i}"]) == pytest.approx(45.0)
+
+
+def test_resolve_conservative_local_file_computes_real_percentile(tmp_path):
+    import numpy as np
+
+    history_path, _hist_start, _hist_end = _write_long_history(tmp_path)
+    f107_all, ap_all = sw._load_historical_activity(history_path)
+    expected_f107 = np.percentile(f107_all, 95.0)
+    expected_ap = np.percentile(ap_all, 95.0)
+
+    scenario_start, scenario_end = datetime(2030, 1, 1), datetime(2030, 1, 5)
+    resolved = sw.resolve("local_file", scenario_start, scenario_end, local_file_path=str(history_path),
+                           cache_dir=tmp_path / "cache", activity_level="conservative", activity_percentile=95.0)
+
+    assert resolved.is_synthetic  # not real per-day data for THESE dates -- see resolve()'s own docstring
+    assert any("CONSERVATIVE" in w for w in resolved.warnings)
+    result = sw.validate_file(resolved.path, scenario_start, scenario_end)
+    assert result.ok, result.message
+
+    import csv as _csv
+    with open(resolved.path, newline="") as f:
+        first_row = next(_csv.DictReader(f))
+    # abs=0.05: generate_worst_case's CSV rounds to 1 decimal place, so the
+    # round-tripped value can differ from the unrounded percentile by up to
+    # half of that -- real float formatting, not slack for a bug.
+    assert float(first_row["F10.7_OBS"]) == pytest.approx(expected_f107, abs=0.05)
+    assert float(first_row["AP_AVG"]) == pytest.approx(expected_ap, abs=0.05)
+
+
+def test_resolve_conservative_synthetic_source_raises():
+    with pytest.raises(sw.SpaceWeatherError, match="needs REAL historical"):
+        sw.resolve("synthetic", datetime(2030, 1, 1), datetime(2030, 1, 5), activity_level="conservative")
+
+
+def test_resolve_conservative_local_file_without_path_raises():
+    with pytest.raises(sw.SpaceWeatherError, match="local_file_path was not set"):
+        sw.resolve("local_file", datetime(2030, 1, 1), datetime(2030, 1, 5), activity_level="conservative")
+
+
+def test_resolve_unknown_activity_level_raises():
+    with pytest.raises(sw.SpaceWeatherError, match="unknown space_weather.activity_level"):
+        sw.resolve("synthetic", datetime(2030, 1, 1), datetime(2030, 1, 5), activity_level="extreme")

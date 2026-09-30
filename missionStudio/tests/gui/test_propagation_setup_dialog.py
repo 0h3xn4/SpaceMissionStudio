@@ -113,3 +113,76 @@ def test_accept_with_valid_state_closes_dialog(dialog, qtbot):
     ok_button = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
     qtbot.mouseClick(ok_button, Qt.MouseButton.LeftButton)
     assert dialog.result() == dialog.DialogCode.Accepted
+
+
+def test_atmosphere_model_defaults_to_nrlmsise00(dialog):
+    assert dialog._selected_atmosphere_model() == "nrlmsise00"
+    assert dialog.to_space_weather().atmosphere_model == "nrlmsise00"
+
+
+def test_selecting_exponential_atmosphere_model_round_trips(dialog):
+    dialog.atmosphere_model_combo.setCurrentIndex(1)
+    assert dialog._selected_atmosphere_model() == "exponential"
+    assert dialog.to_space_weather().atmosphere_model == "exponential"
+
+
+def test_exponential_atmosphere_model_disables_space_weather_controls(dialog):
+    """Real user question this answers: 'why can't I select the drag
+    model' -- once they can, switching to the model that has no F10.7/Ap
+    dependence at all should visibly grey out the controls that only
+    apply to NRLMSISE-00, not leave them looking live but silently unused.
+    """
+    dialog.space_weather_source_combo.setCurrentText("local_file")
+    assert dialog.local_file_edit.isEnabled()
+
+    dialog.atmosphere_model_combo.setCurrentIndex(1)  # exponential
+
+    assert not dialog.space_weather_source_combo.isEnabled()
+    assert not dialog.local_file_edit.isEnabled()
+    assert not dialog.activity_level_combo.isEnabled()
+    assert not dialog.activity_percentile_spin.isEnabled()
+
+    dialog.atmosphere_model_combo.setCurrentIndex(0)  # back to nrlmsise00
+    assert dialog.space_weather_source_combo.isEnabled()
+    assert dialog.local_file_edit.isEnabled()  # source is still "local_file" from above
+    assert dialog.activity_level_combo.isEnabled()
+
+
+def test_activity_level_defaults_to_nominal_with_percentile_disabled(dialog):
+    assert dialog._selected_activity_level() == "nominal"
+    assert not dialog.activity_percentile_spin.isEnabled()
+    assert dialog.to_space_weather().activity_level == "nominal"
+
+
+def test_selecting_conservative_activity_level_enables_percentile_and_round_trips(dialog):
+    dialog.activity_level_combo.setCurrentIndex(1)  # conservative
+    assert dialog._selected_activity_level() == "conservative"
+    assert dialog.activity_percentile_spin.isEnabled()
+
+    dialog.activity_percentile_spin.setValue(97.7)
+    sw = dialog.to_space_weather()
+    assert sw.activity_level == "conservative"
+    assert sw.activity_percentile == pytest.approx(97.7)
+
+
+def test_loading_existing_conservative_config_checks_the_right_controls(qtbot):
+    from missionstudio.schema.scenario import SpaceWeatherConfig
+
+    d = _dialog(space_weather=SpaceWeatherConfig(activity_level="conservative", activity_percentile=90.0))
+    qtbot.addWidget(d)
+    assert d._selected_activity_level() == "conservative"
+    assert d.activity_percentile_spin.isEnabled()
+    assert d.activity_percentile_spin.value() == pytest.approx(90.0)
+
+
+def test_srp_location_pointer_label_is_present(dialog):
+    """Real user report: looked for solar radiation pressure in this
+    dialog specifically and didn't find it -- this label is the fix (see
+    this module's own docstring); regression guard that it doesn't
+    silently disappear in some later refactor.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    labels = [w.text() for w in dialog.findChildren(QLabel)]
+    assert any("solar radiation pressure" in text.lower() and "per spacecraft" in text.lower()
+               for text in labels)

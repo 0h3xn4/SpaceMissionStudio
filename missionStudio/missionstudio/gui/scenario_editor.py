@@ -194,10 +194,16 @@ class ScenarioEditorWidget(QWidget):
         )
         if gravity.third_body_perturbers:
             gravity_bits.append("+" + ", ".join(gravity.third_body_perturbers))
+        if sw.atmosphere_model == "exponential":
+            atmosphere_bit = "exponential atmosphere (no space weather)"
+        else:
+            atmosphere_bit = f"NRLMSISE-00, space weather: {sw.source}"
+            if sw.activity_level == "conservative":
+                atmosphere_bit += f" (conservative, P{sw.activity_percentile:g} margin)"
         self.propagation_summary_label.setText(
             f"{' | '.join(gravity_bits)}\n"
             f"{sim.integrator}, {sim.dynamics_task_rate_s:g} s step, {sim.duration_days:g} day(s)\n"
-            f"space weather: {sw.source}"
+            f"{atmosphere_bit}"
         )
 
     def _build_spacecraft_group(self) -> QGroupBox:
