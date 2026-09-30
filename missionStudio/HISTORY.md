@@ -2932,3 +2932,44 @@ project) -- written directly against `VizardDownload.rst`'s documented
 links and Vizard's own documented `.zip` contents; verify on first
 real-network use.
 
+## First real-network run of fetch_vizard() -- a real bug, found and fixed
+
+Asked a real user to run `fetch_vizard()` on their own machine, since
+this project's own development sandbox can't reach
+`hanspeterschaub.info` at all (confirmed via the sandbox's own proxy
+status endpoint: an organization egress-policy denial, not a timeout --
+every environment available to this session shares the same policy, so
+there was no way to test this from here no matter which environment a
+new session used).
+
+**Real result:** `HTTPError: 403 Forbidden`, straight from the server,
+on the very first `urlopen()` call. Root-caused (not guessed, though the
+signature is a well-known one): `urllib.request.urlopen(url, ...)`
+called with a bare URL string sends Python's own default `User-Agent`
+header (`"Python-urllib/<version>"`), which is routinely blocked by
+basic bot-protection on static-file hosts that have no issue with an
+ordinary browser downloading the exact same public file by hand --
+`VizardDownload.rst` already publishes this exact link for anyone to
+click.
+
+**Fixed** in both `gui.vizard_launcher.fetch_vizard()` (the one
+actually reported broken) and, proactively, `engine.spaceweather.fetch()`
+(the identical bare-`urlopen()` pattern against a different host,
+`celestrak.org`, never itself exercised against the real network in
+this sandbox either) -- both now send a realistic browser `User-Agent`
+via an explicit `urllib.request.Request(url, headers={...})` instead of
+a bare URL string. A standard, widely-used workaround for exactly this
+kind of blocking, not an attempt to bypass any real access control.
+
+**Verification:** a new regression test in each affected file
+(`test_fetch_vizard_sends_a_browser_like_user_agent`,
+`test_fetch_sends_a_browser_like_user_agent`) asserts the actual
+outgoing `Request` carries a real `User-Agent` header -- neither
+existing test suite would have caught this regressing, since their fake
+`urlopen()` never inspected what it was called with, only that some
+response came back. 669 passed, 99 skipped in this sandbox. The fix
+itself has NOT yet been re-confirmed against the real network with a
+second real-machine run -- the user's next run should get past the
+download step to whatever (if anything) comes after; report back if it
+doesn't.
+

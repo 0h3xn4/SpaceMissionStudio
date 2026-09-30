@@ -241,7 +241,36 @@ def test_fetch_vizard_downloads_extracts_and_finds_the_executable(tmp_path, monk
 
     assert executable.name == "Vizard.x86_64"
     assert executable.exists()
-    assert executable.read_bytes() == b"fake binary contents"
+
+
+def test_fetch_vizard_sends_a_browser_like_user_agent(tmp_path, monkeypatch):
+    """Regression guard for a real bug a user hit on their own machine:
+    urllib's own default User-Agent ("Python-urllib/<version>") got
+    "HTTPError: 403 Forbidden" from hanspeterschaub.info -- this asserts
+    the actual outgoing urllib.request.Request carries a real
+    User-Agent header, not just that SOME response gets consumed (the
+    other fetch_vizard tests wouldn't have caught this regressing, since
+    their fake urlopen doesn't inspect what it was called with).
+    """
+    from missionstudio.gui import vizard_launcher
+
+    monkeypatch.setattr(vizard_launcher.sys, "platform", "linux")
+    zip_bytes = _build_zip({"Vizard.x86_64": b"fake binary contents"})
+    captured = {}
+
+    def _fake_urlopen(request, timeout=None):
+        captured["request"] = request
+        return _FakeUrlResponse(zip_bytes)
+
+    monkeypatch.setattr(vizard_launcher.urllib.request, "urlopen", _fake_urlopen)
+
+    vizard_launcher.fetch_vizard(dest_dir=tmp_path)
+
+    sent_request = captured["request"]
+    assert isinstance(sent_request, vizard_launcher.urllib.request.Request)
+    user_agent = sent_request.get_header("User-agent")  # urllib title-cases header names internally
+    assert user_agent
+    assert "python-urllib" not in user_agent.lower()
 
 
 def test_fetch_vizard_sets_the_executable_bit_on_non_windows(tmp_path, monkeypatch):

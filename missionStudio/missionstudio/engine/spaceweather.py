@@ -105,6 +105,19 @@ CELESTRAK_URLS = {
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "missionStudio" / "spaceweather"
 
+# Applied the same fix here proactively as gui.vizard_launcher's own
+# fetch_vizard() needed for real (see that module's own comment): a real
+# user report showed a plain urllib.request.urlopen(url) (no custom
+# headers) getting "HTTPError: 403 Forbidden" from hanspeterschaub.info,
+# the classic signature of basic bot-protection blocking urllib's own
+# default User-Agent string. This module's own fetch() has the identical
+# bare-urlopen pattern against a different host (celestrak.org) that has
+# never actually been exercised against the real network in this
+# project's own development sandbox (see this module's own docstring) --
+# fixed here on the same reasoning rather than waiting to hit the
+# identical bug a second time.
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 # [bytes] CelesTrak's largest space-weather product (SW-All.csv, the full
 # historical record) is a few MB -- cap well above that so a legitimate
 # fetch never trips this, but refuse to buffer an unbounded response into
@@ -240,7 +253,15 @@ def fetch(dataset: str = "SW-All", cache_dir: Optional[Path] = None, force: bool
     is blocked by this environment's outbound-network policy (confirmed via
     a direct ``curl`` returning a 403 policy denial, not a timeout). Written
     directly against CelesTrak's documented CSV endpoints; verify on first
-    real-network use.
+    real-network use. A ``User-Agent`` header is set (see
+    :data:`_USER_AGENT`'s own comment) as a preemptive fix, not a
+    confirmed one here -- a real user's machine hit exactly this failure
+    mode (a plain ``urlopen()`` getting ``HTTPError: 403 Forbidden``, root
+    -caused to urllib's own default User-Agent string) against
+    ``hanspeterschaub.info`` for :func:`gui.vizard_launcher.fetch_vizard`,
+    a different host with the identical bare-``urlopen`` pattern this
+    function used to share; applied the same fix here on that precedent,
+    not yet re-confirmed against celestrak.org specifically.
     """
     if dataset not in CELESTRAK_URLS:
         raise SpaceWeatherError(f"unknown CelesTrak dataset {dataset!r}, expected one of {list(CELESTRAK_URLS)}")
@@ -252,8 +273,9 @@ def fetch(dataset: str = "SW-All", cache_dir: Optional[Path] = None, force: bool
         return dest
 
     url = CELESTRAK_URLS[dataset]
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             # Read one byte past the cap rather than response.read() with no
             # bound: an unbounded read would buffer however much data the
             # server sends (or never sends, tying up memory/the connection)

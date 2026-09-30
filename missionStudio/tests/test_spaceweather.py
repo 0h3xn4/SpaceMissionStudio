@@ -249,3 +249,44 @@ def test_resolve_conservative_local_file_without_path_raises():
 def test_resolve_unknown_activity_level_raises():
     with pytest.raises(sw.SpaceWeatherError, match="unknown space_weather.activity_level"):
         sw.resolve("synthetic", datetime(2030, 1, 1), datetime(2030, 1, 5), activity_level="extreme")
+
+
+def test_fetch_sends_a_browser_like_user_agent(tmp_path, monkeypatch):
+    """Regression guard, applied proactively here on the precedent of a
+    real bug a user hit with gui.vizard_launcher.fetch_vizard's own
+    identical bare-urlopen pattern against a different host: urllib's own
+    default User-Agent ("Python-urllib/<version>") got "HTTPError: 403
+    Forbidden" from that other host's basic bot-protection. Asserts the
+    actual outgoing urllib.request.Request carries a real User-Agent
+    header, not just that some response gets consumed.
+    """
+    import io
+
+    captured = {}
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._buf = io.BytesIO(data)
+
+        def read(self, n=-1):
+            return self._buf.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    def _fake_urlopen(request, timeout=None):
+        captured["request"] = request
+        return _FakeResponse(b"DATE,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,AP_AVG,F10.7_OBS,F10.7_OBS_CENTER81\n")
+
+    monkeypatch.setattr(sw.urllib.request, "urlopen", _fake_urlopen)
+
+    sw.fetch(cache_dir=tmp_path)
+
+    sent_request = captured["request"]
+    assert isinstance(sent_request, sw.urllib.request.Request)
+    user_agent = sent_request.get_header("User-agent")  # urllib title-cases header names internally
+    assert user_agent
+    assert "python-urllib" not in user_agent.lower()

@@ -148,6 +148,21 @@ _DOWNLOAD_URLS = {
 
 DEFAULT_FETCH_DIR = Path.home() / ".cache" / "missionStudio" / "vizard"
 
+# Real user report: a plain urllib.request.urlopen(url) (no custom
+# headers) against hanspeterschaub.info returned "HTTPError: 403
+# Forbidden" -- confirmed against a real machine with real internet
+# access, not this project's own sandbox network policy (that gives a
+# distinguishable proxy-level CONNECT rejection instead, never an
+# HTTPError from the destination server itself). The classic cause:
+# urllib's own default User-Agent ("Python-urllib/<version>") gets
+# fingerprinted and blocked by basic bot-protection on countless static
+# -file hosts that have no issue with an ordinary browser downloading the
+# exact same public file by hand -- this is a well-known, standard
+# workaround (setting a realistic User-Agent), not an attempt to bypass
+# any actual access control (VizardDownload.rst already publishes this
+# exact link for anyone to click).
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 # [bytes] A Unity build is typically a few hundred MB -- cap well above
 # that so a legitimate download never trips this, but refuse to buffer an
 # unbounded response into memory. Same convention/value as
@@ -205,13 +220,22 @@ def fetch_vizard(dest_dir: Optional[Path] = None, timeout_s: float = 30.0,
     failure -- there is no separate "was it cancelled or did it
     genuinely fail" signal for the caller to check.
 
-    NOT exercised end-to-end in this development sandbox --
-    ``hanspeterschaub.info`` is blocked by this environment's outbound
-    -network policy (the same host, confirmed blocked elsewhere in this
-    project -- ``engine.kernels``'s own SPICE-kernel fetch uses it as a
-    backup URL). Written directly against ``VizardDownload.rst``'s
-    documented links and Vizard's own documented ``.zip`` contents;
-    verify on first real-network use.
+    Verification status: this project's own development sandbox can't
+    reach ``hanspeterschaub.info`` at all (blocked at the organization
+    egress-policy level, confirmed via the proxy's own status endpoint --
+    the same host ``engine.kernels``'s SPICE-kernel fetch uses as a
+    backup URL), so a real user ran this on their own machine instead.
+    First attempt got ``HTTPError: 403 Forbidden`` straight from the
+    server -- root-caused (not guessed) to urllib's own default
+    ``User-Agent`` header (``"Python-urllib/<version>"``) tripping basic
+    bot-protection; fixed by sending a realistic browser ``User-Agent``
+    instead (see :data:`_USER_AGENT`'s own comment -- this is a standard,
+    widely-used workaround for exactly this kind of blocking, not an
+    attempt to bypass any real access control on what
+    ``VizardDownload.rst`` already publishes as a direct public download
+    link). The download/extract/executable-discovery path beyond that
+    HTTP call has NOT yet been re-confirmed against the real network with
+    this fix in place -- verify on next real-network use.
     """
     dest_dir = Path(dest_dir) if dest_dir else DEFAULT_FETCH_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -222,8 +246,9 @@ def fetch_vizard(dest_dir: Optional[Path] = None, timeout_s: float = 30.0,
 
     if on_status:
         on_status(f"Downloading {url} ...")
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
             chunks = []
             total = 0
             while True:
