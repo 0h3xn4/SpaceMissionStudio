@@ -44,6 +44,26 @@ def main(argv: list | None = None) -> int:
     # per-platform location -- QSettings() with no explicit org/app name
     # falls back to whatever these two are set to.
     app.setOrganizationName("AVSLab")
+    # Real user report: the taskbar/dock always shows a generic cog icon,
+    # never the app icon below. Root cause confirmed by inspecting how
+    # Linux desktop shells actually resolve a running window's icon: most
+    # (GNOME Shell, KDE Plasma, and Wayland compositors generally) match
+    # the window to an installed .desktop entry by "desktop file name" /
+    # app-id, then use THAT entry's Icon= -- they do not look at the QIcon
+    # passed to setWindowIcon() below at all. Without this call, Qt never
+    # tells the compositor which .desktop entry this process corresponds
+    # to, so the match fails and the shell falls back to its generic
+    # "unknown application" icon (a gear/cog glyph in Adwaita/Breeze/Yaru
+    # -derived themes -- exactly what was reported). Matches the
+    # "missionstudio" basename used everywhere else a .desktop entry is
+    # referenced (packaging/missionstudio.desktop.in's own filename and
+    # Icon= key, packaging/deb's desktop entry, install.sh's icon install
+    # path). Still needs a matching missionstudio.desktop to actually be
+    # installed (via packaging/install.sh or the .deb) for the lookup to
+    # resolve to anything -- a from-source run with no .desktop entry
+    # installed anywhere on the system falls back to the generic icon
+    # regardless of this call, which this alone can't fix.
+    app.setDesktopFileName("missionstudio")
     apply_theme(app)
     icon = app_icon()
     app.setWindowIcon(icon)

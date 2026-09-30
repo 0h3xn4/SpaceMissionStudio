@@ -3727,3 +3727,48 @@ render has meaningfully fewer distinct colors than a 256px one
 (confirming the size-gated detail thresholds actually take effect).
 Full suite: 718 passed, 101 skipped.
 
+## Taskbar always shows a generic cog icon, never the app icon
+
+**Real user report**, asked right after the icon redesign above: "when
+launching the GUI, in the task bar it always shows a cog symbol, why?"
+-- not a rendering bug in the icon itself (that was already verified
+extensively, see above), so the investigation went into how Linux
+desktop shells actually source a running window's taskbar/dock icon.
+
+**Root cause, confirmed by reading how `app.py` launches the window and
+comparing it against the packaging/ `.desktop` entries**: most Linux
+desktop shells (GNOME Shell, KDE Plasma, and Wayland compositors
+generally) do not take a running window's icon from the `QIcon` passed
+to Qt's `setWindowIcon()` at all. They match the window to an
+*installed* `.desktop` entry -- by "desktop file name" / app-id on
+Wayland, or by `WM_CLASS` against that entry's `StartupWMClass=` on
+X11 -- and use THAT entry's `Icon=` key. `app.py`'s `main()` never
+called `QApplication.setDesktopFileName()`, and neither
+`packaging/missionstudio.desktop.in` nor `packaging/deb/.../missionstudio.desktop`
+set `StartupWMClass`, so neither matching path could succeed. With no
+match, the shell falls back to its own generic "unknown application"
+icon, which in Adwaita/Breeze/Yaru-derived icon themes is exactly the
+gear/cog glyph reported.
+
+**Fix:** `app.py` now calls `app.setDesktopFileName("missionstudio")`
+right after `setApplicationName`/`setOrganizationName`, and both
+`.desktop` files gained `StartupWMClass=missionstudio` -- all three
+spellings of this identifier now agree with each other and with the
+`.desktop` files' own installed basename (`missionstudio.desktop`).
+Documented inline in `app.py` that this alone is not sufficient for a
+from-source run (`python3 -m missionstudio.gui.app`, or `missionstudio
+gui` from a dev checkout): the match still needs a real
+`missionstudio.desktop` entry present somewhere in `XDG_DATA_DIRS`,
+which currently only `packaging/install.sh` (or the `.deb`) installs,
+together with the rendered icon PNG under the `hicolor` icon theme --
+so a plain source checkout will keep showing the generic icon
+regardless, independent of this fix.
+
+**Verification:** 3 new regression tests in `tests/gui/test_app.py`
+(new file): `main()`'s source actually contains the
+`setDesktopFileName("missionstudio")` call, both `.desktop` files
+actually declare `StartupWMClass=missionstudio`, and the identifier
+passed to `setDesktopFileName()` matches the `.desktop` files' own
+installed basename (so the three spellings can't silently drift apart
+again). Full suite: 722 passed, 101 skipped.
+
