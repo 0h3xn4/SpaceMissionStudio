@@ -48,6 +48,8 @@ Usage::
     missionstudio spaceweather-resolve scenario.json
     missionstudio generate-constellation template.json --out constellation.json \
         --total-satellites 12 --planes 3 --phasing-factor 1 --altitude-km 780 --inclination-deg 86.4
+    missionstudio generate-phasing-formation chief_only.json --out formation.json \
+        --chief chief-1 --follower-name follower-1 --along-track-km 50
     missionstudio gui
 """
 
@@ -336,6 +338,71 @@ def cmd_generate_constellation(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_generate_phasing_formation(args: argparse.Namespace) -> int:
+    try:
+        scenario = load_scenario(args.scenario)
+    except ScenarioValidationError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 1
+
+    chief = next((sc for sc in scenario.spacecraft if sc.name == args.chief), None)
+    if chief is None:
+        print(f"ERROR: no spacecraft named {args.chief!r} in {args.scenario} -- "
+              f"this scenario has: {[sc.name for sc in scenario.spacecraft]}", file=sys.stderr)
+        return 1
+    if args.template_spacecraft is not None:
+        template = next((sc for sc in scenario.spacecraft if sc.name == args.template_spacecraft), None)
+        if template is None:
+            print(f"ERROR: no spacecraft named {args.template_spacecraft!r} in {args.scenario} -- "
+                  f"this scenario has: {[sc.name for sc in scenario.spacecraft]}", file=sys.stderr)
+            return 1
+    else:
+        template = chief
+
+    # engine.formation itself has no Basilisk import at module level (see
+    # its own docstring) -- the real Basilisk import is lazy, INSIDE
+    # generate_phasing_follower() below, so the ImportError this needs to
+    # catch can only happen around that call, not this one.
+    from .engine.formation import PhasingFormationRequest, generate_phasing_follower
+
+    request = PhasingFormationRequest(
+        chief_name=chief.name, follower_name=args.follower_name,
+        radial_km=args.radial_km, along_track_km=args.along_track_km, cross_track_km=args.cross_track_km,
+        reconfiguration_interval_days=args.reconfiguration_interval_days,
+        tolerance_fraction=args.tolerance_fraction, restore_tolerance_fraction=args.restore_tolerance_fraction,
+        correction_window_days=args.correction_window_days, max_drift_days=args.max_drift_days,
+        max_delta_semi_major_axis_km=args.max_delta_semi_major_axis_km,
+        station_keeping_target_altitude_km=args.station_keeping_target_altitude_km,
+        station_keeping_deadband_km=args.station_keeping_deadband_km,
+        thrust_n=args.thrust_n, isp_s=args.isp_s, propellant_kg=args.propellant_kg,
+    )
+    try:
+        follower = generate_phasing_follower(request, chief, template, scenario.gravity.central_body)
+    except ImportError as exc:
+        print(f"ERROR: Basilisk is not installed/built ({exc}) -- generating a phasing formation needs a real "
+              f"Basilisk build (it computes the follower's orbit via a real Hill-frame state-vector transform) "
+              f"-- see missionStudio/README.md", file=sys.stderr)
+        return 2
+    except ScenarioValidationError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 1
+
+    if follower.name in {sc.name for sc in scenario.spacecraft}:
+        print(f"ERROR: a spacecraft named {follower.name!r} already exists in {args.scenario}", file=sys.stderr)
+        return 1
+    scenario.spacecraft = scenario.spacecraft + [follower]
+    try:
+        scenario.save(args.out)
+    except ScenarioValidationError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Generated follower {follower.name!r} (target along-track separation "
+          f"{follower.phasing_keeping.target_separation_km[0]:.3f} km from chief {chief.name!r}), wrote "
+          f"{len(scenario.spacecraft)}-spacecraft scenario to {args.out}")
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     try:
         from .gui.app import main as gui_main
@@ -410,6 +477,41 @@ def build_parser() -> argparse.ArgumentParser:
                           help="add the generated satellites to the template scenario's existing spacecraft "
                                "instead of replacing them")
     p_const.set_defaults(func=cmd_generate_constellation)
+
+    p_phasing = subparsers.add_parser(
+        "generate-phasing-formation",
+        help="generate a follower spacecraft holding a phasing formation with an existing chief "
+             "(needs a Basilisk build -- computes the follower's orbit via a real Hill-frame transform)",
+    )
+    p_phasing.add_argument("scenario", type=Path, help="scenario file to load the chief/template spacecraft from")
+    p_phasing.add_argument("--out", type=Path, required=True, help="scenario file to write the result to")
+    p_phasing.add_argument("--chief", type=str, required=True, help="name of the existing chief spacecraft")
+    p_phasing.add_argument("--follower-name", type=str, required=True, help="name for the new follower spacecraft")
+    p_phasing.add_argument("--template-spacecraft", type=str, default=None,
+                            help="name of the spacecraft to clone the follower's non-orbit fields from "
+                                 "(default: the chief itself)")
+    p_phasing.add_argument("--radial-km", type=float, default=0.0,
+                            help="Hill-frame radial (R) offset at epoch [km] -- starting geometry only, not "
+                                 "actively held (see PhasingKeepingController's own docstring)")
+    p_phasing.add_argument("--along-track-km", type=float, required=True,
+                            help="Hill-frame along-track (T) offset at epoch [km] -- becomes "
+                                 "phasing_keeping.target_separation_km, the ACTIVELY HELD separation")
+    p_phasing.add_argument("--cross-track-km", type=float, default=0.0,
+                            help="Hill-frame cross-track (N) offset at epoch [km] -- starting geometry only, "
+                                 "not actively held")
+    p_phasing.add_argument("--reconfiguration-interval-days", type=float, default=90.0)
+    p_phasing.add_argument("--tolerance-fraction", type=float, default=0.10)
+    p_phasing.add_argument("--restore-tolerance-fraction", type=float, default=0.02)
+    p_phasing.add_argument("--correction-window-days", type=float, default=21.0)
+    p_phasing.add_argument("--max-drift-days", type=float, default=90.0)
+    p_phasing.add_argument("--max-delta-semi-major-axis-km", type=float, default=3.0)
+    p_phasing.add_argument("--station-keeping-target-altitude-km", type=float, default=None,
+                            help="default: derived from the chief's own altitude at generation time")
+    p_phasing.add_argument("--station-keeping-deadband-km", type=float, default=2.0)
+    p_phasing.add_argument("--thrust-n", type=float, default=0.05, help="shared thruster thrust [N]")
+    p_phasing.add_argument("--isp-s", type=float, default=1500.0, help="shared thruster specific impulse [s]")
+    p_phasing.add_argument("--propellant-kg", type=float, default=5.0, help="shared tank propellant [kg]")
+    p_phasing.set_defaults(func=cmd_generate_phasing_formation)
 
     p_gui = subparsers.add_parser("gui", help="launch the PySide6 GUI shell")
     p_gui.set_defaults(func=cmd_gui)

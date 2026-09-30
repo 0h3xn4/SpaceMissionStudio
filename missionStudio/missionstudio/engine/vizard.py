@@ -106,6 +106,23 @@ analytical estimate -- see each source module's own docstring):
   real ``FuelTankMsgPayload`` that controller publishes specifically for
   this -- see its own module docstring). Same example's pattern for the
   "Tank" panel.
+* **Delta-V used** -- one more ``GenericStorage`` panel per spacecraft
+  with ``StationKeepingConfig`` configured (station-keeping delta-V,
+  ``StationKeepingController.deltaVOutMsg``), plus, for a spacecraft that
+  ALSO has ``PhasingKeepingConfig`` configured, two more:
+  ``PhasingKeepingController.deltaVOutMsg`` (phasing delta-V, kept as a
+  SEPARATE panel from station-keeping's own -- see that controller's
+  docstring for why: both draw from the one shared tank, but reporting
+  them separately shows the propellant cost of altitude-keeping and
+  phasing-keeping individually) and ``...separationOutMsg`` (the live
+  along-track separation from the chief, against the currently-scheduled
+  target -- "is the formation actually holding", arguably the single most
+  relevant live number for a phasing/formation-flying scenario). All
+  three are real ``DataStorageStatusMsgPayload`` messages those
+  controllers publish specifically for this (again, see their own module
+  docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
+  the propellant and delta-V/separation panels are never racing to
+  overwrite the same message.
 * **Ground-station access windows** -- one ``GenericSensor`` marker per
   (ground station, spacecraft) pair that Phase 3's access analysis tracks,
   changing color LIVE between "no access" and "access" as
@@ -255,6 +272,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
                    central_body_name: str = "earth",
                    battery_by_spacecraft: Optional[Dict[str, object]] = None,
                    station_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
+                   phasing_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
                    access_out_msgs: Optional[Dict[tuple, object]] = None,
                    custom_models_by_spacecraft: Optional[Dict[str, dict]] = None):
     """Call once, after every spacecraft/sensor/actuator/FSW module for
@@ -291,6 +309,9 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         station_keeping_by_spacecraft: ``{spacecraft_name: engine.orbit_maintenance.StationKeepingController}``
             for every spacecraft with ``StationKeepingConfig`` set -- same
             section.
+        phasing_keeping_by_spacecraft: ``{spacecraft_name: engine.orbit_maintenance.PhasingKeepingController}``
+            for every spacecraft with ``PhasingKeepingConfig`` set -- same
+            section.
         access_out_msgs: ``{(ground_station_name, spacecraft_name): groundLocation.accessOutMsgs[i]}``
             for every station/spacecraft pair Phase 3's access analysis
             tracks (``engine.service``'s own ``_access_out_msgs``) -- same
@@ -317,6 +338,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
 
     battery_by_spacecraft = battery_by_spacecraft or {}
     station_keeping_by_spacecraft = station_keeping_by_spacecraft or {}
+    phasing_keeping_by_spacecraft = phasing_keeping_by_spacecraft or {}
     access_out_msgs = access_out_msgs or {}
 
     class _AccessIndicatorBridge(sysModel.SysModel):
@@ -388,6 +410,38 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             tank_reader.subscribeTo(controller.fuelTankOutMsg)
             panel.fuelTankStateInMsg = tank_reader
             storages.append(panel)
+
+            dv_panel = vizInterface.GenericStorage()
+            dv_panel.label = "Delta-V (station-keeping)"
+            dv_panel.type = "Delta-V"
+            dv_panel.units = "m/s"
+            dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("yellow"))
+            dv_reader = messaging.DataStorageStatusMsgReader()
+            dv_reader.subscribeTo(controller.deltaVOutMsg)
+            dv_panel.dataStorageStateInMsg = dv_reader
+            storages.append(dv_panel)
+
+        phasing_controller = phasing_keeping_by_spacecraft.get(sc_name)
+        if phasing_controller is not None:
+            phasing_dv_panel = vizInterface.GenericStorage()
+            phasing_dv_panel.label = "Delta-V (phasing)"
+            phasing_dv_panel.type = "Delta-V"
+            phasing_dv_panel.units = "m/s"
+            phasing_dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("orange"))
+            phasing_dv_reader = messaging.DataStorageStatusMsgReader()
+            phasing_dv_reader.subscribeTo(phasing_controller.deltaVOutMsg)
+            phasing_dv_panel.dataStorageStateInMsg = phasing_dv_reader
+            storages.append(phasing_dv_panel)
+
+            separation_panel = vizInterface.GenericStorage()
+            separation_panel.label = "Separation from chief"
+            separation_panel.type = "Separation"
+            separation_panel.units = "km"
+            separation_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
+            separation_reader = messaging.DataStorageStatusMsgReader()
+            separation_reader.subscribeTo(phasing_controller.separationOutMsg)
+            separation_panel.dataStorageStateInMsg = separation_reader
+            storages.append(separation_panel)
 
         generic_storage_list.append(storages or None)
         if storages:

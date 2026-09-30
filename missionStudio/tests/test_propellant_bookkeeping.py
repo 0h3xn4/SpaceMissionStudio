@@ -13,7 +13,9 @@ Monte Carlo dry_mass_kg dispersion applied before any controller ever runs.
 apply_propellant_burn's delta-based approach fixes both.
 """
 
-from missionstudio.engine.propellant_bookkeeping import apply_propellant_burn
+import math
+
+from missionstudio.engine.propellant_bookkeeping import apply_propellant_burn, total_delta_v_budget
 
 
 def test_no_op_when_thrust_is_zero():
@@ -105,3 +107,22 @@ def test_delta_preserves_a_prior_dry_mass_dispersion():
     # The dispersion offset (+8 kg relative to nominal) must survive the tick.
     assert new_mass == (dispersed_dry_mass + propellant) - burned_kg
     assert new_mass != (nominal_dry_mass + new_propellant)
+
+
+def test_total_delta_v_budget_matches_closed_form_tsiolkovsky():
+    dry_mass_kg = 100.0
+    propellant_kg = 5.0
+    isp_s = 1500.0
+    g0 = 9.80665
+    expected = isp_s * g0 * math.log((dry_mass_kg + propellant_kg) / dry_mass_kg)
+    assert total_delta_v_budget(dry_mass_kg, propellant_kg, isp_s, g0) == expected
+
+
+def test_total_delta_v_budget_is_zero_with_no_propellant():
+    assert total_delta_v_budget(dry_mass_kg=100.0, propellant_kg=0.0, isp_s=1500.0) == 0.0
+
+
+def test_total_delta_v_budget_is_zero_with_no_dry_mass():
+    # Defensive only -- dry_mass_kg <= 0 is not a scenario schema.scenario
+    # itself allows, but this must not raise (division by zero) either way.
+    assert total_delta_v_budget(dry_mass_kg=0.0, propellant_kg=5.0, isp_s=1500.0) == 0.0

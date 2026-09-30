@@ -50,6 +50,17 @@ differ from the original:
   that module) -- this controller still does NOT use a Basilisk
   ``fuelTank`` state effector for the actual physics, only for this one
   output message.
+* Publishes ``deltaVOutMsg`` (a ``DataStorageStatusMsgPayload``, chosen
+  over reusing ``FuelTankMsgPayload`` a second time so a spacecraft's
+  "propellant remaining" and "delta-V used" Vizard panels are backed by
+  two genuinely distinct message instances, never two panels racing to
+  overwrite the same one) -- same "purely for a live Vizard gauge" reason
+  as ``fuelTankOutMsg``, this time driving a delta-V-used bar scaled
+  against :func:`~missionstudio.engine.propellant_bookkeeping.total_delta_v_budget`'s
+  closed-form total for this controller's own tank. :class:`PhasingKeepingController`
+  publishes the same kind of message (its own delta-V, plus a live
+  along-track separation-from-chief reading) for the same reason -- see
+  that class's own docstring.
 
 Uses a dedicated ``extForceTorque`` effector for the reboost force
 (``extForce_N``, inertial-frame), independent of whatever effector
@@ -91,12 +102,19 @@ as a side effect: ``currentMass`` is now the spacecraft's real total mass
 (dry + every tank currently aboard), not just this one controller's own
 belief about it.
 
-Verification status: same as ``engine/fsw.py``/``engine/service.py`` --
-cannot be executed in this project's development sandbox (no Basilisk
-build here); the burn/bookkeeping logic is copied from
+Verification status: the burn/bookkeeping logic is copied from
 ``../missionAnalysis``'s already-reviewed controller, not written from
 memory (the shared-mass-bookkeeping fix above is this project's own,
-found and fixed after a full codebase audit).
+found and fixed after a full codebase audit). This whole module's
+``requires_basilisk``-marked tests (``tests/test_orbit_maintenance.py``)
+-- including the ``deltaVOutMsg``/``separationOutMsg`` telemetry this
+docstring describes above -- have been run for real against a genuine
+``pip install "bsk[all]"`` Basilisk build (this project's own "vendoring"
+discovery -- see ``missionStudio/README.md``'s "Getting started"), not
+left unexercised; this superseded an earlier, stale version of this note
+that (incorrectly, by the time it was written) still claimed no Basilisk
+build was ever available to run these against in this project's own
+development sandbox.
 """
 
 from __future__ import annotations
@@ -112,7 +130,7 @@ from Basilisk.utilities import macros, orbitalMotion
 
 from ..schema.scenario import ConstantThrustConfig, PhasingKeepingConfig, StationKeepingConfig
 from .constellation import SeparationSchedule
-from .propellant_bookkeeping import apply_propellant_burn
+from .propellant_bookkeeping import apply_propellant_burn, total_delta_v_budget
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -178,6 +196,12 @@ class StationKeepingController(sysModel.SysModel):
         # fuelTank state effector), so there is no Basilisk message
         # carrying it unless this module publishes one itself.
         self.fuelTankOutMsg = messaging.FuelTankMsg()
+        # Live delta-V-used telemetry, for Vizard's GenericStorage
+        # "delta-V" panel (see engine.vizard and this module's own
+        # docstring) -- a DataStorageStatusMsgPayload (not a second
+        # FuelTankMsgPayload) so the propellant and delta-V panels are
+        # backed by two distinct messages.
+        self.deltaVOutMsg = messaging.DataStorageStatusMsg()
 
         # Wired up externally (see build_station_keeping): the
         # extForceTorque effector this controller commands, and the
@@ -195,6 +219,13 @@ class StationKeepingController(sysModel.SysModel):
         self.dryMass = dry_mass_kg  # [kg]
         self.propellant = propellant_kg  # [kg]
         self._initialPropellantKg = propellant_kg  # [kg] fixed tank capacity, for fuelTankOutMsg.maxFuelMass
+        # [m/s] closed-form Tsiolkovsky total for a FULL tank -- the fixed
+        # "gauge max" deltaVOutMsg.storageCapacity below reports every
+        # tick; NOT recomputed from the depleting propellant_kg (that
+        # would shrink the gauge's own max as propellant burns, which is
+        # not what "how much of this tank's total budget have I used so
+        # far" should show).
+        self.dvBudgetMps = total_delta_v_budget(dry_mass_kg, propellant_kg, isp_s, g0_mps2)
         semi_major_axis_m = r_planet_m + nominal_alt_m  # [m]
         self.smoothingWindowS = float(2.0 * np.pi * np.sqrt(semi_major_axis_m ** 3 / mu))  # [s] orbit period
         self.sunlitThreshold = eclipse_sunlit_threshold  # [-]
@@ -295,6 +326,11 @@ class StationKeepingController(sysModel.SysModel):
         fuelTankMsg.maxFuelMass = self._initialPropellantKg  # [kg]
         self.fuelTankOutMsg.write(fuelTankMsg, CurrentSimNanos, self.moduleID)
 
+        deltaVMsg = messaging.DataStorageStatusMsgPayload()
+        deltaVMsg.storageLevel = self._cumulativeDv  # [m/s]
+        deltaVMsg.storageCapacity = self.dvBudgetMps  # [m/s]
+        self.deltaVOutMsg.write(deltaVMsg, CurrentSimNanos, self.moduleID)
+
         self.tLog.append(t)
         self.altLog.append(alt)
         self.smoothAltLog.append(smoothAlt)
@@ -367,7 +403,28 @@ class PhasingKeepingController(sysModel.SysModel):
     :func:`build_phasing_keeping` always reads them off the co-located
     ``StationKeepingController`` (see ``PhasingKeepingConfig``'s
     docstring for why: one physical thruster/tank, so there is no
-    schema-level way for the two to disagree about it).
+    schema-level way for the two to disagree about it). ``dv_budget_mps``
+    is read the same way (the co-located controller's own
+    ``dvBudgetMps`` -- see that class's docstring) rather than
+    recomputed here, for the same one-tank-no-disagreement reason.
+
+    Publishes two more live-Vizard-only messages (see this module's
+    docstring and ``engine.vizard``), same "never fed back into simulated
+    physics" caveat as ``StationKeepingController.deltaVOutMsg``:
+
+    * ``deltaVOutMsg`` -- this controller's OWN cumulative delta-V (i.e.
+      phasing burns only, NOT the co-located ``StationKeepingController``'s
+      reboost delta-V -- the two are reported as separate Vizard panels
+      deliberately, so a user can see the propellant cost of altitude
+      -keeping and phasing-keeping separately, even though both draw from
+      the one shared tank).
+    * ``separationOutMsg`` -- the actual, LIVE along-track separation from
+      the chief (``storageLevel``, km) against the currently-scheduled
+      target (``storageCapacity``, km) -- both re-derived every tick from
+      the same osculating mean-anomaly difference the control law itself
+      uses (not smoothed, unlike the control law's own ``error``, so this
+      reads as the real instantaneous separation, short-period noise
+      included).
     """
 
     IDLE, BURN_OUT, DRIFT, BURN_RESTORE = range(4)
@@ -386,6 +443,7 @@ class PhasingKeepingController(sysModel.SysModel):
         thrust_n: float,
         isp_s: float,
         dry_mass_kg: float,
+        dv_budget_mps: float = 0.0,
         eclipse_sunlit_threshold: float = 0.99,
         g0_mps2: float = 9.80665,
     ):
@@ -395,6 +453,8 @@ class PhasingKeepingController(sysModel.SysModel):
         self.scStateInMsgA = messaging.SCStatesMsgReader()  # chief
         self.scStateInMsgB = messaging.SCStatesMsgReader()  # follower (maneuvered)
         self.eclipseInMsgB = messaging.EclipseMsgReader()
+        self.deltaVOutMsg = messaging.DataStorageStatusMsg()
+        self.separationOutMsg = messaging.DataStorageStatusMsg()
 
         # Wired up externally (see build_phasing_keeping): the follower's
         # extForceTorque effector and hub, and the co-located
@@ -421,6 +481,7 @@ class PhasingKeepingController(sysModel.SysModel):
         self.ispS = isp_s  # [s]
         self.g0 = g0_mps2  # [m/s^2]
         self.dryMass = dry_mass_kg  # [kg]
+        self.dvBudgetMps = dv_budget_mps  # [m/s] see this class's docstring
         # Fallback propellant tracker, used only if altitudeControllerB is
         # never set -- see _propellant_tracker(). missionStudio always
         # sets it (PhasingKeepingConfig requires station_keeping), so this
@@ -525,6 +586,35 @@ class PhasingKeepingController(sysModel.SysModel):
             self._errorHistory.pop(0)
         error = self._circular_mean(np.array([e for _, e in self._errorHistory]))  # [rad]
 
+        # Live separation-from-chief telemetry, for Vizard's GenericStorage
+        # "separation" panel -- see this class's own docstring. Deliberately
+        # the RAW (unsmoothed, un-arbitrated) instantaneous separation --
+        # (mB - mA), not referenceTargetRad + error -- so this reads as the
+        # real current geometry, independent of which state the control law
+        # itself happens to be in this tick.
+        separationMsg = messaging.DataStorageStatusMsgPayload()
+        # abs(): a GenericStorage bar reads as a magnitude, and a target
+        # separation is always positive by schema (PhasingKeepingConfig.
+        # target_separation_km entries must all be > 0) -- the SIGNED
+        # value (ahead of/behind the chief) is still available in
+        # errorDegLog/this class's own telemetry for anyone who needs it.
+        separationMsg.storageLevel = abs(_wrap_pm_pi(mB - mA)) * self.aNom / 1000.0  # [km]
+        separationMsg.storageCapacity = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
+        self.separationOutMsg.write(separationMsg, CurrentSimNanos, self.moduleID)
+
+        # Also written here (not only in the final block below, which the
+        # thrusterHeldByAltCtrl arbitration branch just below returns
+        # before reaching): dvBudgetMps (the gauge's fixed "max") should
+        # read correctly from the very first tick, even on a spacecraft
+        # whose co-located StationKeepingController happens to hold the
+        # shared thruster for a long stretch -- the final block's write
+        # still runs (with a fresher storageLevel) on every tick that
+        # reaches it, so this one is only ever stale, never wrong.
+        deltaVMsg = messaging.DataStorageStatusMsgPayload()
+        deltaVMsg.storageLevel = self._cumulativeDv  # [m/s]
+        deltaVMsg.storageCapacity = self.dvBudgetMps  # [m/s]
+        self.deltaVOutMsg.write(deltaVMsg, CurrentSimNanos, self.moduleID)
+
         inSun = True
         if self.eclipseInMsgB.isLinked():
             # See _eclipse_illumination_fraction's own docstring: an
@@ -620,6 +710,11 @@ class PhasingKeepingController(sysModel.SysModel):
         if self.extForceEffectorB is not None:
             self.extForceEffectorB.extForce_N = forceVec.tolist()
 
+        deltaVMsg = messaging.DataStorageStatusMsgPayload()
+        deltaVMsg.storageLevel = self._cumulativeDv  # [m/s] this controller's OWN phasing delta-V only
+        deltaVMsg.storageCapacity = self.dvBudgetMps  # [m/s] shared-tank total (see this class's docstring)
+        self.deltaVOutMsg.write(deltaVMsg, CurrentSimNanos, self.moduleID)
+
         self.tLog.append(t)
         self.errorDegLog.append(np.degrees(error))
         self.stateLog.append(self.state)
@@ -668,6 +763,7 @@ def build_phasing_keeping(scSim, task_name: str, tag: str, mu: float, chief_sc_o
         thrust_n=follower_station_keeping_controller.thrustN,
         isp_s=follower_station_keeping_controller.ispS,
         dry_mass_kg=follower_station_keeping_controller.dryMass,
+        dv_budget_mps=follower_station_keeping_controller.dvBudgetMps,
         eclipse_sunlit_threshold=follower_station_keeping_controller.sunlitThreshold,
     )
 

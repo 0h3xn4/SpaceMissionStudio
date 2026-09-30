@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 600 tests
+  exercised either way -- `pytest tests/` runs and passes 614 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -245,15 +245,25 @@ simulated spacecraft mass every tick) and eclipse-gated burns; a
 constant-frame (VNB/RTN) continuous-thrust maneuver mode; a
 Walker-pattern constellation generator (satellite count, planes,
 phasing factor, altitude, inclination -> a full set of spacecraft with
-pre-computed orbital elements).
+pre-computed orbital elements); a **Generate phasing formation...**
+wizard (`engine.formation`) that turns an existing chief spacecraft plus
+a desired Radial/Transverse/Normal (Hill-frame) offset at epoch into a
+new follower spacecraft with `phasing_keeping`/`station_keeping`
+pre-wired -- the along-track (T) component becomes the actively-held
+separation target; radial/cross-track (R/N) only set the follower's
+starting geometry, since the phasing controller has no radial/
+cross-track control authority (the wizard says so up front).
 
 **Vizard visualization** -- live-stream or `.bin` playback file, an
 Earth-centered default camera view with orbit trace lines, live
 data panels (battery charge, station-keeping propellant remaining,
-ground-station access-window indicators -- all driven by real,
-already-simulated values, not static snapshots), custom 3D models per
-spacecraft (purely cosmetic), and a **Launch Vizard** action that starts
-the external application itself, not just configures what feeds it.
+delta-V used -- station-keeping and phasing-keeping reported as separate
+panels, since both draw from one shared tank -- live along-track
+separation from the chief for a phasing formation, ground-station
+access-window indicators -- all driven by real, already-simulated
+values, not static snapshots), custom 3D models per spacecraft (purely
+cosmetic), and a **Launch Vizard** action that starts the external
+application itself, not just configures what feeds it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
@@ -302,6 +312,7 @@ missionStudio/
       orbit_maintenance.py           -- Phase 4/5: station-keeping + phasing-keeping + constant-frame-thrust controllers, delta-V/propellant bookkeeping (needs Basilisk)
       propellant_bookkeeping.py      -- Phase 5: shared per-tick mass/propellant delta math (no Basilisk needed)
       constellation.py               -- Phase 4: Walker-pattern constellation generator + SeparationSchedule (no Basilisk needed)
+      formation.py                   -- phasing-formation generator: chief + Hill-frame (R/T/N) offset -> follower spacecraft (needs Basilisk)
       spacecraft_templates.py        -- Phase 5: reusable spacecraft "bus" templates (no Basilisk needed)
       mission_engine.py              -- Phase 6: MissionEngine -- walks mission_sequence against a SimulationService (needs Basilisk)
     gui/
@@ -322,6 +333,7 @@ missionStudio/
       ground_station_editor.py       -- ground station list + add/edit/remove dialog
       orbit_ic_widget.py             -- classical-elements (true/mean anomaly)/Cartesian/TLE orbit editor
       constellation_dialog.py        -- Phase 4: "Generate Walker constellation" dialog
+      phasing_formation_dialog.py    -- "Generate phasing formation..." dialog
       spacecraft_template_dialog.py  -- Phase 5: "New from template" picker dialog
       kernel_status_widget.py        -- SPICE kernel status panel
       results_widget.py              -- matplotlib results plot + CSV export
@@ -390,14 +402,14 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 600 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 614 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 75 whose premise is
+full PySide6 GUI, run headless) and skips 96 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
 With Basilisk installed (`pip install "bsk[all]"` -- see "Getting
-started" above), the 75 skips above run for real instead of skipping.
+started" above), the 96 skips above run for real instead of skipping.
 See "Verification status" above for how thoroughly that's actually been
 exercised -- short version: yes, including a real full multi-day run.
 

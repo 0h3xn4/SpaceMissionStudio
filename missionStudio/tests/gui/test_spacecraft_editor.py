@@ -986,3 +986,186 @@ def test_list_widget_uses_central_body_provider(qtbot, monkeypatch):
     monkeypatch.setattr(WalkerConstellationDialog, "exec", fake_exec)
     lw._on_generate_constellation()
     assert captured["central_body"] == "mars"
+
+
+@pytest.mark.requires_basilisk
+def test_list_widget_generate_phasing_formation_appends_follower(qtbot, monkeypatch):
+    """generate_phasing_follower() needs a real Basilisk build (see
+    engine.formation's own docstring) -- unlike the Walker-constellation
+    tests above, this one is requires_basilisk in addition to this file's
+    own requires_gui.
+    """
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+    from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
+    from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+    lw.from_list([SpacecraftConfig(
+        name="chief-1", dry_mass_kg=100.0,
+        orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                      inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+    )])
+
+    def fake_exec(self):
+        self.chief_combo.setCurrentIndex(0)
+        self.follower_name_edit.setText("follower-1")
+        self.along_track_km.setValue(50.0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PhasingFormationDialog, "exec", fake_exec)
+    changed_calls = []
+    lw.changed.connect(lambda: changed_calls.append(1))
+
+    lw._on_generate_phasing_formation()
+
+    configs = lw.to_list()
+    assert [c.name for c in configs] == ["chief-1", "follower-1"]
+    follower = configs[1]
+    assert follower.phasing_keeping.chief_spacecraft == "chief-1"
+    assert follower.phasing_keeping.target_separation_km == [50.0]
+    assert follower.station_keeping is not None
+    assert follower.dry_mass_kg == 100.0  # cloned from the chief (also the default template)
+    assert len(changed_calls) == 1
+
+
+@pytest.mark.requires_basilisk
+def test_list_widget_generate_phasing_formation_reports_name_collision(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+    from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
+    from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+    lw.from_list([
+        SpacecraftConfig(
+            name="chief-1",
+            orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                          inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+        ),
+        SpacecraftConfig(
+            name="follower-1",
+            orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                          inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+        ),
+    ])
+
+    def fake_exec(self):
+        self.chief_combo.setCurrentIndex(0)
+        self.follower_name_edit.setText("follower-1")  # collides with the existing spacecraft
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PhasingFormationDialog, "exec", fake_exec)
+    critical_calls = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: critical_calls.append(a)))
+
+    lw._on_generate_phasing_formation()
+    assert len(lw.to_list()) == 2  # nothing added
+    assert len(critical_calls) == 1
+
+
+def test_list_widget_generate_phasing_formation_cancel_does_nothing(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+    from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+    monkeypatch.setattr(PhasingFormationDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+    lw._on_generate_phasing_formation()
+    assert lw.to_list() == []
+
+
+def test_list_widget_generate_phasing_formation_reports_missing_basilisk(qtbot, monkeypatch):
+    """Does NOT need requires_basilisk: generate_phasing_follower is
+    monkeypatched to simulate the "no Basilisk build" case directly, same
+    "clear error, not a traceback" pattern every other Basilisk-needing
+    GUI action already uses (gui.run_worker) -- exercised here without
+    actually needing Basilisk uninstalled.
+    """
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+    from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
+    from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+    lw.from_list([SpacecraftConfig(
+        name="chief-1",
+        orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                      inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+    )])
+
+    def fake_exec(self):
+        self.chief_combo.setCurrentIndex(0)
+        self.follower_name_edit.setText("follower-1")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PhasingFormationDialog, "exec", fake_exec)
+
+    def fake_generate(*args, **kwargs):
+        raise ImportError("No module named 'Basilisk'")
+
+    monkeypatch.setattr("missionstudio.engine.formation.generate_phasing_follower", fake_generate)
+    critical_calls = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: critical_calls.append(a)))
+
+    lw._on_generate_phasing_formation()
+    configs = lw.to_list()
+    assert len(configs) == 1  # nothing added beyond the original chief
+    assert configs[0].name == "chief-1"
+    assert len(critical_calls) == 1
+    assert "Basilisk" in critical_calls[0][1]
+
+
+def test_list_widget_generate_phasing_formation_without_basilisk_reports_clear_error(qtbot, monkeypatch):
+    """Same as the test above, but against the REAL no-Basilisk import
+    path (no mocking of generate_phasing_follower itself) -- regression
+    test for a real bug found while writing this feature: the ImportError
+    this needs to catch is raised lazily INSIDE generate_phasing_follower()
+    (see engine.formation's own docstring), not by importing the name
+    itself (engine.formation has no Basilisk import at module level) --
+    wrapping the wrong statement in try/except ImportError (as this
+    file's cli.py sibling command originally did) lets it propagate
+    uncaught. Skipped on a machine that DOES have Basilisk, where this
+    test's premise doesn't hold.
+    """
+    import importlib.util
+
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+    from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
+    from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
+
+    if importlib.util.find_spec("Basilisk") is not None:
+        pytest.skip("this test's premise is specifically that Basilisk is unavailable")
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+    lw.from_list([SpacecraftConfig(
+        name="chief-1",
+        orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                      inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+    )])
+
+    def fake_exec(self):
+        self.chief_combo.setCurrentIndex(0)
+        self.follower_name_edit.setText("follower-1")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PhasingFormationDialog, "exec", fake_exec)
+    critical_calls = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: critical_calls.append(a)))
+
+    lw._on_generate_phasing_formation()  # must not raise
+
+    assert len(lw.to_list()) == 1
+    assert len(critical_calls) == 1
+    assert "Basilisk" in critical_calls[0][1]

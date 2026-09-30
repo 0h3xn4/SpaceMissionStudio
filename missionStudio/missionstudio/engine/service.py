@@ -958,6 +958,10 @@ class SimulationService:
                 name: handle.station_keeping_controller for name, handle in self._handles.items()
                 if handle.station_keeping_controller is not None
             }
+            phasing_keeping_by_spacecraft = {
+                name: handle.phasing_keeping_controller for name, handle in self._handles.items()
+                if handle.phasing_keeping_controller is not None
+            }
             custom_models_by_spacecraft = {
                 sc_config.name: {
                     "path": sc_config.vizard_model_path,
@@ -979,6 +983,7 @@ class SimulationService:
                     ground_stations=self._ground_locations, central_body_name=gravity.central_body,
                     battery_by_spacecraft=battery_by_spacecraft,
                     station_keeping_by_spacecraft=station_keeping_by_spacecraft,
+                    phasing_keeping_by_spacecraft=phasing_keeping_by_spacecraft,
                     access_out_msgs=self._access_out_msgs,
                     custom_models_by_spacecraft=custom_models_by_spacecraft,
                 )

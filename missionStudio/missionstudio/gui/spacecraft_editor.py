@@ -840,7 +840,9 @@ class SpacecraftListWidget(QWidget):
 
         second_button_row = QHBoxLayout()
         self.generate_constellation_button = QPushButton("Generate Walker constellation...")
+        self.generate_phasing_formation_button = QPushButton("Generate phasing formation...")
         second_button_row.addWidget(self.generate_constellation_button)
+        second_button_row.addWidget(self.generate_phasing_formation_button)
         second_button_row.addStretch(1)
         layout.addLayout(second_button_row)
 
@@ -849,6 +851,7 @@ class SpacecraftListWidget(QWidget):
         self.edit_button.clicked.connect(self._on_edit)
         self.remove_button.clicked.connect(self._on_remove)
         self.generate_constellation_button.clicked.connect(self._on_generate_constellation)
+        self.generate_phasing_formation_button.clicked.connect(self._on_generate_phasing_formation)
         self.list_widget.itemDoubleClicked.connect(lambda _item: self._on_edit())
 
     def set_central_body_provider(self, provider) -> None:
@@ -988,6 +991,49 @@ class SpacecraftListWidget(QWidget):
             return
 
         self._configs.extend(generated)
+        self._refresh_list()
+        self.changed.emit()
+
+    def _on_generate_phasing_formation(self) -> None:
+        from .phasing_formation_dialog import PhasingFormationDialog
+
+        central_body = self._central_body_provider() if self._central_body_provider else "earth"
+        dialog = PhasingFormationDialog([c.name for c in self._configs], central_body=central_body, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        request = dialog.to_request()
+        chief = next(c for c in self._configs if c.name == dialog.selected_chief_name())
+        template_name = dialog.selected_template_name()
+        template = next((c for c in self._configs if c.name == template_name), chief)
+
+        existing_names = {c.name for c in self._configs}
+        if request.follower_name in existing_names:
+            QMessageBox.critical(self, "Duplicate name",
+                                  f"A spacecraft named {request.follower_name!r} already exists.")
+            return
+
+        # engine.formation imports Basilisk lazily (at generate_phasing_follower()
+        # call time, not at this module's own import time -- see that
+        # module's docstring), so a missing/unbuilt Basilisk only surfaces
+        # here, same "clear error, not a traceback" pattern every other
+        # Basilisk-needing GUI action already uses (gui.run_worker).
+        from ..engine.formation import generate_phasing_follower
+
+        try:
+            follower = generate_phasing_follower(request, chief, template, central_body)
+        except ImportError as exc:
+            QMessageBox.critical(self, "Basilisk not available",
+                                  f"Basilisk is not installed/built ({exc}) -- generating a phasing formation "
+                                  "needs a real Basilisk build (it computes the follower's orbit via a real "
+                                  "Hill-frame state-vector transform, not a hand-rolled equivalent). See "
+                                  "missionStudio/README.md.")
+            return
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Cannot generate phasing formation", str(exc))
+            return
+
+        self._configs.append(follower)
         self._refresh_list()
         self.changed.emit()
 

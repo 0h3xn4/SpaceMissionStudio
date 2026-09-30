@@ -373,3 +373,82 @@ def test_unknown_scenario_file_is_a_clear_error(tmp_path, capsys):
     rc = cli.main(["validate", str(tmp_path / "does_not_exist.json")])
     assert rc == 1
     assert "INVALID" in capsys.readouterr().err
+
+
+def _write_chief_scenario(path, **overrides):
+    from missionstudio.schema import GravityConfig, OrbitIC, Scenario, SpacecraftConfig
+
+    scenario = Scenario(
+        name=overrides.pop("name", "cli phasing test scenario"),
+        epoch_utc=overrides.pop("epoch_utc", "2030-01-01T00:00:00"),
+        # "sun" is required: station_keeping's eclipse gate needs a sun
+        # ephemeris (Scenario.validate() rejects station_keeping without
+        # it) -- see schema.scenario's own cross-field check.
+        gravity=GravityConfig(central_body="earth", central_body_degree=0, third_body_perturbers=["sun"]),
+        spacecraft=[SpacecraftConfig(
+            name="chief-1", dry_mass_kg=100.0,
+            orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
+                          inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+        )],
+        **overrides,
+    )
+    scenario.save(path)
+    return scenario
+
+
+@pytest.mark.skipif(not _BASILISK_AVAILABLE, reason="needs a real Basilisk build (real Hill-frame transform)")
+def test_generate_phasing_formation_writes_new_scenario(tmp_path, capsys):
+    path = tmp_path / "chief.json"
+    _write_chief_scenario(path)
+    out_path = tmp_path / "formation.json"
+
+    rc = cli.main([
+        "generate-phasing-formation", str(path), "--out", str(out_path),
+        "--chief", "chief-1", "--follower-name", "follower-1", "--along-track-km", "50",
+    ])
+    assert rc == 0
+    assert "Generated follower 'follower-1'" in capsys.readouterr().out
+
+    from missionstudio.schema import load_scenario
+
+    generated = load_scenario(out_path)
+    assert [sc.name for sc in generated.spacecraft] == ["chief-1", "follower-1"]
+    follower = generated.spacecraft[1]
+    assert follower.phasing_keeping.chief_spacecraft == "chief-1"
+    assert follower.phasing_keeping.target_separation_km == [50.0]
+    assert follower.station_keeping is not None
+
+
+@pytest.mark.skipif(not _BASILISK_AVAILABLE, reason="needs a real Basilisk build (real Hill-frame transform)")
+def test_generate_phasing_formation_rejects_zero_along_track_km(tmp_path, capsys):
+    path = tmp_path / "chief.json"
+    _write_chief_scenario(path)
+    rc = cli.main([
+        "generate-phasing-formation", str(path), "--out", str(tmp_path / "out.json"),
+        "--chief", "chief-1", "--follower-name", "follower-1", "--along-track-km", "0",
+    ])
+    assert rc == 1
+    assert "INVALID" in capsys.readouterr().err
+
+
+def test_generate_phasing_formation_rejects_unknown_chief_name(tmp_path, capsys):
+    path = tmp_path / "chief.json"
+    _write_chief_scenario(path)
+    rc = cli.main([
+        "generate-phasing-formation", str(path), "--out", str(tmp_path / "out.json"),
+        "--chief", "does-not-exist", "--follower-name", "follower-1", "--along-track-km", "50",
+    ])
+    assert rc == 1
+    assert "ERROR" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(_BASILISK_AVAILABLE, reason="this test's premise is specifically that Basilisk is unavailable")
+def test_generate_phasing_formation_without_basilisk_reports_clear_error(tmp_path, capsys):
+    path = tmp_path / "chief.json"
+    _write_chief_scenario(path)
+    rc = cli.main([
+        "generate-phasing-formation", str(path), "--out", str(tmp_path / "out.json"),
+        "--chief", "chief-1", "--follower-name", "follower-1", "--along-track-km", "50",
+    ])
+    assert rc == 2
+    assert "Basilisk is not installed" in capsys.readouterr().err
