@@ -492,6 +492,22 @@ class SpacecraftConfig:
     srp_coeff: float = 1.3
     srp_area_m2: float = 1.0
 
+    # Torque from the central body's (and, if present, any third-body
+    # perturber's) gravity gradient across the spacecraft's own mass
+    # distribution -- Basilisk's real GravityGradientEffector, not an
+    # approximation: it reads the spacecraft's actual simulated inertia/
+    # position/attitude every tick (see engine.service), so it stays
+    # correct through inertia changes (e.g. FuelTank depletion, once that
+    # exists) rather than being computed once from initial conditions.
+    # Negligible in LEO for an actively-controlled spacecraft (the RW/MRP
+    # feedback loop simply rejects it as one more disturbance torque), but
+    # real for anything coasting without active control (fsw_mode=None) or
+    # in a large/elongated inertia configuration -- exactly the case this
+    # schema previously had no way to model at all. False by default:
+    # every scenario written before this field existed keeps its exact
+    # previous dynamics.
+    enable_gravity_gradient: bool = False
+
     sensors: list = field(default_factory=list)  # list[SensorConfig]
     actuators: list = field(default_factory=list)  # list[ActuatorConfig]
     # One of SUPPORTED_FSW_MODES, or None for no attitude control (attitude

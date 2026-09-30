@@ -445,7 +445,7 @@ python3 -m pytest tests/ -v
 
 Without Basilisk on `PYTHONPATH`, this runs 722 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 101 whose premise is
+full PySide6 GUI, run headless) and skips 103 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 

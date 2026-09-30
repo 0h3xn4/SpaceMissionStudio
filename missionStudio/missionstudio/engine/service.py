@@ -967,6 +967,47 @@ class SimulationService:
                 srp_effector.sunEclipseInMsg.subscribeTo(sc_eclipse_out_msg)
                 self.scSim.AddModelToTask(dyn_task_name, srp_effector, 100)
 
+            # -- gravity gradient torque (schema.scenario.SpacecraftConfig
+            # .enable_gravity_gradient) -- reads the spacecraft's own
+            # hub state (inertia/position/attitude) directly out of the
+            # DynParamManager once attached, same as every other
+            # DynamicEffector here; only needs the central body's own
+            # already-registered planet properties (grav_factory.addBodiesTo()
+            # above already put them there for every spacecraft), so no
+            # extra message wiring -- confirmed against
+            # GravityGradientEffector/_UnitTest/test_gravityGradient.py's
+            # own call sequence (addPlanetName() + addDynamicEffector()),
+            # not guessed; class/attribute names additionally confirmed to
+            # exist against a real built Basilisk module directly (not
+            # just the test source). Same verification status as the rest
+            # of this file (see kernels.py's own docstring): a full
+            # dynamics RUN could not be exercised in this development
+            # sandbox, because every scenario's build() needs SPICE
+            # kernels (see build_spice_interface() above) and this
+            # sandbox's network egress to naif.jpl.nasa.gov/the
+            # hanspeterschaub.info backup mirror is blocked -- confirmed
+            # this is the exact same pre-existing limitation, not
+            # something new (an already-passing test elsewhere in this
+            # suite, test_service_run_live.py, fails with the identical
+            # blocked-kernel-download error when re-run here). See
+            # tests/test_gravity_gradient.py for the regression test this
+            # would run given SPICE kernel access.
+            # Only the CENTRAL body's contribution is added:
+            # a third-body perturber's gravity-gradient torque is smaller
+            # than the central body's by roughly (central body's distance /
+            # third body's distance)^3 -- negligible for every perturber
+            # this schema supports (sun/moon/planets at real mission
+            # distances), so adding it would cost an extra import per
+            # third body for no measurable effect.
+            if sc_config.enable_gravity_gradient:
+                from Basilisk.simulation import GravityGradientEffector
+
+                gg_effector = GravityGradientEffector.GravityGradientEffector()
+                gg_effector.ModelTag = f"{sc_config.name}GravityGradient"
+                gg_effector.addPlanetName(central_body.planetName)
+                sc_object.addDynamicEffector(gg_effector)
+                self.scSim.AddModelToTask(dyn_task_name, gg_effector, 100)
+
             if sc_config.actuators and sc_config.fsw_mode is None:
                 raise SimulationServiceError(
                     f"{sc_config.name}: actuators are configured but fsw_mode is None -- an actuator needs a "

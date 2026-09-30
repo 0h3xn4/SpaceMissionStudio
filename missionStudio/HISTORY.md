@@ -3772,3 +3772,87 @@ passed to `setDesktopFileName()` matches the `.desktop` files' own
 installed basename (so the three spellings can't silently drift apart
 again). Full suite: 722 passed, 101 skipped.
 
+## Basilisk feature audit, and a backlog to close the gaps
+
+**Real user question**: "What other features does basilisk have, that
+were not yet integrated in the app?" A background agent inventoried
+every capability module under `src/simulation/` and `src/fswAlgorithms/`
+in this checkout and the answer, compared directly against what
+`engine/service.py`/`engine/fsw.py` actually import, was sobering: this
+app wires up 4 of ~8 sensor kinds, 1 of several actuator types, 5 of
+~18 attitude-guidance modes, 1 control law, and none of attitude
+determination/thermal/onboard-data-handling/communication/optical-nav/
+small-body-nav/formation-flying-FSW at all -- sensors feed FSW modules
+*truth* directly (`simpleNav`) rather than a real estimated state, and
+every maneuver uses an idealized `extForceTorque` rather than a real
+thruster. The user's follow-up, verbatim: "Yes please, all of them. But
+make them useful end to end, meaning easy setup for user, useful
+simulation run and visualization and helpful outputs and results." --
+a real multi-week backlog, tracked as 19 prioritized tasks (schema +
+engine + GUI + tests + docs per item, not a checkbox), starting with
+the highest-value/most-tractable first.
+
+**A significant, re-discovered sandbox constraint**: attempting to
+verify the first item (gravity gradient torque, below) against the
+real Basilisk build at `/tmp/bsk_venv4` failed -- not from a bug in the
+new code, but because `engine.service.SimulationService.build()`
+unconditionally needs SPICE kernels (`build_spice_interface()`), and
+this sandbox's network egress to `naif.jpl.nasa.gov` and its
+`hanspeterschaub.info` backup mirror is blocked by the outbound proxy
+policy (confirmed with the proxy's own `recentRelayFailures` log:
+`connect_rejected ... gateway answered 403`). Confirmed this is NOT new
+or specific to this change by re-running an EXISTING, previously
+-documented-as-passing test (`test_service_run_live.py`) here: it fails
+with the identical blocked-kernel error. This is, in fact, already
+`engine/kernels.py`'s own documented verification status ("the actual
+KERNEL DOWNLOAD could not be completed in that same environment") --
+not a new discovery, just re-confirmed here because it materially
+changes what "verified end-to-end" can mean for the rest of this
+backlog: every dynamics-level feature from here on can be verified at
+the *API* level (real class/attribute names, confirmed against the
+actual compiled Basilisk module and its own shipped unit test's exact
+call sequence -- the same "never fabricate a Basilisk API" discipline
+`engine/fsw.py` was already built under, before this sandbox had a
+Basilisk build at all) but not at the *executed-dynamics* level, in
+this sandbox, until kernel network access is available.
+
+### Gravity gradient torque (task 1 of 19)
+
+The first, quickest-to-land item: real torque from the central body's
+gravity acting across a spacecraft's own (non-spherical) inertia,
+currently missing entirely -- a real, physically meaningful disturbance
+for anything coasting without active attitude control, or with a
+notably non-uniform inertia tensor. Added
+`SpacecraftConfig.enable_gravity_gradient` (default `False`, so every
+existing scenario's dynamics are bit-for-bit unchanged), wired to
+Basilisk's `GravityGradientEffector` in `engine/service.py` right
+alongside the existing drag/SRP effector blocks: `addPlanetName()` on
+the central body only (a third-body perturber's gravity-gradient
+contribution is smaller by roughly the cube of the distance ratio --
+negligible at any real mission distance, so skipped rather than adding
+an import per perturber for no measurable effect), then
+`addDynamicEffector()` -- it reads the spacecraft's own already
+-registered inertia/position/attitude directly, no extra message
+wiring needed. Added a matching checkbox next to the existing drag/SRP
+toggles in the spacecraft editor's "Orbit / mass" tab (rendered
+headless and inspected to confirm placement/round-trip, same discipline
+as every other GUI change this project ships).
+
+**Verification:** `GravityGradientEffector`'s constructor,
+`addPlanetName()`, and `addDynamicEffector()` call sequence confirmed
+directly against this checkout's own
+`GravityGradientEffector/_UnitTest/test_gravityGradient.py`, and its
+class/method names additionally confirmed to exist on a real built
+Basilisk module (`/tmp/bsk_venv4`), not just read from source. Two new
+`requires_basilisk` regression tests
+(`tests/test_gravity_gradient.py`) are written to actually run the
+physics -- an elongated-inertia, uncontrolled (`fsw_mode=None`)
+spacecraft's attitude must stay frozen with the flag off and visibly
+drift with it on -- but could not be EXECUTED here for the SPICE-kernel
+reason above; they will run given kernel network access (a real dev
+machine, or CI). GUI checkbox round-trip and rendering confirmed
+headless. Full Basilisk-independent suite: 722 passed, 103 skipped (101
+-> 103: the two new SPICE-gated tests join the existing
+`requires_basilisk` skip bucket in this sandbox, same as every other
+test in it).
+

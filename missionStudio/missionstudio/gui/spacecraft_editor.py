@@ -248,6 +248,14 @@ class SpacecraftEditorDialog(QDialog):
         inertia_form.addRow("Ixx", self.ixx)
         inertia_form.addRow("Iyy", self.iyy)
         inertia_form.addRow("Izz", self.izz)
+        self.gravity_gradient_check = QCheckBox("Enable gravity gradient torque")
+        self.gravity_gradient_check.setToolTip(
+            "Real torque from the central body's gravity acting across this spacecraft's own inertia "
+            "(Basilisk's GravityGradientEffector). Usually negligible next to an active attitude "
+            "controller's own torques, but real for a coasting (fsw_mode = None) or high-inertia spacecraft."
+        )
+        self.gravity_gradient_check.setChecked(config.enable_gravity_gradient if config else False)
+        inertia_form.addRow(self.gravity_gradient_check)
         layout.addWidget(inertia_group)
 
         # Drag/SRP finally get a real editor here (Phase 5) -- previously
@@ -726,6 +734,7 @@ class SpacecraftEditorDialog(QDialog):
             enable_srp=self.enable_srp_check.isChecked(),
             srp_coeff=self.srp_coeff.value(),
             srp_area_m2=self.srp_area_m2.value(),
+            enable_gravity_gradient=self.gravity_gradient_check.isChecked(),
             vizard_model_path=self._viz_model_to_dataclass_path(),
             vizard_model_offset_m=[self.viz_offset_x.value(), self.viz_offset_y.value(), self.viz_offset_z.value()],
             vizard_model_rotation_deg=[self.viz_rotation_z.value(), self.viz_rotation_y.value(),
