@@ -337,6 +337,54 @@ def test_reaction_wheel_requires_gsHat_B():
         sc.validate()
 
 
+def test_thruster_requires_r_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"tHat_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    with pytest.raises(ScenarioValidationError, match="r_B"):
+        sc.validate()
+
+
+def test_thruster_requires_tHat_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"r_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    with pytest.raises(ScenarioValidationError, match="tHat_B"):
+        sc.validate()
+
+
+def test_thruster_requires_MaxThrust():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0]})
+    ]
+    with pytest.raises(ScenarioValidationError, match="MaxThrust"):
+        sc.validate()
+
+
+def test_thruster_with_all_required_params_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 1.28], "tHat_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.validate()  # must not raise
+
+
+def test_mixing_reaction_wheel_and_thruster_actuators_rejected():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    with pytest.raises(ScenarioValidationError, match="mix 'reaction_wheel' and 'thruster'"):
+        sc.validate()
+
+
 def test_unsupported_fsw_mode_rejected():
     sc = _minimal_scenario()
     sc.spacecraft[0].fsw_mode = "sunTrackingRasterScan"

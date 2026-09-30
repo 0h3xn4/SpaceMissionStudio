@@ -218,6 +218,8 @@ def _vector_display(name: str) -> Optional[_SeriesDisplay]:
         return _SeriesDisplay("Commanded Control Torque", "Torque", "N*m", 1.0, dict(_XYZ_LABELS))
     if name.endswith(".rw_speeds"):
         return _SeriesDisplay("Reaction Wheel Speeds", "Wheel speed", "rad/s")
+    if name.endswith(".thruster_on_time"):
+        return _SeriesDisplay("Thruster On-Times", "Commanded on-time", "s")
     if name.endswith(".battery_charge"):
         return _SeriesDisplay("Battery State of Charge", "Charge", "W*hr", 1.0, {"charge": "Charge"})
     if name.endswith(".battery_net_power"):

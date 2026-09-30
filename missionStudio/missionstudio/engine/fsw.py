@@ -48,6 +48,10 @@ project's "never fabricate a Basilisk API" rule:
   ``envOutMsgs[i]`` indexed by call order):
   ``src/simulation/environment/magneticFieldWMM/_UnitTest/test_magneticFieldWMM.py``
   and that module's own ``.rst`` user guide.
+* ``thrusterDynamicEffector`` + ``simIncludeThruster.thrusterFactory()`` +
+  ``thrForceMapping`` + ``thrFiringSchmitt`` (the "thruster" actuator kind's
+  control-torque path, replacing ``rwMotorTorque``/
+  ``reactionWheelStateEffector``): ``examples/scenarioAttitudeFeedback2T_TH.py``.
 
 Scoping decisions made explicit here (see ``engine/service.py``'s Phase 2
 docstring for the full list):
@@ -103,6 +107,8 @@ from Basilisk.fswAlgorithms import (
     mrpFeedback,
     rwMotorTorque,
     sunSafePoint,
+    thrFiringSchmitt,
+    thrForceMapping,
     velocityPoint,
 )
 from Basilisk.simulation import (
@@ -115,8 +121,9 @@ from Basilisk.simulation import (
     reactionWheelStateEffector,
     simpleNav,
     starTracker,
+    thrusterDynamicEffector,
 )
-from Basilisk.utilities import simIncludeRW
+from Basilisk.utilities import simIncludeRW, simIncludeThruster
 
 from ..schema.scenario import SUPPORTED_FSW_MODES
 
@@ -130,6 +137,15 @@ DEFAULT_MRP_GAINS: Dict[str, float] = {"K": 3.5, "P": 30.0}
 _RW_FLOAT_KWARGS = (
     "Omega", "Omega_max", "maxMomentum", "P_max", "betaStatic",
     "fCoulomb", "fStatic", "cViscous", "u_min", "u_max", "Js",
+)
+
+# thrusterFactory.create() kwargs that must be Python float, same
+# isinstance(..., float)-then-exit(1) hazard as _RW_FLOAT_KWARGS above
+# (see simIncludeThruster.py's own checks) -- coerced defensively for the
+# same reason.
+_THRUSTER_FLOAT_KWARGS = (
+    "areaNozzle", "steadyIsp", "MaxThrust", "thrusterMagDisp", "MinOnTime",
+    "cutoffFrequency", "MaxSwirlTorque",
 )
 
 
@@ -343,6 +359,84 @@ def build_reaction_wheels(scSim, task_name: str, tag: str, sc_object, actuator_c
     scSim.AddModelToTask(task_name, rw_state_effector, 20)
     rw_config_msg = rw_factory.getConfigMessage()
     return rw_factory, rw_state_effector, rw_config_msg
+
+
+def _coerce_thruster_kwargs(params: dict) -> dict:
+    kwargs = {k: v for k, v in params.items() if k not in ("r_B", "tHat_B", "thruster_type")}
+    for key in _THRUSTER_FLOAT_KWARGS:
+        if key in kwargs:
+            kwargs[key] = float(kwargs[key])
+    return kwargs
+
+
+def build_thrusters(scSim, task_name: str, tag: str, sc_object, actuator_configs: List):
+    """Builds one thruster per ``ActuatorConfig(kind="thruster")`` entry via
+    ``simIncludeThruster.thrusterFactory()`` (see that module for every
+    accepted ``params`` key -- ``r_B``/``tHat_B``/``MaxThrust`` are required
+    by schema validation, everything else is optional and defaults exactly
+    as ``thrusterFactory.create()`` itself defaults). Returns
+    ``(thruster_effector, thr_config_msg)`` for
+    :func:`build_thruster_force_mapping` and Vizard.
+
+    ``thruster_type`` defaults to ``"Blank_Thruster"`` -- ``thrusterFactory``
+    has no bare "custom" type the way ``rwFactory`` does (confirmed by
+    reading ``simIncludeThruster.py`` directly: every named type method sets
+    some defaults, and an UNRECOGNIZED type name makes ``create()`` call
+    ``exit(1)`` -- not raise -- which would kill the whole GUI process, not
+    just fail validation); ``Blank_Thruster`` is that module's own
+    "no type-specific defaults, rely on kwargs" entry, the direct equivalent.
+    Matches ``examples/scenarioAttitudeFeedback2T_TH.py``'s thruster setup.
+    """
+    thr_factory = simIncludeThruster.thrusterFactory()
+    for actuator in actuator_configs:
+        params = actuator.params
+        r_B = [float(v) for v in params["r_B"]]
+        tHat_B = [float(v) for v in params["tHat_B"]]
+        thruster_type = params.get("thruster_type", "Blank_Thruster")
+        kwargs = _coerce_thruster_kwargs(params)
+        thr_factory.create(thruster_type, r_B, tHat_B, **kwargs)
+
+    thruster_effector = thrusterDynamicEffector.ThrusterDynamicEffector()
+    thruster_effector.ModelTag = f"{tag}_thrusters"
+    thr_factory.addToSpacecraft(thruster_effector.ModelTag, thruster_effector, sc_object)
+    # Same priority reasoning as build_reaction_wheels: must run before
+    # mrpFeedback/thrForceMapping read anything derived from it this tick.
+    scSim.AddModelToTask(task_name, thruster_effector, 20)
+    thr_config_msg = thr_factory.getConfigMessage()
+    return thr_factory, thruster_effector, thr_config_msg
+
+
+def build_thruster_force_mapping(scSim, task_name: str, tag: str, mrp_feedback_module, thr_config_msg,
+                                  veh_config_msg, thruster_effector):
+    """Maps ``mrpFeedback``'s 3D torque command onto individual thruster
+    on-times: ``thrForceMapping`` (torque -> per-thruster force) followed by
+    ``thrFiringSchmitt`` (force -> Schmitt-trigger on-time logic), connected
+    to the thruster hardware's command input. ``thrForceSign = 1`` and
+    Schmitt-trigger ``thrMinFireTime``/``level_on``/``level_off`` match
+    ``examples/scenarioAttitudeFeedback2T_TH.py``'s single-cluster (ACS
+    -only) case -- this app only ever builds one thruster cluster per
+    spacecraft, never that example's separate ACS/DV split.
+    """
+    force_mapping = thrForceMapping.thrForceMapping()
+    force_mapping.ModelTag = f"{tag}_thrForceMapping"
+    force_mapping.controlAxes_B = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    force_mapping.thrForceSign = 1
+    force_mapping.cmdTorqueInMsg.subscribeTo(mrp_feedback_module.cmdTorqueOutMsg)
+    force_mapping.thrConfigInMsg.subscribeTo(thr_config_msg)
+    force_mapping.vehConfigInMsg.subscribeTo(veh_config_msg)
+    scSim.AddModelToTask(task_name, force_mapping)
+
+    firing_logic = thrFiringSchmitt.thrFiringSchmitt()
+    firing_logic.ModelTag = f"{tag}_thrFiringSchmitt"
+    firing_logic.thrMinFireTime = 0.002  # [s]
+    firing_logic.level_on = 0.75  # [-] duty-cycle fraction (of thrMinFireTime) above which a thruster turns on
+    firing_logic.level_off = 0.25  # [-] duty-cycle fraction below which a thruster turns back off
+    firing_logic.thrConfInMsg.subscribeTo(thr_config_msg)
+    firing_logic.thrForceInMsg.subscribeTo(force_mapping.thrForceCmdOutMsg)
+    scSim.AddModelToTask(task_name, firing_logic)
+
+    thruster_effector.cmdsInMsg.subscribeTo(firing_logic.onTimeOutMsg)
+    return force_mapping, firing_logic
 
 
 def build_rw_motor_torque(scSim, task_name: str, tag: str, mrp_feedback_module, rw_config_msg, rw_state_effector):

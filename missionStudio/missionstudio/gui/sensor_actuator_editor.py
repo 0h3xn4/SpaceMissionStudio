@@ -92,6 +92,19 @@ class _ParamSpec(NamedTuple):
     required: bool
     example: object
     help_text: str  # includes units, where the quantity has physical meaning
+    # True for a direction (nHat_B, gsHat_B, tHat_B, ...), where "Normalize"
+    # (rescale to unit length, preserving direction) is a meaningful, safe
+    # action. False for a 3-element vector that ISN'T a direction -- a
+    # position like thruster r_B [m], or a per-axis quantity like
+    # magnetometer noise_std_tesla [T] -- where clicking Normalize would
+    # silently corrupt the value (e.g. rescale a thruster's location to
+    # exactly 1 meter from the body origin). Found while adding "thruster"
+    # below: r_B needed its own vector row (same X/Y/Z treatment as every
+    # other 3-element param) but must NOT offer Normalize, which this
+    # module previously offered unconditionally on every 3-element spec --
+    # also fixes the same latent bug already present on magnetometer's
+    # noise_std_tesla.
+    normalizable: bool = True
 
     @property
     def is_vector(self) -> bool:
@@ -99,10 +112,10 @@ class _ParamSpec(NamedTuple):
 
 
 # One entry per SUPPORTED_SENSOR_KINDS/SUPPORTED_ACTUATOR_KINDS value that
-# engine.fsw actually builds -- deliberately omits "thruster"/
-# "magnetic_torque_rod" (schema-valid but not wired up; see
-# _UNIMPLEMENTED_ACTUATOR_KINDS below and SUPPORTED_ACTUATOR_KINDS's own
-# module-level docstring note in schema.scenario).
+# engine.fsw actually builds -- deliberately omits "magnetic_torque_rod"
+# (schema-valid but not wired up; see _UNIMPLEMENTED_ACTUATOR_KINDS below
+# and SUPPORTED_ACTUATOR_KINDS's own module-level docstring note in
+# schema.scenario).
 _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
     "star_tracker": [
         _ParamSpec("noise_arcsec", False, 0.0, "1-sigma attitude noise [arcsec]"),
@@ -117,7 +130,8 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
         _ParamSpec("noise_std", False, 0.0, "1-sigma output noise (cosine-law output units) [-]"),
     ],
     "magnetometer": [
-        _ParamSpec("noise_std_tesla", False, [0.0, 0.0, 0.0], "1-sigma noise per body axis [T]"),
+        _ParamSpec("noise_std_tesla", False, [0.0, 0.0, 0.0], "1-sigma noise per body axis [T]",
+                    normalizable=False),
     ],
     "reaction_wheel": [
         _ParamSpec("gsHat_B", True, [0.0, 0.0, 1.0], "spin-axis direction, body frame, unit vector [-]"),
@@ -128,6 +142,17 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
         _ParamSpec("maxMomentum", False, 50.0, "max wheel angular momentum [N*m*s]"),
         _ParamSpec("Js", False, 0.028, "wheel inertia about the spin axis [kg*m^2]"),
     ],
+    "thruster": [
+        _ParamSpec("r_B", True, [1.0, 0.0, 0.0], "thruster location, body frame [m]", normalizable=False),
+        _ParamSpec("tHat_B", True, [1.0, 0.0, 0.0], "thrust direction, body frame, unit vector [-]"),
+        _ParamSpec("MaxThrust", True, 1.0, "maximum thrust [N]"),
+        _ParamSpec("thruster_type", False, "Blank_Thruster",
+                    "thruster model name known to Basilisk's simIncludeThruster.thrusterFactory(), "
+                    "e.g. 'MOOG_Monarc_1' -- 'Blank_Thruster' means no type-specific defaults, use the "
+                    "params here as-is"),
+        _ParamSpec("steadyIsp", False, 220.0, "fuel efficiency [s]"),
+        _ParamSpec("MinOnTime", False, 0.020, "minimum on time [s]"),
+    ],
 }
 
 # Schema-valid (SUPPORTED_ACTUATOR_KINDS) but engine.fsw/engine.service
@@ -136,7 +161,7 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
 # Selectable here (so a saved scenario file using one can still be
 # opened/edited), but flagged with an in-dialog warning rather than
 # letting a beginner discover this only when Run Simulation fails.
-_UNIMPLEMENTED_ACTUATOR_KINDS = ("thruster", "magnetic_torque_rod")
+_UNIMPLEMENTED_ACTUATOR_KINDS = ("magnetic_torque_rod",)
 
 
 def _spin_component(value: float = 0.0) -> QDoubleSpinBox:
@@ -289,10 +314,11 @@ class _ItemEditorDialog(QDialog):
             row.addWidget(x)
             row.addWidget(y)
             row.addWidget(z)
-            normalize_button = QPushButton("Normalize")
-            normalize_button.setToolTip("Rescale to a unit vector (preserves direction).")
-            normalize_button.clicked.connect(lambda _checked, k=spec.key: self._on_normalize(k))
-            row.addWidget(normalize_button)
+            if spec.normalizable:
+                normalize_button = QPushButton("Normalize")
+                normalize_button.setToolTip("Rescale to a unit vector (preserves direction).")
+                normalize_button.clicked.connect(lambda _checked, k=spec.key: self._on_normalize(k))
+                row.addWidget(normalize_button)
             row_widget = QWidget()
             row_widget.setLayout(row)
             required_tag = "" if spec.required else " (optional)"

@@ -3856,3 +3856,67 @@ headless. Full Basilisk-independent suite: 722 passed, 103 skipped (101
 `requires_basilisk` skip bucket in this sandbox, same as every other
 test in it).
 
+### Real thruster actuator (task 2 of 19)
+
+`"thruster"` was schema-valid since Phase 2 but `engine.service` hard
+-rejected it at run time -- every maneuver/station-keeping/phasing burn
+used an idealized `extForceTorque`/direct-mass-bookkeeping model, and a
+spacecraft could not use real thruster hardware for attitude control at
+all (only reaction wheels). Wired up the real chain from
+`examples/scenarioAttitudeFeedback2T_TH.py`: `mrpFeedback` ->
+`thrForceMapping` (torque -> per-thruster force) -> `thrFiringSchmitt`
+(Schmitt-trigger on-time logic) -> `thrusterDynamicEffector`, with
+thrusters built via `simIncludeThruster.thrusterFactory()` (new
+`ActuatorConfig.params` keys: `r_B` [m], `tHat_B` [-], `MaxThrust` [N]
+required; `thruster_type`, `steadyIsp`, `MinOnTime` optional). A
+spacecraft may use `"reaction_wheel"` actuators or `"thruster"`
+actuators, not both -- mixing them would need a control-allocation
+module (Basilisk's `torqueScheduler`) this app doesn't build, so
+`SpacecraftConfig.validate()` now rejects the mix early with a specific
+message rather than engine.service silently using only one.
+
+**A real, unrelated bug found and fixed along the way**: the sensor/
+actuator editor's vector-param UI (`_ParamSpec`) gave EVERY 3-element
+list-valued param -- direction or not -- a "Normalize" button. That's
+correct for a direction (`nHat_B`, `gsHat_B`, and now `tHat_B`), but
+`r_B` is a thruster's body-frame LOCATION in meters: clicking Normalize
+on it would silently rescale a real thruster's mounting point to
+exactly 1 meter from the body origin, corrupting the actual geometry.
+Magnetometer's `noise_std_tesla` (a per-axis noise std-dev, also not a
+direction) turned out to have the exact same latent bug already. Fixed
+with a new `_ParamSpec.normalizable` flag (default `True`, so every
+existing direction-valued spec is unaffected), set `False` for both
+`r_B` and `noise_std_tesla`, and the Normalize button is now only
+built when `normalizable` is set.
+
+**Visualization**: `engine.vizard.enable_vizard()` gained
+`thr_effectors_by_spacecraft`, so Vizard now draws native thruster
+plume effects when a spacecraft's thrusters fire -- this was previously
+explicitly documented as "not passed: nothing to visualize" in that
+module's own docstring, now genuinely true. `SimulationService.run()`
+also reports a new `{name}.thruster_on_time` result series (per
+-thruster commanded on-time, seconds) alongside the existing
+`{name}.rw_speeds`, with its own plot category ("Thruster On-Times") in
+the results viewer.
+
+**Verification**: unlike gravity gradient torque above, this one really
+could be run end-to-end in this sandbox -- attitude-only dynamics (no
+orbit, no gravity, no SPICE) don't hit the blocked-kernel restriction
+at all, so a standalone script driving `engine.fsw`'s new builder
+functions directly against a bare `SimulationBaseClass` was written,
+run for real against `/tmp/bsk_venv4`'s Basilisk build, and genuinely
+worked: an 8-thruster cluster controlling a spacecraft with initial
+attitude error `[0.3, 0.2, -0.1]` (MRP) drove it down to
+`[0.054, 0.049, -0.007]` in 60 simulated seconds, with real nonzero
+per-thruster on-times throughout. Turned into two real, ACTUALLY
+-PASSING `requires_basilisk` tests
+(`tests/test_thruster_control.py::test_thruster_chain_commands_nonzero_on_times`/
+`::test_thruster_chain_reduces_attitude_error`) -- confirmed by running
+them through pytest against that same build, not just the standalone
+script. Plus 5 new schema-validation tests (required `r_B`/`tHat_B`/
+`MaxThrust`, valid-thruster-validates, reaction_wheel+thruster-mix
+-rejected) and 2 new GUI tests (thruster kind no longer shows the
+"not simulated yet" warning; `r_B`'s vector row has no Normalize button
+while `tHat_B`'s keeps one) -- all real, all passing. Full
+Basilisk-independent suite: 729 passed, 105 skipped.
+

@@ -448,6 +448,8 @@ class _SpacecraftHandle:
     control_torque_recorder: Optional[object] = None
     rw_speed_recorder: Optional[object] = None
     num_rw: int = 0
+    thruster_on_time_recorder: Optional[object] = None
+    num_thrusters: int = 0
     sensor_recorders: Dict[str, object] = field(default_factory=dict)  # sensor.name -> (kind, recorder)
     battery_recorder: Optional[object] = None  # Phase 4: only set if sc_config.power was configured
     battery_module: Optional[object] = None  # Phase 4: the simpleBattery.SimpleBattery itself, for engine.vizard
@@ -802,6 +804,7 @@ class SimulationService:
 
         sc_objects_in_order: List = []
         rw_effectors_in_order: List = []
+        thr_effectors_in_order: List = []
         eclipse_index = 0  # only incremented for spacecraft that actually have power/station_keeping/enable_srp
         drag_index = 0  # only incremented for spacecraft that actually have enable_drag
 
@@ -1016,14 +1019,15 @@ class SimulationService:
                 )
 
             rw_effector_for_viz = None
+            thr_effector_for_viz = None
             if sc_config.fsw_mode is not None:
                 unsupported_kinds = sorted({
-                    a.kind for a in sc_config.actuators if a.kind in ("thruster", "magnetic_torque_rod")
+                    a.kind for a in sc_config.actuators if a.kind in ("magnetic_torque_rod",)
                 })
                 if unsupported_kinds:
                     raise SimulationServiceError(
                         f"{sc_config.name}: actuator kind(s) {unsupported_kinds} are schema-valid but not "
-                        "wired up by engine.service in Phase 2 (see engine.fsw's module docstring)"
+                        "wired up by engine.service yet (see engine.fsw's module docstring)"
                     )
 
                 nav = fsw.build_simple_nav(
@@ -1054,10 +1058,29 @@ class SimulationService:
                     self.scSim.AddModelToTask(dyn_task_name, handle.rw_speed_recorder)
                     rw_effector_for_viz = rw_state_effector
                 else:
-                    mrp = fsw.build_mrp_feedback(
-                        self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg, sc_config.control_params
-                    )
-                    fsw.build_idealized_actuation(self.scSim, dyn_task_name, sc_config.name, sc_object, mrp)
+                    thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
+                    if thruster_actuators:
+                        mrp = fsw.build_mrp_feedback(
+                            self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
+                            sc_config.control_params,
+                        )
+                        _, thruster_effector, thr_config_msg = fsw.build_thrusters(
+                            self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_actuators
+                        )
+                        handle.num_thrusters = len(thruster_actuators)
+                        _, firing_logic = fsw.build_thruster_force_mapping(
+                            self.scSim, dyn_task_name, sc_config.name, mrp, thr_config_msg, veh_config_msg,
+                            thruster_effector,
+                        )
+                        handle.thruster_on_time_recorder = firing_logic.onTimeOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
+                        thr_effector_for_viz = thruster_effector
+                    else:
+                        mrp = fsw.build_mrp_feedback(
+                            self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
+                            sc_config.control_params,
+                        )
+                        fsw.build_idealized_actuation(self.scSim, dyn_task_name, sc_config.name, sc_object, mrp)
 
                 handle.nav_recorder = nav.attOutMsg.recorder()
                 handle.control_torque_recorder = mrp.cmdTorqueOutMsg.recorder()
@@ -1065,6 +1088,7 @@ class SimulationService:
                 self.scSim.AddModelToTask(dyn_task_name, handle.control_torque_recorder)
 
             rw_effectors_in_order.append(rw_effector_for_viz)
+            thr_effectors_in_order.append(thr_effector_for_viz)
             self._handles[sc_config.name] = handle
 
         # Phase 4: constellation phasing-keeping (schema.scenario.PhasingKeepingConfig)
@@ -1142,6 +1166,7 @@ class SimulationService:
                 ) = vizard.enable_vizard(
                     self.scSim, dyn_task_name, sc_objects_in_order, self.vizard_request,
                     rw_effectors_by_spacecraft=rw_effectors_in_order,
+                    thr_effectors_by_spacecraft=thr_effectors_in_order,
                     ground_stations=self._ground_locations, central_body_name=gravity.central_body,
                     battery_by_spacecraft=battery_by_spacecraft,
                     station_keeping_by_spacecraft=station_keeping_by_spacecraft,
@@ -1164,10 +1189,11 @@ class SimulationService:
         :class:`~missionstudio.engine.results.ResultSet`: always
         position/velocity plus osculating Keplerian elements (semi-major
         axis, eccentricity, inclination, RAAN, argument of periapsis, true
-        anomaly -- see :func:`_osculating_elements`), plus (Phase 2, only
-        for a spacecraft that actually has them configured) attitude/
+        anomaly -- see :func:`_osculating_elements`), plus (only for a
+        spacecraft that actually has them configured) attitude/
         body-rate/sun-heading, commanded control torque, reaction wheel
-        speeds, and one series per attached sensor.
+        speeds or per-thruster on-times (whichever actuator kind the
+        spacecraft uses), and one series per attached sensor.
 
         See :meth:`run_live` for a variant that streams intermediate
         results back while the simulation is still running (e.g. to drive
@@ -1358,6 +1384,11 @@ class SimulationService:
                 wheel_speeds = np.asarray(handle.rw_speed_recorder.wheelSpeeds)[:, :handle.num_rw]
                 columns = tuple(f"wheel_{i}" for i in range(handle.num_rw))
                 result.add(TimeSeries(f"{name}.rw_speeds", rw_t_s, columns, wheel_speeds, units="rad/s"))
+            if handle.thruster_on_time_recorder is not None:
+                thr_t_s = handle.thruster_on_time_recorder.times() * macros.NANO2SEC
+                on_times = np.asarray(handle.thruster_on_time_recorder.OnTimeRequest)[:, :handle.num_thrusters]
+                columns = tuple(f"thruster_{i}" for i in range(handle.num_thrusters))
+                result.add(TimeSeries(f"{name}.thruster_on_time", thr_t_s, columns, on_times, units="s"))
 
             for sensor_name, (kind, recorder) in handle.sensor_recorders.items():
                 sensor_t_s = recorder.times() * macros.NANO2SEC

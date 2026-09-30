@@ -304,6 +304,54 @@ def test_unimplemented_actuator_kind_shows_warning_hint(qtbot):
 
     dialog = _ItemEditorDialog(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
     qtbot.addWidget(dialog)
-    index = dialog.kind_combo.findText("thruster")
+    index = dialog.kind_combo.findText("magnetic_torque_rod")
     dialog.kind_combo.setCurrentIndex(index)
     assert "not simulated yet" in dialog.hint_label.text()
+
+
+def test_thruster_kind_is_implemented_and_round_trips(qtbot):
+    """Regression guard: "thruster" used to be in _UNIMPLEMENTED_ACTUATOR_KINDS
+    (engine.service rejected it at run time). Now that engine.fsw/
+    engine.service build a real thrusterDynamicEffector control path for
+    it, this kind must no longer show the "not simulated yet" warning, and
+    its vector params (r_B, tHat_B) must round-trip through to_dataclass().
+    """
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
+
+    dialog = _ItemEditorDialog(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("thruster")
+    dialog.kind_combo.setCurrentIndex(index)
+    assert "not simulated yet" not in dialog.hint_label.text()
+
+    dialog.name_edit.setText("thr-1")
+    dialog._on_reset_template()
+    config = dialog.to_dataclass()
+    assert config.params["r_B"] == [1.0, 0.0, 0.0]
+    assert config.params["tHat_B"] == [1.0, 0.0, 0.0]
+    assert config.params["MaxThrust"] == 1.0
+
+
+def test_thruster_position_vector_row_has_no_normalize_button(qtbot):
+    """Regression guard for a real bug caught while adding "thruster":
+    every 3-element vector param used to get a "Normalize" button
+    unconditionally, which is correct for a direction (tHat_B) but would
+    silently corrupt a thruster's actual body-frame location (r_B, in
+    meters) if clicked. Also protects magnetometer's noise_std_tesla,
+    which had the same latent bug.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
+
+    dialog = _ItemEditorDialog(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("thruster")
+    dialog.kind_combo.setCurrentIndex(index)
+
+    r_b_row_widget = dialog._vector_form.itemAt(0, dialog._vector_form.ItemRole.FieldRole).widget()
+    t_hat_row_widget = dialog._vector_form.itemAt(1, dialog._vector_form.ItemRole.FieldRole).widget()
+    assert not r_b_row_widget.findChildren(QPushButton), "r_B (a position, not a direction) must have no Normalize button"
+    assert len(t_hat_row_widget.findChildren(QPushButton)) == 1, "tHat_B (a direction) must keep its Normalize button"

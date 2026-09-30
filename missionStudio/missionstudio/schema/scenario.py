@@ -82,11 +82,15 @@ ORBIT_IC_TYPES = ("classical_elements", "cartesian", "tle")
 ANOMALY_TYPES = ("true", "mean")
 
 # Sensor/actuator/FSW-mode kinds engine.service.SimulationService actually
-# wires up as of Phase 2 -- see that module's docstring for the exact
-# Basilisk module each one maps to and for engine.fsw's guidance-chain
-# construction. "thruster" and "magnetic_torque_rod" are intentionally
-# accepted as ActuatorConfig.kind values (schema-valid, so a scenario file
-# referencing them still loads and round-trips) but NOT wired up here --
+# wires up -- see that module's docstring for the exact Basilisk module
+# each one maps to and for engine.fsw's guidance-chain construction.
+# "reaction_wheel" (mrpFeedback + rwMotorTorque + reactionWheelStateEffector)
+# and "thruster" (mrpFeedback + thrForceMapping + thrFiringSchmitt +
+# thrusterDynamicEffector) are both real control-torque actuation paths --
+# see SpacecraftConfig.validate() for why a spacecraft may use one or the
+# other but not both. "magnetic_torque_rod" is intentionally accepted as
+# an ActuatorConfig.kind value (schema-valid, so a scenario file
+# referencing it still loads and round-trips) but NOT wired up yet --
 # engine.service raises a specific SimulationServiceError if one is
 # actually present on a spacecraft being run, rather than silently
 # skipping it (see that module's ACTUATOR_BUILDERS for why: unlike Phase 0's
@@ -585,6 +589,32 @@ class SpacecraftConfig:
                 _require(gsHat_B is not None and len(gsHat_B) == 3,
                           f"{self.name}: reaction_wheel {actuator.name!r} needs params['gsHat_B'] "
                           "as a 3-element body-frame spin-axis unit vector")
+            if actuator.kind == "thruster":
+                r_B = actuator.params.get("r_B")
+                _require(r_B is not None and len(r_B) == 3,
+                          f"{self.name}: thruster {actuator.name!r} needs params['r_B'] as a 3-element "
+                          "body-frame location [m]")
+                tHat_B = actuator.params.get("tHat_B")
+                _require(tHat_B is not None and len(tHat_B) == 3,
+                          f"{self.name}: thruster {actuator.name!r} needs params['tHat_B'] as a 3-element "
+                          "body-frame thrust-direction unit vector [-]")
+                _require(actuator.params.get("MaxThrust") is not None,
+                          f"{self.name}: thruster {actuator.name!r} needs params['MaxThrust'] [N] -- "
+                          "simIncludeThruster.thrusterFactory()'s own default (0.2 N) is easy to mistake "
+                          "for a wiring bug rather than a deliberately tiny thruster, so this schema "
+                          "requires it explicitly rather than silently falling back to it")
+
+        # engine.fsw/engine.service build exactly one control-torque path per
+        # spacecraft (reaction wheels via rwMotorTorque, OR thrusters via
+        # thrForceMapping/thrFiringSchmitt) -- mixing both would need a
+        # control-allocation module (e.g. Basilisk's torqueScheduler) this
+        # app does not build yet, so reject the mix early here rather than
+        # letting engine.service silently ignore one of them.
+        actuator_kinds_present = {a.kind for a in self.actuators}
+        if "reaction_wheel" in actuator_kinds_present and "thruster" in actuator_kinds_present:
+            _require(False,
+                      f"{self.name}: actuators mix 'reaction_wheel' and 'thruster' kinds -- only one control "
+                      "-torque actuator type per spacecraft is simulated; remove one kind's actuators")
 
         if self.power is not None:
             self.power.validate(self.name)

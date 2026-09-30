@@ -39,6 +39,16 @@ wires up in Phase 2:
   for spacecraft with ``"reaction_wheel"`` actuators (see ``engine.fsw``);
   ``None`` otherwise, matching ``enableUnityVisualization``'s own
   ``ensure_correct_len_list`` handling of a per-spacecraft ``None`` entry.
+* Thruster plumes -- passed via ``thrEffectorList``, which makes Vizard
+  draw native thruster plume effects when firing. Only present for
+  spacecraft with ``"thruster"`` actuators; ``None`` otherwise. Confirmed
+  directly against ``src/utilities/vizSupport.py`` that this parameter
+  wants a per-spacecraft LIST of ``ThrusterDynamicEffector`` instances
+  (``depth=2``, unlike ``rwEffectorList``'s single instance per
+  spacecraft -- a spacecraft could in principle have more than one
+  separate thruster cluster, e.g. ACS + DV, though ``engine.fsw`` only
+  ever builds one per spacecraft), so each non-``None`` entry here is
+  wrapped in a one-element list before being passed through.
 * Ground stations -- drawn via ``vizSupport.addLocation`` (lat/lon/alt,
   field of view, minimum-elevation cone) for every
   :class:`schema.scenario.GroundStationConfig`, so the access geometry
@@ -47,10 +57,6 @@ wires up in Phase 2:
 * Attitude, position, and (natively, always) eclipse/sun-direction
   indication come from ``enableUnityVisualization``'s own per-spacecraft
   state message wiring -- no extra work needed here.
-
-Thruster plumes (``thrEffectorList``) are NOT passed: Phase 2 does not
-wire up thruster actuators (see ``engine.fsw``'s module docstring), so
-there is nothing to visualize there yet.
 
 Default camera / orbit-line view (fixed after user feedback that Vizard
 opened locked onto the spacecraft with no context -- "improve" per that
@@ -533,6 +539,7 @@ class VizardRequest:
 
 def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardRequest,
                    rw_effectors_by_spacecraft: Optional[List] = None,
+                   thr_effectors_by_spacecraft: Optional[List] = None,
                    ground_stations: Optional[Dict[str, object]] = None,
                    central_body_name: str = "earth",
                    battery_by_spacecraft: Optional[Dict[str, object]] = None,
@@ -566,6 +573,10 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         rw_effectors_by_spacecraft: one ``reactionWheelStateEffector.ReactionWheelStateEffector``
             (or ``None``) per entry in ``sc_objects`` -- see module
             docstring.
+        thr_effectors_by_spacecraft: one ``thrusterDynamicEffector.ThrusterDynamicEffector``
+            (or ``None``) per entry in ``sc_objects`` -- see module
+            docstring for the depth-2 wrapping this function does before
+            handing it to ``enableUnityVisualization``.
         ground_stations: ``{name: groundLocation.GroundLocation}`` for
             every ``GroundStationConfig`` already built for this scenario.
         battery_by_spacecraft: ``{spacecraft_name: simpleBattery.SimpleBattery}``
@@ -788,6 +799,10 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             saveFile=str(request.save_file) if request.save_file else None,
             liveStream=request.live_stream,
             rwEffectorList=rw_effectors_by_spacecraft,
+            thrEffectorList=(
+                [[thr] if thr is not None else None for thr in thr_effectors_by_spacecraft]
+                if thr_effectors_by_spacecraft is not None else None
+            ),
             genericStorageList=generic_storage_list if any(generic_storage_list) else None,
             genericSensorList=generic_sensor_list if any(generic_sensor_list) else None,
         )

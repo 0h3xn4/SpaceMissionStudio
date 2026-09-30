@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 722 tests
+  exercised either way -- `pytest tests/` runs and passes 729 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -443,9 +443,9 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 722 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 729 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 103 whose premise is
+full PySide6 GUI, run headless) and skips 105 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
@@ -682,10 +682,12 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   directly, not a ground station) is schema-valid but not wired up** --
   it needs an `EphemerisMsg`, which this checkout only produces via
   `ephemerisConverter` from a `SpicePlanetStateMsg`, not yet built here.
-* **`"thruster"`/`"magnetic_torque_rod"` actuator kinds are schema-valid
-  but not wired up** -- `engine.fsw`/`engine.service` raise a specific
-  error if either is actually configured, rather than silently doing
-  nothing.
+* **`"magnetic_torque_rod"` actuator kind is schema-valid but not wired
+  up** -- `engine.service` raises a specific error if configured, rather
+  than silently doing nothing. (`"thruster"` IS wired up: real
+  `thrusterDynamicEffector` + `thrForceMapping` + `thrFiringSchmitt`, an
+  alternative to `"reaction_wheel"` -- a spacecraft may use one actuator
+  kind or the other, not both, on the same spacecraft.)
 * **The attitude control loop closes on truth spacecraft state.**
   `simpleNav` is in the loop (not raw `scStateOutMsg`), but its
   error-model matrices are left at Basilisk's own zero defaults -- there
