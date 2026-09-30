@@ -3047,3 +3047,56 @@ spacecraft actually rendering during a run) -- that additionally needs
 Basilisk itself installed, which this user's machine does not yet
 have.
 
+## First real live-stream run: a genuine label-legibility bug in the RTN panel colors
+
+The user got Basilisk built from source and registered into the venv
+missionStudio runs in, then ran a live-stream scenario end-to-end for
+the first time -- the full pipeline (Basilisk -> live socket -> Vizard,
+downloaded and launched entirely through this project's own auto-fetch
+feature from the last few rounds) worked, and the RTN separation
+panels (see the "RTN separation panels" section above) showed real,
+correctly-labeled numbers. A screenshot of the running panel showed
+the next real problem: the "R vs chief-1" row's dark blue fill made its
+own label nearly impossible to read.
+
+**Root-caused, not guessed**, by reading Vizard's own
+`GenericStoragePanelUnit.prefab` directly (cloned earlier this
+session): the on-bar device-name label
+(`StorageName`'s `TextMeshProUGUI`) has its font color hardcoded to a
+dark gray, `m_fontColor: {r: 0.19607843, g: 0.19607843, b: 0.19607843,
+a: 1}` -- Vizard itself never recolors this text to contrast against
+whatever fill color a `GenericStorage` message requests. Computing
+perceived luminance (`0.2126*R + 0.7152*G + 0.0722*B`, 0-255 scale)
+for that gray (~50) against the fill colors this project had been
+using: plain `"blue"` is itself only ~18 -- literally *darker* than its
+own label text -- and `"magenta"` (~73) isn't much better. Both R and T
+happened to read at/near their max value in the screenshot (100/100
+km), so their bars were fully saturated-color for their entire width,
+with nothing to break up the low-contrast label. `"green"` (~92, used
+for N) fares a little better, and wasn't the one flagged, likely
+because N's own value was far below its max (0.45/100 km) so most of
+its row was still the neutral gray "unfilled" background, not the
+saturated fill. The panel's *other* rows (`"cyan"`, `"yellow"`,
+`"orange"`, `"lightgreen"`) were never reported as unreadable -- and
+indeed all compute to luminance 170-235, comfortably above the label's
+own ~50.
+
+**Fixed** by swapping the three RTN fill colors for lighter,
+higher-luminance alternatives with the same computed margin as the
+panel's already-readable rows, while keeping each visually distinct
+from its neighbors: `"blue"` -> `"lightskyblue"` (~194), `"magenta"`
+-> `"violet"` (~161), `"green"` -> `"springgreen"` (~192) -- all
+`matplotlib`-recognized names accepted by `vizSupport.toRGBA255()`
+exactly like the originals, so no new dependency or plumbing. Not
+guessed -- computed directly with `matplotlib.colors.to_rgba()` against
+the exact hardcoded label-gray value read from the real prefab file.
+
+**Verification:** no existing test pinned the specific color-name
+strings (`grep` confirmed), so this is a pure improvement with nothing
+to update test-side; the luminance math above is reproducible directly
+from Vizard's own checked-in prefab and `vizSupport.toRGBA255()`'s
+`matplotlib` color table, not a subjective guess. Full suite still 671
+passed, 99 skipped. Not yet re-confirmed visually against a live
+Vizard window by the user -- that's the natural next real-machine
+check.
+

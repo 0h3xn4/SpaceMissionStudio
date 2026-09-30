@@ -710,11 +710,25 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             # act on (see PhasingKeepingController's own docstring for
             # where these numbers come from -- a real orbitalMotion.rv2hill
             # decomposition, not an approximation).
+            #
+            # Colors deliberately avoid dark/saturated primaries (plain
+            # "blue"/"magenta"/"green", used until a real user reported
+            # the R panel unreadable): confirmed from Vizard's own
+            # GenericStoragePanelUnit.prefab that the on-bar device-name
+            # label is hardcoded to a dark gray font
+            # (m_fontColor ~= (0.196, 0.196, 0.196)), so a fully/mostly
+            # -filled bar (R and T both read 100/100 here) in a LOW
+            # -luminance color leaves that label nearly invisible --
+            # plain "blue" is actually darker than the label text itself.
+            # Every color below keeps perceived luminance
+            # (0.2126 R + 0.7152 G + 0.0722 B) comfortably above the
+            # label's own (~50/255), matching the already-readable rows
+            # in this same panel ("cyan"/"yellow"/"orange"/"lightgreen").
             radial_panel = vizInterface.GenericStorage()
             radial_panel.label = _rtn_panel_label("R", phasing_controller.chiefName, sc_name)
             radial_panel.type = "Separation"
             radial_panel.units = "km"
-            radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("blue"))
+            radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("lightskyblue"))
             radial_reader = messaging.DataStorageStatusMsgReader()
             radial_reader.subscribeTo(phasing_controller.separationRadialOutMsg)
             radial_panel.dataStorageStateInMsg = radial_reader
@@ -724,7 +738,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             transverse_panel.label = _rtn_panel_label("T", phasing_controller.chiefName, sc_name)
             transverse_panel.type = "Separation"
             transverse_panel.units = "km"
-            transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
+            transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("violet"))
             transverse_reader = messaging.DataStorageStatusMsgReader()
             transverse_reader.subscribeTo(phasing_controller.separationTransverseOutMsg)
             transverse_panel.dataStorageStateInMsg = transverse_reader
@@ -734,7 +748,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             normal_panel.label = _rtn_panel_label("N", phasing_controller.chiefName, sc_name)
             normal_panel.type = "Separation"
             normal_panel.units = "km"
-            normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("green"))
+            normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("springgreen"))
             normal_reader = messaging.DataStorageStatusMsgReader()
             normal_reader.subscribeTo(phasing_controller.separationNormalOutMsg)
             normal_panel.dataStorageStateInMsg = normal_reader
