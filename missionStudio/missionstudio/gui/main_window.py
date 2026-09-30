@@ -294,7 +294,37 @@ class MainWindow(QMainWindow):
         run_menu.addAction(monte_carlo_action)
         self.monte_carlo_action = monte_carlo_action
 
+        # Real gap, found while auditing the rest of the app for UX
+        # issues: missionstudio.__version__ already exists (this is a
+        # packaged desktop app, shipping .deb/Windows installers -- see
+        # packaging/), but nothing in the GUI surfaced it anywhere --
+        # no Help menu, no About dialog, no version visible at all. A
+        # user filing a bug report or asking for support had no way to
+        # even state which version they were running from inside the
+        # app itself.
+        help_menu = self.menuBar().addMenu("&Help")
+        about_action = QAction("&About missionStudio", self)
+        about_action.triggered.connect(self.on_about)
+        help_menu.addAction(about_action)
+
         self._build_toolbar()
+
+    def on_about(self) -> None:
+        import importlib.util
+
+        import missionstudio
+
+        basilisk_status = (
+            "available" if importlib.util.find_spec("Basilisk") is not None
+            else "not installed/built -- see missionStudio/README.md"
+        )
+        QMessageBox.about(
+            self, "About missionStudio",
+            f"<b>missionStudio</b> {missionstudio.__version__}<br><br>"
+            "A GUI-based mission-analysis application built on the Basilisk "
+            "astrodynamics framework (AVS Lab, University of Colorado Boulder).<br><br>"
+            f"Basilisk: {basilisk_status}",
+        )
 
     def _build_toolbar(self) -> None:
         """Puts the SAME QAction instances the menu bar uses onto two
@@ -886,6 +916,13 @@ class MainWindow(QMainWindow):
                                  f"Run indices that failed: {failures}")
         else:
             self._stop_busy("Monte Carlo complete -- all runs succeeded.")
+            # A QMessageBox.warning already covers the failures>0 branch
+            # above (strong enough feedback on its own, matching
+            # _on_run_failed's reasoning for why IT has no toast either)
+            # -- this all-succeeded branch had none at all, unlike its
+            # single-run sibling _on_run_finished's own toast, found
+            # while checking this tab's feedback for consistency.
+            show_toast(self, "Monte Carlo complete -- all runs succeeded")
 
     def _on_monte_carlo_failed(self, message: str) -> None:
         self._stop_busy("Monte Carlo run failed.")

@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 713 tests
+  exercised either way -- `pytest tests/` runs and passes 716 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -360,7 +360,7 @@ missionStudio/
       theme.py                       -- Phase 5: app-wide QSS stylesheet + palette
       feedback.py                    -- toast notifications + inline (per-field) validation highlighting
       icons.py                       -- Phase 5: procedurally-drawn app icon
-      main_window.py                 -- MainWindow: File/Run menus + toolbar, ties everything together
+      main_window.py                 -- MainWindow: File/Run/Help menus + toolbar, ties everything together
       load_scenario_widget.py        -- "Load Scenario" tab: built-in template picker + browse-for-a-file
       scenario_editor.py             -- the full scenario form + live validation
       mission_sequence_editor.py     -- Phase 6: mission_sequence tree editor (Command Add/Edit/Remove/nesting)
@@ -443,7 +443,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 713 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 716 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 101 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per

@@ -575,6 +575,34 @@ def test_monte_carlo_finished_stops_busy_indicator_and_reenables_actions(window)
     assert window.monte_carlo_action.isEnabled()
 
 
+def test_monte_carlo_finished_with_no_failures_shows_a_toast(window):
+    """Regression guard: found while checking this tab's feedback for
+    consistency -- _on_run_finished (the single-run sibling) already
+    shows a toast on success, but this Monte Carlo equivalent had none
+    at all.
+    """
+    window._start_busy("Running Monte Carlo test...")
+    window._on_monte_carlo_finished([])
+
+    toasts = getattr(window, "_missionstudio_active_toasts", [])
+    assert any("Monte Carlo complete" in t.text() for t in toasts)
+
+
+def test_monte_carlo_finished_with_failures_does_not_show_a_toast(window, monkeypatch):
+    """The QMessageBox.warning already shown for a partial failure is
+    strong enough feedback on its own -- same reasoning as
+    _on_run_failed having no toast alongside its own QMessageBox.critical.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    window._start_busy("Running Monte Carlo test...")
+    window._on_monte_carlo_finished([2])
+
+    toasts = getattr(window, "_missionstudio_active_toasts", [])
+    assert not any("Monte Carlo complete" in t.text() for t in toasts)
+
+
 def test_monte_carlo_failed_stops_busy_indicator_and_reenables_actions(window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
@@ -1330,3 +1358,25 @@ def test_end_to_end_cancel_signal_updates_window_without_crashing(window, qtbot,
     qtbot.waitUntil(lambda: not window.abort_action.isEnabled(), timeout=5000)
 
     assert window.statusBar().currentMessage() == "Run cancelled by user."
+
+
+def test_about_dialog_shows_version_and_basilisk_status(window, monkeypatch):
+    """Regression guard for a real gap found while auditing the rest of
+    the app: missionstudio.__version__ already existed (a packaged
+    desktop app, shipping .deb/Windows installers), but nothing in the
+    GUI surfaced it anywhere -- no Help menu, no About dialog, no
+    version visible at all.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    import missionstudio
+
+    calls = []
+    monkeypatch.setattr(QMessageBox, "about", staticmethod(lambda *a, **k: calls.append(a)))
+
+    window.on_about()
+
+    assert len(calls) == 1
+    shown_text = calls[0][2]
+    assert missionstudio.__version__ in shown_text
+    assert "Basilisk" in shown_text

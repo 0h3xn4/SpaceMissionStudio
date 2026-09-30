@@ -3633,3 +3633,44 @@ stretches"), the unavailable-kernel row's cell text is exactly "NO"
 with the real error as its tooltip, and the path cell's tooltip holds
 the untruncated path. Full suite: 713 passed, 101 skipped.
 
+## A missing Monte Carlo toast, and a version nowhere in a versioned, packaged app
+
+Follow-up request: "check the rest of the app for other UX issues".
+Checked whether Basilisk's own `MonteCarlo.Controller` exposes any
+real per-run progress hook, since an earlier survey flagged Monte Carlo
+runs as having no progress reporting -- confirmed directly from
+Basilisk's own source (`src/utilities/MonteCarlo/Controller.py`,
+`src/utilities/simulationProgessBar.py`): its only "progress" is a
+`tqdm` terminal bar with no programmatic callback at all, and
+`main_window.py`'s own code already documents this exact limitation
+honestly (the indeterminate busy bar IS the correct, deliberate choice
+here -- not a bug to fix, and not something to fake a fraction for).
+
+Two real, smaller gaps found instead:
+
+* **`_on_monte_carlo_finished`'s all-succeeded branch had no toast**,
+  unlike its single-run sibling `_on_run_finished` (added a few rounds
+  ago in this same audit). The partial-failure branch already shows a
+  `QMessageBox.warning` -- strong enough feedback on its own, same
+  reasoning as `_on_run_failed` having no toast alongside its own
+  `QMessageBox.critical` -- so only the silent all-succeeded case
+  needed one.
+* **No way to check the app's own version from inside the app.**
+  `missionstudio.__version__` ("1.0.0") already existed, but nothing in
+  the GUI ever surfaced it -- no Help menu, no About dialog, no version
+  string anywhere, despite this being a packaged desktop app shipping
+  `.deb`/Windows installers. A user filing a bug report had no way to
+  even state which version they were running without checking
+  `pyproject.toml` by hand. Added a `&Help` menu with an "About
+  missionStudio" action showing the version plus whether Basilisk is
+  actually available in this install (the same
+  `importlib.util.find_spec("Basilisk")` check this project's own test
+  suite already uses to gate `requires_basilisk` tests).
+
+**Verification:** rendered the menu bar and confirmed "Help" appears
+correctly. 3 new tests: the all-succeeded Monte Carlo toast fires and
+mentions "Monte Carlo complete", the partial-failure branch does NOT
+also show one, and the About dialog's shown text contains both the
+real `missionstudio.__version__` string and the word "Basilisk". Full
+suite: 716 passed, 101 skipped.
+
