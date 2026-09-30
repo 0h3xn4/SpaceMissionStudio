@@ -16,12 +16,63 @@
 #  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-"""ResultsWidget: plots a :class:`engine.results.ResultSet` (matplotlib,
-embedded via ``FigureCanvasQTAgg`` -- matplotlib is already a Basilisk
-dependency, see ``../../requirements.txt``, so this adds no new heavy
-dependency beyond PySide6 itself) and exports it to CSV. Takes a plain
-``ResultSet`` -- no Basilisk import in this module, so it's testable here
-with synthetic data exactly like ``engine/results.py`` itself is.
+"""ResultsWidget: plots a :class:`engine.results.ResultSet` with Plotly,
+embedded in a ``QWebEngineView`` -- replaces an earlier matplotlib
+version, per explicit user request ("please rather use plotly, and not
+matplotlib... make the plots visually more clear, professional and
+appealing and informative") plus a real, separate complaint (matplotlib's
+default axis formatting fell back to scientific/offset notation on
+several series -- Plotly is configured below to never do that, on every
+axis, regardless of data range). Takes a plain ``ResultSet`` -- no
+Basilisk import in this module, so it's testable here with synthetic
+data exactly like ``engine/results.py`` itself is.
+
+``QWebEngineView``, not a static image: an embedded Plotly chart is a
+real, interactive HTML/JS page (pan/zoom/box-select, a unified hover
+tooltip showing every series' value at the cursor's x-position, a
+built-in PNG-export button) -- a screenshot-style static render would
+throw away exactly the interactivity that makes Plotly worth using over
+matplotlib in the first place. ``plotly.js`` itself (~4.7 MB) is
+referenced via a local ``file://`` src pointing directly at the copy
+already installed as part of the ``plotly`` PyPI package's own
+``package_data`` (:func:`_plotlyjs_path`) -- never a CDN reference (this
+project avoids unnecessary network dependencies throughout, and a
+missionStudio desktop install has no reason to need one just to redraw a
+plot), and never a second bundled copy of a multi-megabyte file this
+project doesn't need to ship or keep in sync itself.
+
+Running as root (this project's own CI/dev sandbox is; most real desktop
+installs are not): Chromium refuses to start its renderer process as
+root unless ``--no-sandbox`` is passed (a Chromium policy, not a Qt one
+-- process sandboxing normally works by dropping privileges via setuid,
+which is meaningless starting from an already-root process) -- confirmed
+directly against a real ``QWebEngineView`` in this development sandbox,
+which failed exactly that way without it. Handled below by setting
+``QTWEBENGINE_CHROMIUM_FLAGS`` BEFORE ``PySide6.QtWebEngineWidgets`` is
+imported (the only point at which QtWebEngine reads it) -- and ONLY when
+actually running as root (``os.geteuid() == 0``), left off for a normal
+non-root install, where Chromium's own process sandbox is real
+defense-in-depth worth keeping even though this widget only ever loads
+its own locally-generated HTML/JS, never remote or otherwise untrusted
+content.
+
+Verification status: the full local-``plotly.min.js``-via-``file://``
+plus ``QWebEngineView.setHtml()`` pipeline was confirmed end-to-end in
+this development sandbox (``QT_QPA_PLATFORM=offscreen`` -- no real
+display here either) -- ``loadFinished`` fires ``True`` and a real
+in-page JS check (``document.getElementsByClassName("plotly").length``)
+confirms the chart div actually renders, not just that ``setHtml()``
+didn't raise. The chosen design (re-send the FULL html, plotly.js
+``<script src>`` reference included, on every redraw, rather than
+loading the page shell once and pushing incremental updates via
+``Plotly.react()`` through ``page().runJavaScript()``) was picked for
+simplicity and testability (the built ``go.Figure`` object is directly
+inspectable in a test, same role matplotlib's ``Axes`` used to play) --
+NOT benchmarked against the incremental-update alternative for redraw
+latency during a live (``set_live_result``) run; if that turns out to
+feel sluggish on a real machine for a long/fast-updating run, the
+incremental-update approach is the documented next step, not something
+ruled out here.
 
 Two independent display choices, both user feedback, both PLOT-only
 (``export_csv()``/``_on_export()`` below keep writing exactly what
@@ -48,12 +99,21 @@ plot-only display preference):
 
 from __future__ import annotations
 
+import os
+
+# See module docstring's "Running as root" section -- MUST happen before
+# PySide6.QtWebEngineWidgets is imported below (env var read at that
+# module's own native init time; setting it any later has no effect).
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
+import plotly.graph_objects as go
+from PySide6.QtCore import QUrl
+from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from ..engine.results import ResultSet, TimeSeries
@@ -64,6 +124,24 @@ _DISPLAY_UNIT_CONVERSIONS = {
     "m": ("km", 1000.0),
     "m/s": ("km/s", 1000.0),
 }
+
+# Categorical series colors -- the first three slots of a validated,
+# colorblind-safe 8-hue palette (Claude's dataviz skill,
+# references/palette.md: worst adjacent/all-pairs CVD Delta E clears the
+# >= 8 target in both light and dark mode). Three is also exactly this
+# project's own common case -- every (x, y, z) position/velocity/MRP
+# series has three columns.
+_SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+
+# Chart chrome, matching gui/theme.py's own light palette (_C dict) --
+# reused here rather than re-picked, so an embedded chart reads as part
+# of the same application, not a visually foreign inserted widget.
+_INK_PRIMARY = "#1F2530"  # theme.py's "text"
+_INK_MUTED = "#5B6472"  # theme.py's "text_muted"
+_GRID_COLOR = "#D8DCE3"  # theme.py's "border"
+_SURFACE = "#FFFFFF"  # theme.py's "surface"
+_EMPTY_STATE_TEXT = "#8A93A3"  # same color the previous matplotlib empty-state message used
+_FONT_FAMILY = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
 
 def _display_units(series: TimeSeries) -> Tuple["object", str]:
@@ -78,11 +156,40 @@ def _display_units(series: TimeSeries) -> Tuple["object", str]:
     return series.data / divisor, display_unit
 
 
+def _plotlyjs_path() -> Path:
+    """Absolute filesystem path to the ``plotly.min.js`` bundle already
+    installed as part of the ``plotly`` PyPI package -- see module
+    docstring's "QWebEngineView, not a static image" section for why
+    this is referenced directly rather than re-bundled or CDN-loaded.
+    """
+    import plotly
+
+    return Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
+
+
+def _empty_state_html() -> str:
+    """Shown before any run has produced a result -- previously a blank
+    white canvas with no explanation (part of the "looks unfinished"
+    feedback the matplotlib version's own docstring already addressed);
+    kept as plain HTML/CSS here, no Plotly involved, so it costs nothing
+    to render.
+    """
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html, body {{ margin: 0; height: 100%; background: {_SURFACE};
+                font-family: {_FONT_FAMILY}; }}
+  .empty {{ display: flex; align-items: center; justify-content: center;
+            height: 100%; color: {_EMPTY_STATE_TEXT}; font-size: 14px; }}
+</style></head>
+<body><div class="empty">Run a simulation to see results here</div></body></html>"""
+
+
 class ResultsWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._result: ResultSet | None = None
         self._epoch_utc: Optional[str] = None
+        self.figure: Optional[go.Figure] = None  # the currently-plotted go.Figure, or None (empty state)
 
         layout = QVBoxLayout(self)
 
@@ -107,10 +214,8 @@ class ResultsWidget(QWidget):
         top_row.addWidget(self.export_button)
         layout.addLayout(top_row)
 
-        self.figure = Figure(figsize=(6, 4))
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        self.axes = self.figure.add_subplot(111)
-        layout.addWidget(self.canvas)
+        self.web_view = QWebEngineView()
+        layout.addWidget(self.web_view)
         self._redraw()  # shows the empty-state message immediately, not just after the first set_result() call
 
     def set_result(self, result: ResultSet | None, epoch_utc: Optional[str] = None) -> None:
@@ -165,37 +270,75 @@ class ResultsWidget(QWidget):
             except ValueError:
                 pass
             else:
-                return [base + timedelta(seconds=float(t)) for t in time_s], "epoch (UTC)"
-        return time_s / 3600.0, "elapsed time [hr]"
+                return [base + timedelta(seconds=float(t)) for t in time_s], "Epoch (UTC)"
+        return time_s / 3600.0, "Elapsed time [hr]"
+
+    def _build_figure(self, name: str, series: TimeSeries) -> go.Figure:
+        display_data, display_unit = _display_units(series)
+        x_values, x_label = self._x_axis_values(series.time_s)
+        is_datetime_axis = self.x_axis_combo.currentData() == "epoch" and x_label == "Epoch (UTC)"
+
+        fig = go.Figure()
+        for i, column in enumerate(series.columns):
+            fig.add_trace(go.Scatter(
+                x=x_values, y=display_data[:, i], mode="lines", name=column,
+                line=dict(color=_SERIES_COLORS[i % len(_SERIES_COLORS)], width=2),
+            ))
+
+        axis_common = dict(
+            gridcolor=_GRID_COLOR, zerolinecolor=_GRID_COLOR, linecolor=_GRID_COLOR,
+            tickfont=dict(color=_INK_MUTED), title_font=dict(color=_INK_MUTED),
+        )
+        y_axis = dict(axis_common, title_text=f"[{display_unit}]" if display_unit else None)
+        x_axis = dict(axis_common, title_text=x_label)
+        if not is_datetime_axis:
+            # Both fix the exact complaint that started this: matplotlib's
+            # default tick formatter fell back to an offset/scientific
+            # notation (e.g. "1e6") on several of this app's own plots.
+            # exponentformat="none" forbids it entirely, on every axis,
+            # regardless of how large/small the data range is;
+            # separatethousands adds comma grouping so a plain large
+            # number (e.g. "7,123,456") still reads cleanly instead of as
+            # one long digit run. Skipped for a datetime axis, where
+            # neither setting is meaningful (Plotly formats dates on its
+            # own date-axis path).
+            y_axis["exponentformat"] = "none"
+            y_axis["separatethousands"] = True
+            x_axis["exponentformat"] = "none"
+            x_axis["separatethousands"] = True
+
+        fig.update_layout(
+            title=dict(text=name, font=dict(size=16, color=_INK_PRIMARY, family=_FONT_FAMILY)),
+            xaxis=x_axis,
+            yaxis=y_axis,
+            font=dict(family=_FONT_FAMILY, color=_INK_PRIMARY),
+            plot_bgcolor=_SURFACE,
+            paper_bgcolor=_SURFACE,
+            hovermode="x unified",
+            showlegend=len(series.columns) > 1,  # a single series names itself in the title -- no legend box needed
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color=_INK_MUTED)),
+            margin=dict(l=70, r=30, t=60, b=50),
+        )
+        return fig
 
     def _redraw(self) -> None:
-        self.axes.clear()
+        self.figure = None
         if self._result is not None and self.series_combo.count() > 0:
             name = self.series_combo.currentText()
             series = self._result.series.get(name)
             if series is not None:
-                display_data, display_unit = _display_units(series)
-                x_values, x_label = self._x_axis_values(series.time_s)
-                for i, column in enumerate(series.columns):
-                    self.axes.plot(x_values, display_data[:, i], label=column)
-                unit_suffix = f" [{display_unit}]" if display_unit else ""
-                self.axes.set_xlabel(x_label)
-                self.axes.set_ylabel(f"{name}{unit_suffix}")
-                self.axes.legend()
-                self.axes.grid(True, linewidth=0.3)
-                if x_label == "epoch (UTC)":
-                    self.figure.autofmt_xdate()  # slants/spaces datetime tick labels so they don't overlap
+                self.figure = self._build_figure(name, series)
+
+        if self.figure is None:
+            html = _empty_state_html()
+            base_url = QUrl()
         else:
-            # Previously just a blank white canvas with no explanation --
-            # confusing on first launch, before any run has happened (part
-            # of the "looks unfinished" feedback this addresses).
-            self.axes.set_axis_off()
-            self.axes.text(
-                0.5, 0.5, "Run a simulation to see results here",
-                ha="center", va="center", transform=self.axes.transAxes,
-                fontsize=11, color="#8A93A3",
+            html = self.figure.to_html(
+                include_plotlyjs=str(_plotlyjs_path()), full_html=True,
+                config={"displaylogo": False, "responsive": True},
             )
-        self.canvas.draw_idle()
+            base_url = QUrl.fromLocalFile(str(_plotlyjs_path().parent) + "/")
+        self.web_view.setHtml(html, base_url)
 
     def _on_export(self) -> None:
         if self._result is None:

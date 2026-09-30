@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 614 tests
+  exercised either way -- `pytest tests/` runs and passes 617 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -194,6 +194,21 @@ environment issue.
   Windows 11 machine (none has ever been available in this development
   sandbox) -- see `packaging/README.md` for exactly what's verified
   where, and please report anything that doesn't work as documented.
+  That end-to-end packaging pass predates `results_widget.py`'s
+  matplotlib-to-Plotly migration (see the "GUI & CLI" bullet under
+  "Capabilities" below): the plots now render inside a `QWebEngineView`,
+  which -- unlike plain PySide6 widgets, matplotlib included -- embeds a
+  full Chromium renderer with its own system-library footprint (things
+  like `libnss3`/`libatk-bridge2.0-0`/`libgbm1`, beyond the
+  `libegl1`/`libopengl0`/`libxcb-cursor0` already called out below for
+  plain PySide6). This development sandbox's container already had
+  everything `QtWebEngineProcess` needs (confirmed with `ldd` --
+  nothing reported missing) and the full headless `pytest-qt` suite
+  exercises real `QWebEngineView` instances, but that is not the same
+  as confirming a fresh install on a minimal target machine (the `.deb`
+  postinst's or the Windows installer's own actual end user); if
+  `missionstudio gui` starts but the results plot stays blank, that is
+  the first thing to check.
 
 ## Capabilities
 
@@ -258,13 +273,15 @@ cross-track control authority (the wizard says so up front).
 Earth-centered default camera view with orbit trace lines, live
 data panels (battery charge, station-keeping propellant remaining,
 delta-V used -- station-keeping and phasing-keeping reported as separate
-panels, since both draw from one shared tank -- live along-track
-separation from the chief for a phasing formation, ground-station
-access-window indicators -- all driven by real, already-simulated
-values, not static snapshots, with Vizard's own native live current/max
-readout on every panel), custom 3D models per spacecraft (purely
-cosmetic), and a **Launch Vizard** action that starts the external
-application itself, not just configures what feeds it.
+panels, since both draw from one shared tank -- for a phasing formation,
+the real chief/follower offset broken out into Radial/Transverse/Normal
+panels (the same R/T/N terms the phasing-formation wizard itself uses,
+not an abstract single number), ground-station access-window indicators
+-- all driven by real, already-simulated values, not static snapshots,
+with Vizard's own native live current/max readout on every panel),
+custom 3D models per spacecraft (purely cosmetic), and a **Launch
+Vizard** action that starts the external application itself, not just
+configures what feeds it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
@@ -277,12 +294,19 @@ simulation chunks or commands, keeping whatever partial results were
 already produced -- never a forced kill that could leave Basilisk's C++
 state mid-mutation.
 
-**GUI & CLI** -- a full PySide6 desktop shell (scenario editor, results
-plots, Monte Carlo, live progress feedback, a real visual theme/icon/
+**GUI & CLI** -- a full PySide6 desktop shell (scenario editor,
+Monte Carlo, live progress feedback, a real visual theme/icon/
 toolbar) and an equivalent headless CLI (`missionstudio validate/run/
 monte-carlo/kernels-status/generate-constellation/gui`), both built on
 the exact same `schema`/`engine` layer -- neither is a thin wrapper
-around the other.
+around the other. Result plots are Plotly figures (a validated,
+colorblind-safe categorical palette; a unified hover tooltip; plain
+decimal axis ticks -- never matplotlib's scientific/offset notation)
+rendered in an embedded `QWebEngineView`, with the epoch/elapsed-time
+x-axis toggle and per-series km-unit conversion described above still
+applying unchanged; see `results_widget.py`'s own module docstring for
+why `QWebEngineView` over a static image, and "Verification status"
+above for this migration's one open packaging caveat.
 
 ## Repository layout
 
@@ -337,7 +361,7 @@ missionStudio/
       phasing_formation_dialog.py    -- "Generate phasing formation..." dialog
       spacecraft_template_dialog.py  -- Phase 5: "New from template" picker dialog
       kernel_status_widget.py        -- SPICE kernel status panel
-      results_widget.py              -- matplotlib results plot + CSV export
+      results_widget.py              -- Plotly results plot (QWebEngineView) + CSV export
       run_worker.py                  -- SimulationService/Monte Carlo on a background QThread
     scenarios/
       two_body_validation.json       -- the Phase 0 validation scenario
@@ -403,7 +427,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 614 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 617 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 99 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per

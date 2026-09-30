@@ -1,5 +1,8 @@
 """Tests for gui.results_widget.ResultsWidget -- uses synthetic
-ResultSet data, no Basilisk needed.
+ResultSet data, no Basilisk needed. Inspects the built ``go.Figure``
+object directly (``widget.figure``) rather than the rendered
+QWebEngineView content -- the same role matplotlib's ``Axes`` used to
+play before the Plotly migration (see that module's own docstring).
 """
 
 from pathlib import Path
@@ -36,13 +39,13 @@ def test_set_result_populates_series_combo_and_plots(widget):
     widget.set_result(_sample_result_set())
     assert widget.series_combo.count() == 2
     assert widget.export_button.isEnabled()
-    assert len(widget.axes.get_lines()) == 3  # x, y, z
+    assert len(widget.figure.data) == 3  # x, y, z
 
 
 def test_switching_series_redraws(widget):
     widget.set_result(_sample_result_set())
     widget.series_combo.setCurrentIndex(1)
-    assert len(widget.axes.get_lines()) == 3
+    assert len(widget.figure.data) == 3
 
 
 def test_set_result_none_clears_everything(widget):
@@ -50,7 +53,7 @@ def test_set_result_none_clears_everything(widget):
     widget.set_result(None)
     assert widget.series_combo.count() == 0
     assert not widget.export_button.isEnabled()
-    assert len(widget.axes.get_lines()) == 0
+    assert widget.figure is None
 
 
 def test_export_writes_csv_files(widget, tmp_path, monkeypatch):
@@ -81,7 +84,7 @@ def test_set_live_result_populates_combo_on_first_update(widget):
     widget.set_live_result(_sample_result_set(n=5))
     assert widget.series_combo.count() == 2
     assert widget.export_button.isEnabled()
-    assert len(widget.axes.get_lines()) == 3  # x, y, z
+    assert len(widget.figure.data) == 3  # x, y, z
 
 
 def test_set_live_result_does_not_reset_users_series_selection(widget):
@@ -103,11 +106,11 @@ def test_set_live_result_does_not_reset_users_series_selection(widget):
 
 def test_set_live_result_grows_the_plotted_data(widget):
     widget.set_live_result(_sample_result_set(n=5))
-    first_line_length = len(widget.axes.get_lines()[0].get_xdata())
+    first_trace_length = len(widget.figure.data[0].x)
 
     widget.set_live_result(_sample_result_set(n=25))
 
-    assert len(widget.axes.get_lines()[0].get_xdata()) > first_line_length
+    assert len(widget.figure.data[0].x) > first_trace_length
 
 
 def test_position_series_plots_in_km_not_m(widget):
@@ -116,9 +119,9 @@ def test_position_series_plots_in_km_not_m(widget):
 
     widget.set_result(rs)
 
-    plotted_x = widget.axes.get_lines()[0].get_ydata()
+    plotted_x = np.asarray(widget.figure.data[0].y)
     np.testing.assert_allclose(plotted_x, raw_x_m / 1000.0)
-    assert "[km]" in widget.axes.get_ylabel()
+    assert widget.figure.layout.yaxis.title.text == "[km]"
 
 
 def test_velocity_series_plots_in_km_s_not_m_s(widget):
@@ -128,9 +131,9 @@ def test_velocity_series_plots_in_km_s_not_m_s(widget):
     widget.set_result(rs)
     widget.series_combo.setCurrentIndex(1)  # "sat-1.velocity_N"
 
-    plotted_x = widget.axes.get_lines()[0].get_ydata()
+    plotted_x = np.asarray(widget.figure.data[0].y)
     np.testing.assert_allclose(plotted_x, raw_vx_m_s / 1000.0)
-    assert "[km/s]" in widget.axes.get_ylabel()
+    assert widget.figure.layout.yaxis.title.text == "[km/s]"
 
 
 def test_dimensionless_series_is_not_unit_converted(widget):
@@ -140,18 +143,52 @@ def test_dimensionless_series_is_not_unit_converted(widget):
     rs.add(TimeSeries("sat-1.eccentricity", np.linspace(0, 100, 5), ("e",), np.full((5, 1), 0.01), units="-"))
     widget.set_result(rs)
 
-    plotted = widget.axes.get_lines()[0].get_ydata()
+    plotted = np.asarray(widget.figure.data[0].y)
     np.testing.assert_allclose(plotted, 0.01)  # unchanged -- "-" isn't in _DISPLAY_UNIT_CONVERSIONS
-    assert widget.axes.get_ylabel() == "sat-1.eccentricity [-]"
+    assert widget.figure.layout.yaxis.title.text == "[-]"
+    assert widget.figure.layout.title.text == "sat-1.eccentricity"
+
+
+def test_single_column_series_has_no_legend():
+    """dataviz principle: a single series names itself in the chart
+    title -- no legend box is needed (unlike a >= 2 column series, e.g.
+    position's x/y/z, which does need one to tell the lines apart).
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.engine.results import ResultSet, TimeSeries
+    from missionstudio.gui.results_widget import ResultsWidget
+
+    QApplication.instance() or QApplication([])
+    w = ResultsWidget()
+    rs = ResultSet(scenario_name="demo")
+    rs.add(TimeSeries("sat-1.eccentricity", np.linspace(0, 100, 5), ("e",), np.full((5, 1), 0.01), units="-"))
+    w.set_result(rs)
+    assert w.figure.layout.showlegend is False
+
+
+def test_multi_column_series_has_a_legend(widget):
+    widget.set_result(_sample_result_set())
+    assert widget.figure.layout.showlegend is True
+
+
+def test_axes_never_use_scientific_notation(widget):
+    """Regression test for the real complaint that started the Plotly
+    migration: matplotlib's default axis formatter fell back to
+    scientific/offset notation on several of this app's own plots.
+    """
+    widget.set_result(_sample_result_set())
+    assert widget.figure.layout.xaxis.exponentformat == "none"
+    assert widget.figure.layout.yaxis.exponentformat == "none"
 
 
 def test_default_x_axis_is_elapsed_time_in_hours(widget):
     rs = _sample_result_set()
     widget.set_result(rs)
 
-    plotted_x = widget.axes.get_lines()[0].get_xdata()
+    plotted_x = np.asarray(widget.figure.data[0].x)
     np.testing.assert_allclose(plotted_x, rs.series["sat-1.position_N"].time_s / 3600.0)
-    assert "elapsed time" in widget.axes.get_xlabel()
+    assert "Elapsed time" in widget.figure.layout.xaxis.title.text
 
 
 def test_epoch_x_axis_converts_time_s_to_datetimes(widget):
@@ -161,11 +198,11 @@ def test_epoch_x_axis_converts_time_s_to_datetimes(widget):
     widget.set_result(rs, epoch_utc="2030-01-01T00:00:00")
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("epoch"))
 
-    plotted_x = widget.axes.get_lines()[0].get_xdata()
+    plotted_x = list(widget.figure.data[0].x)
     base = datetime.fromisoformat("2030-01-01T00:00:00")
     expected = [base + timedelta(seconds=float(t)) for t in rs.series["sat-1.position_N"].time_s]
-    assert list(plotted_x) == expected
-    assert widget.axes.get_xlabel() == "epoch (UTC)"
+    assert plotted_x == expected
+    assert widget.figure.layout.xaxis.title.text == "Epoch (UTC)"
 
 
 def test_epoch_x_axis_falls_back_to_elapsed_time_without_a_known_epoch(widget):
@@ -173,7 +210,7 @@ def test_epoch_x_axis_falls_back_to_elapsed_time_without_a_known_epoch(widget):
     widget.set_result(rs)  # no epoch_utc given
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("epoch"))
 
-    assert "elapsed time" in widget.axes.get_xlabel()
+    assert "Elapsed time" in widget.figure.layout.xaxis.title.text
 
 
 def test_epoch_x_axis_falls_back_to_elapsed_time_on_unparseable_epoch(widget):
@@ -181,7 +218,7 @@ def test_epoch_x_axis_falls_back_to_elapsed_time_on_unparseable_epoch(widget):
     widget.set_result(rs, epoch_utc="not a real epoch string")
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("epoch"))
 
-    assert "elapsed time" in widget.axes.get_xlabel()
+    assert "Elapsed time" in widget.figure.layout.xaxis.title.text
 
 
 def test_switching_x_axis_back_to_elapsed_time_restores_it(widget):
@@ -190,7 +227,7 @@ def test_switching_x_axis_back_to_elapsed_time_restores_it(widget):
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("epoch"))
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("elapsed"))
 
-    assert "elapsed time" in widget.axes.get_xlabel()
+    assert "Elapsed time" in widget.figure.layout.xaxis.title.text
 
 
 def test_live_result_carries_epoch_through_to_the_plot(widget):
@@ -198,7 +235,7 @@ def test_live_result_carries_epoch_through_to_the_plot(widget):
     widget.set_live_result(rs, epoch_utc="2030-06-15T00:00:00")
     widget.x_axis_combo.setCurrentIndex(widget.x_axis_combo.findData("epoch"))
 
-    assert widget.axes.get_xlabel() == "epoch (UTC)"
+    assert widget.figure.layout.xaxis.title.text == "Epoch (UTC)"
 
 
 def test_set_live_result_rebuilds_combo_if_series_names_change(widget):

@@ -24,13 +24,18 @@ dev = [
     "pytest>=8.3.5",
     "pytest-qt>=4.4.0",
 ]
-# The Phase 1 GUI shell: PySide6 for the widgets, matplotlib (already a
-# Basilisk dependency, see ../requirements.txt) embedded via
-# FigureCanvasQTAgg for results_widget.py's plots -- no new heavy plotting
-# dependency beyond what Basilisk itself already needs.
+# PySide6 for the widgets; PySide6's own "PySide6" package pulls in
+# PySide6_Addons (which bundles QtWebEngineWidgets -- confirmed directly
+# in this project's own dev sandbox, not assumed) as a REQUIRED
+# dependency, so no separate WebEngine package is needed here. plotly
+# (results_widget.py's plots, embedded via QWebEngineView -- see that
+# module's own docstring for why, and for the real bug -- matplotlib's
+# default scientific/offset-notation axis formatting -- this migration
+# fixes) needs >=5 for a stable graph_objects API; not pinned tighter
+# than that since nothing here uses a version-specific feature.
 gui = [
     "PySide6>=6.6",
-    "matplotlib>=3.7.5",
+    "plotly>=5.0",
 ]
 
 [project.scripts]
