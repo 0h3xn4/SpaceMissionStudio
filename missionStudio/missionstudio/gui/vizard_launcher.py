@@ -52,6 +52,7 @@ already points a human to, just fetched automatically instead.
 
 from __future__ import annotations
 
+import shutil
 import stat
 import subprocess
 import sys
@@ -224,18 +225,23 @@ def fetch_vizard(dest_dir: Optional[Path] = None, timeout_s: float = 30.0,
     reach ``hanspeterschaub.info`` at all (blocked at the organization
     egress-policy level, confirmed via the proxy's own status endpoint --
     the same host ``engine.kernels``'s SPICE-kernel fetch uses as a
-    backup URL), so a real user ran this on their own machine instead.
-    First attempt got ``HTTPError: 403 Forbidden`` straight from the
-    server -- root-caused (not guessed) to urllib's own default
+    backup URL), so a real user ran this on their own machine instead --
+    TWICE. First attempt got ``HTTPError: 403 Forbidden`` straight from
+    the server -- root-caused (not guessed) to urllib's own default
     ``User-Agent`` header (``"Python-urllib/<version>"``) tripping basic
     bot-protection; fixed by sending a realistic browser ``User-Agent``
     instead (see :data:`_USER_AGENT`'s own comment -- this is a standard,
     widely-used workaround for exactly this kind of blocking, not an
     attempt to bypass any real access control on what
     ``VizardDownload.rst`` already publishes as a direct public download
-    link). The download/extract/executable-discovery path beyond that
-    HTTP call has NOT yet been re-confirmed against the real network with
-    this fix in place -- verify on next real-network use.
+    link). Second attempt, with that fix, genuinely succeeded end-to-end
+    -- downloaded, extracted, and found a real, existing
+    ``Vizard.x86_64`` executable. That same real run is also what caught
+    AVS's actual ``.zip`` layout (a same-named top-level folder, e.g.
+    ``Vizard_Linux/Vizard.x86_64``) producing a redundant-looking nested
+    extraction path -- cosmetic, not a functional bug (the executable was
+    still found correctly), fixed anyway (see ``extract_dir``'s own
+    comment below).
     """
     dest_dir = Path(dest_dir) if dest_dir else DEFAULT_FETCH_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -272,7 +278,23 @@ def fetch_vizard(dest_dir: Optional[Path] = None, timeout_s: float = 30.0,
     tmp.write_bytes(data)
     tmp.replace(zip_path)  # atomic-ish: never leave a half-written file at zip_path
 
-    extract_dir = dest_dir / zip_name.removesuffix(".zip")
+    # A plain "extracted" staging name, not one derived from the zip's own
+    # filename: confirmed against a real download that AVS's own
+    # Vizard_<platform>.zip already wraps its contents in a same-named
+    # top-level folder (e.g. "Vizard_Linux/Vizard.x86_64") -- naming this
+    # directory after the zip too produced a redundant-looking (though
+    # harmless -- _search_one_root's own one-level-of-subdirectories
+    # search still found it) nested path,
+    # .../vizard/Vizard_Linux/Vizard_Linux/Vizard.x86_64.
+    extract_dir = dest_dir / "extracted"
+    if extract_dir.exists():
+        # extract_dir's name no longer varies per zip (see the comment
+        # above), so a re-fetch (e.g. after Vizard publishes an update)
+        # would otherwise extract on TOP OF whatever an earlier version
+        # left behind -- stale files a newer .zip doesn't itself contain
+        # would silently survive. Cleared first so every fetch's result
+        # reflects exactly what that fetch's own .zip contained.
+        shutil.rmtree(extract_dir)
     if on_status:
         on_status(f"Extracting to {extract_dir} ...")
     try:

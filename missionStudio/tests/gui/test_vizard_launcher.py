@@ -355,6 +355,48 @@ def test_fetch_vizard_reports_progress_status(tmp_path, monkeypatch):
     assert any("Extracting" in s for s in statuses)
 
 
+def test_fetch_vizard_finds_the_executable_inside_a_same_named_wrapper_folder(tmp_path, monkeypatch):
+    """Confirmed against a real download, not assumed: AVS's own
+    Vizard_Linux.zip wraps its contents in a top-level folder with the
+    SAME name as the zip itself (Vizard_Linux/Vizard.x86_64) --
+    extract_dir uses a fixed "extracted" name specifically so this
+    doesn't produce a redundant-looking nested path
+    (.../extracted/Vizard_Linux/Vizard.x86_64, not
+    .../Vizard_Linux/Vizard_Linux/Vizard.x86_64).
+    """
+    from missionstudio.gui import vizard_launcher
+
+    monkeypatch.setattr(vizard_launcher.sys, "platform", "linux")
+    zip_bytes = _build_zip({"Vizard_Linux/Vizard.x86_64": b"fake binary contents"})
+    monkeypatch.setattr(vizard_launcher.urllib.request, "urlopen", lambda url, timeout=None: _FakeUrlResponse(zip_bytes))
+
+    executable = vizard_launcher.fetch_vizard(dest_dir=tmp_path)
+
+    assert executable == tmp_path / "extracted" / "Vizard_Linux" / "Vizard.x86_64"
+
+
+def test_fetch_vizard_clears_stale_files_from_an_earlier_extraction(tmp_path, monkeypatch):
+    """extract_dir's name no longer varies per zip (see its own comment)
+    -- a re-fetch must not silently leave behind files an OLDER .zip
+    extracted that the NEWER one doesn't itself contain.
+    """
+    from missionstudio.gui import vizard_launcher
+
+    monkeypatch.setattr(vizard_launcher.sys, "platform", "linux")
+
+    old_zip = _build_zip({"Vizard.x86_64": b"old version", "stale_leftover_file.txt": b"should not survive"})
+    monkeypatch.setattr(vizard_launcher.urllib.request, "urlopen", lambda url, timeout=None: _FakeUrlResponse(old_zip))
+    vizard_launcher.fetch_vizard(dest_dir=tmp_path)
+    assert (tmp_path / "extracted" / "stale_leftover_file.txt").exists()
+
+    new_zip = _build_zip({"Vizard.x86_64": b"new version"})
+    monkeypatch.setattr(vizard_launcher.urllib.request, "urlopen", lambda url, timeout=None: _FakeUrlResponse(new_zip))
+    executable = vizard_launcher.fetch_vizard(dest_dir=tmp_path)
+
+    assert executable.read_bytes() == b"new version"
+    assert not (tmp_path / "extracted" / "stale_leftover_file.txt").exists()
+
+
 def test_safe_extract_rejects_a_zip_slip_entry(tmp_path):
     from missionstudio.gui import vizard_launcher
 

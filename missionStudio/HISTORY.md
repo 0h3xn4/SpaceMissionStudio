@@ -2973,3 +2973,48 @@ second real-machine run -- the user's next run should get past the
 download step to whatever (if anything) comes after; report back if it
 doesn't.
 
+## Second real-network run -- genuine end-to-end success, plus one cosmetic fix
+
+Same user, same real machine, re-ran `fetch_vizard()` after the
+User-Agent fix above. **Real result:** the download succeeded, the
+`.zip` extracted, and the executable was found --
+`Exists: True`, confirmed against the actual binary on disk, not
+assumed. This is the first genuine confirmation that `fetch_vizard()`
+works end-to-end against the real `hanspeterschaub.info` host, not just
+against a mocked one.
+
+The resulting path was one directory deeper than expected though:
+`.../vizard/Vizard_Linux/Vizard_Linux/Vizard.x86_64`, a doubled
+`Vizard_Linux` segment. Root cause (confirmed from the real `.zip`
+the user actually downloaded, not guessed): `extract_dir` was named
+after the zip's own filename with `.zip` stripped (`"Vizard_Linux"`),
+but AVS's real `Vizard_Linux.zip` *also* wraps its own contents in a
+top-level folder of that exact same name -- so extracting it into a
+directory of the same name nests it one level deeper than intended.
+`_search_one_root()`'s one-level subdirectory search still found the
+executable correctly either way, so this was never a functional bug,
+only a cosmetically redundant path.
+
+**Fixed** by decoupling `extract_dir` from the zip's filename
+entirely -- it is now a fixed `dest_dir / "extracted"` regardless of
+what the `.zip` is called, so a real zip's own wrapper folder (of
+whatever name) nests exactly once, not twice. Since `extract_dir` no
+longer varies per fetch, a second fix rides along: `fetch_vizard()` now
+`shutil.rmtree()`s any existing `extract_dir` before extracting, so a
+later re-fetch (e.g. after Vizard publishes a new version) can't leave
+an older version's files mixed in with the new one's.
+
+**Verification:** two new regression tests in
+`tests/gui/test_vizard_launcher.py` --
+`test_fetch_vizard_finds_the_executable_inside_a_same_named_wrapper_folder`
+builds a `.zip` whose single entry is `"Vizard_Linux/Vizard.x86_64"`
+(mirroring the real zip's own layout) and asserts the resulting path is
+exactly `extracted/Vizard_Linux/Vizard.x86_64`, one level of nesting,
+not two; `test_fetch_vizard_clears_stale_files_from_an_earlier_extraction`
+fetches an "old" zip containing an extra file, then a "new" zip without
+it, and asserts the stale file does not survive into the second fetch's
+result. 671 passed, 99 skipped in this sandbox. `fetch_vizard()` is now
+confirmed working end-to-end on real hardware against the real
+`hanspeterschaub.info` host, for both the download and the extraction
+steps.
+
