@@ -127,9 +127,19 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import plotly.graph_objects as go
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCompleter,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..engine.results import ResultSet, TimeSeries
 
@@ -417,6 +427,27 @@ class ResultsWidget(QWidget):
         top_row = QHBoxLayout()
         top_row.addWidget(QLabel("Series:"))
         self.series_combo = QComboBox()
+        # Editable + a substring-matching QCompleter -- a real scenario
+        # (e.g. the built-in 6-satellite Walker constellation template)
+        # produces 30-40+ series, all named after the dotted scheme
+        # engine.service/engine.link_budget use
+        # ("leo-02-03.orbit_elements_mean.inclination", ...); a plain,
+        # unsearchable dropdown list that long is tedious to scan.
+        # MatchContains (not the default MatchStartsWith) matters here
+        # specifically because the useful discriminator is usually in
+        # the MIDDLE of the name (the spacecraft, or the category after
+        # the first dot), not always the start. InsertPolicy.NoInsert
+        # keeps typed-but-not-selected text from being added as a fake
+        # new entry -- this combo's contents are always exactly
+        # result.series's keys, nothing a user types can add to them.
+        self.series_combo.setEditable(True)
+        self.series_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.series_combo.setToolTip("Type to filter, or use the dropdown")
+        completer = QCompleter(self.series_combo.model(), self.series_combo)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.series_combo.setCompleter(completer)
         self.series_combo.currentIndexChanged.connect(self._redraw)
         top_row.addWidget(self.series_combo, stretch=1)
         top_row.addWidget(QLabel("X-axis:"))

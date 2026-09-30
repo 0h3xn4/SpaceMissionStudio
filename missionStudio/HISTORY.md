@@ -3531,3 +3531,56 @@ plus one for the resize fix
 (`test_dialog_resizes_to_its_own_sizehint_on_construction`). Full
 suite: 705 passed, 101 skipped.
 
+## Results and Mission Output tabs: a searchable series picker, and a real missing export button
+
+Follow-up request: "check for more UX issues in the results and
+mission output tabs".
+
+**Results tab's "Series:" picker had no way to search.** A real
+scenario (the built-in 6-satellite Walker constellation template, for
+one) produces 30-40+ series, all named after the dotted scheme
+`engine.service`/`engine.link_budget` use
+(`leo-02-03.orbit_elements_mean.inclination`, ...) -- confirmed
+directly by building a synthetic multi-spacecraft `ResultSet` and
+listing what the combo box actually shows. Scrolling a flat, plain
+`QComboBox` that long to find one series is tedious, and the useful
+discriminator (spacecraft name, or the category after the first dot)
+is usually in the MIDDLE of the name, not the start. Made the combo
+editable with a substring-matching (`MatchContains`, not the default
+prefix-only `MatchStartsWith`), case-insensitive `QCompleter` bound to
+the combo's own model -- confirmed the completer stays correctly in
+sync after `set_result()` clears and rebuilds the combo (same model
+object throughout, not a stale one), rather than assuming Qt's
+`QComboBox.clear()`/`addItem()` mutate the model in place.
+
+**Mission Output tab had no CSV export at all.** Checked
+`engine/results.py` directly: `CommandSummary.export_csv()` already
+existed, fully implemented and already covered by its own tests at the
+engine layer -- but nothing in `mission_output_widget.py` ever called
+it. The neighboring Results tab has had an "Export all series to
+CSV..." button since the Plotly migration; a user running a
+`mission_sequence` with `report` commands had no equivalent way to get
+that data out except manually selecting/copying the plain-text debug
+log. Added an "Export to CSV..." button mirroring
+`ResultsWidget._on_export()`'s exact pattern (a single
+`QFileDialog.getSaveFileName`, not `getExistingDirectory` --
+`CommandSummary.export_csv()` writes ONE file, unlike
+`ResultSet.export_csv()`'s one-file-per-series), disabled until a
+summary with at least one report exists (a summary with zero `report`
+commands has nothing meaningful to export).
+
+**Verification:** 2 new tests confirm the completer's filter mode/case
+-sensitivity and that it survives a `set_result()` rebuild pointing at
+the same model object; 4 new tests cover the export button's enabled
+-state transitions (no summary / a summary with zero reports / a
+summary with reports / after `clear()`) and a genuine round-trip
+(writes a real temp-dir CSV, confirms the expected series name appears
+in its content). Both tabs re-rendered headless and looked at directly
+-- the Results tab's actual Plotly canvas can't be screenshotted in
+this sandbox (`QWebEngineView` doesn't rasterize under this sandbox's
+software-only GL fallback, a pre-existing, already-documented
+limitation -- verified via JS introspection instead, per this file's
+own module docstring), but the picker/toolbar row above it, and the
+entire Mission Output tab, render and were inspected as images. Full
+suite: 710 passed, 101 skipped.
+

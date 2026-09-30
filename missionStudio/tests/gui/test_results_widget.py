@@ -42,6 +42,47 @@ def test_set_result_populates_series_combo_and_plots(widget):
     assert len(widget.figure.data) == 3  # x, y, z
 
 
+def test_series_combo_is_searchable_by_substring(widget):
+    """Real scenarios (e.g. the built-in 6-satellite Walker constellation
+    template) produce 30-40+ series named after the dotted
+    "{spacecraft}.{category}..." scheme -- a plain, unsearchable dropdown
+    that long is tedious to scan. The combo must be editable with a
+    substring (not just prefix) completer, since the useful
+    discriminator (the spacecraft name, or the category after the first
+    dot) is often in the middle of the string, not the start.
+    """
+    widget.set_result(_sample_result_set())
+
+    assert widget.series_combo.isEditable()
+    completer = widget.series_combo.completer()
+    assert completer is not None
+    from PySide6.QtCore import Qt
+
+    assert completer.filterMode() == Qt.MatchFlag.MatchContains
+    assert completer.caseSensitivity() == Qt.CaseSensitivity.CaseInsensitive
+
+
+def test_series_combo_completer_model_stays_in_sync_after_set_result(widget):
+    """Regression guard: the QCompleter is bound to series_combo's model
+    once at construction -- if set_result()'s clear()/addItem() calls
+    ever replaced that model object instead of mutating it in place, the
+    completer would silently keep matching against stale, previously
+    -shown series names.
+    """
+    from missionstudio.engine.results import ResultSet, TimeSeries
+
+    widget.set_result(_sample_result_set())
+    first_model = widget.series_combo.completer().model()
+
+    other = ResultSet(scenario_name="demo2")
+    other.add(TimeSeries("sat-9.battery_charge", np.linspace(0, 10, 5), ("charge",),
+                          np.zeros((5, 1)), units="W*hr"))
+    widget.set_result(other)
+
+    assert widget.series_combo.completer().model() is first_model
+    assert widget.series_combo.completer().model().rowCount() == 1
+
+
 def test_switching_series_redraws(widget):
     widget.set_result(_sample_result_set())
     widget.series_combo.setCurrentIndex(1)

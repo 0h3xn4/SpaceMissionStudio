@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 705 tests
+  exercised either way -- `pytest tests/` runs and passes 710 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -364,7 +364,7 @@ missionStudio/
       load_scenario_widget.py        -- "Load Scenario" tab: built-in template picker + browse-for-a-file
       scenario_editor.py             -- the full scenario form + live validation
       mission_sequence_editor.py     -- Phase 6: mission_sequence tree editor (Command Add/Edit/Remove/nesting)
-      mission_output_widget.py       -- Phase 6: "Mission Output" debug-console tab (CommandSummary/ReportEntry display)
+      mission_output_widget.py       -- Phase 6: "Mission Output" debug-console tab (CommandSummary/ReportEntry display) + CSV export
       propagation_setup_dialog.py    -- Phase 5: gravity/perturbations + integrator + space weather, one dedicated window
       spacecraft_editor.py           -- spacecraft list + add/edit/remove dialog (tabbed: orbit, sensors/actuators, FSW, power/propulsion/link budget)
       sensor_actuator_editor.py      -- Phase 2: generic sensor/actuator list + add/edit/remove dialog
@@ -443,7 +443,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 705 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 710 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 101 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
