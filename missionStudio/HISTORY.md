@@ -3018,3 +3018,32 @@ confirmed working end-to-end on real hardware against the real
 `hanspeterschaub.info` host, for both the download and the extraction
 steps.
 
+## Third real-network round -- the downloaded binary actually launches
+
+Downloading and extracting is one thing; whether the resulting file is
+actually executable was still an open question (fetching leaves the
+executable bit fix-up, `subprocess.Popen`, and Vizard's own startup
+all unexercised against a real download). Asked the same user to clear
+their cache (`rm -rf ~/.cache/missionStudio/vizard`, so the fix above
+was actually exercised fresh rather than reusing the earlier doubled
+-nested extraction) and use the Run menu's "Launch Vizard" action
+directly -- on `on_launch_vizard()` -> `_locate_or_fetch_vizard()` ->
+the progress dialog -> `launch_vizard()`'s `subprocess.Popen` on the
+freshly-extracted binary.
+
+**Real result:** a Vizard window opened. This is the first
+confirmation that the full chain -- download, extraction, the
+post-extraction executable-bit fix-up
+(`os.chmod`), and `subprocess.Popen` actually starting the Unity
+player -- works end-to-end on real hardware, not just against mocked
+`urlopen`/zip fixtures. `fetch_vizard()` and `launch_vizard()` together
+are now confirmed to take a machine with nothing pre-installed all the
+way to a running Vizard window with zero manual steps beyond the one
+"Download Vizard" click.
+
+Still unconfirmed: the live-stream path specifically (`-directComm`
+pre-filling the socket address, clicking "Start Visualization",
+spacecraft actually rendering during a run) -- that additionally needs
+Basilisk itself installed, which this user's machine does not yet
+have.
+
