@@ -2635,3 +2635,169 @@ count above, matching these 2 new tests). The temporary
 used to isolate eclipse as a non-cause have been removed from
 `engine/orbit_maintenance.py` now that the real root cause is fixed.
 
+## RTN separation panels: "Unavailable" readout, and whose offset is it
+
+Two more real bugs/gaps found from a live Vizard screenshot, on the
+Radial/Transverse/Normal separation panels a previous round (see
+`engine/vizard.py`'s own docstring, "A THIRD round of feedback") had
+just replaced the single vague "Separation" scalar with.
+
+**Bug 1: Radial and Normal showed "Unavailable"; Transverse rendered
+fine.** All three panels are built identically (same
+`vizInterface.GenericStorage` construction, same
+`DataStorageStatusMsgReader` wiring) -- the only difference at that
+moment was sign: Transverse happened to be positive, Radial and Normal
+happened to be negative. `PhasingKeepingController.UpdateState` clamped
+`storageLevel` SYMMETRICALLY (`[-storageCapacity, storageCapacity]`),
+specifically to preserve "ahead of"/"behind the chief" direction in
+Vizard's own native numeric readout. Checked directly against
+Basilisk's own field comments -- both `vizStructures.h`'s
+(`GenericStorage::currentValue`/`maxValue`, `"current/maximum absolute
+value of the storage device"`) and the wire-format
+`vizMessage.proto`'s (identical wording) -- `GenericStorage` is
+documented as a non-negative gauge, the same kind of quantity as the
+battery/propellant/delta-V panels right next to it. A negative
+`storageLevel` is out of that contract; Vizard's own (closed-source)
+client evidently rejects it outright rather than rendering a broken
+bar the way an OVER-capacity value did in an earlier round. No live
+Vizard GUI is available in this development sandbox to visually
+re-confirm the client's rendering behavior directly -- this conclusion
+rests on the field-comment wording plus the exact positive/negative
+split matching the screenshot, not a repro.
+
+Fixed in `orbit_maintenance.py`: `_clamp_symmetric` replaced with
+`_clamp_magnitude` (`min(abs(value), limit)`) -- `storageLevel` now
+publishes MAGNITUDE, not signed direction. A real, honest trade-off,
+not a full fix: Vizard's live panels can no longer show "ahead of"/
+"behind the chief"; the signed numbers remain available as
+`lastRadialKm`/`lastTransverseKm`/`lastNormalKm` on the controller
+itself, just not live in Vizard.
+
+**Bug 2 (same round): the panels never said whose offset they were
+measuring.** "Radial (R)" on a follower's own storage panel doesn't say
+which chief it's relative to. Fixed by threading the chief spacecraft's
+own `ModelTag` through as `PhasingKeepingController.chiefName` (wired
+by `build_phasing_keeping` from `chief_sc_object.ModelTag`), and a new
+`engine.vizard._rtn_panel_label(axis_letter, chief_name)` helper that
+folds it into the label itself (e.g. `"R vs chief-1"`) -- falling back
+to a generic `"R vs chief"` when a chief name is long enough to risk
+exceeding Vizard's confirmed per-row label-truncation width (14
+characters, the longest confirmed NOT to truncate against a real
+running Vizard instance in an earlier round -- see that same function's
+own docstring).
+
+**Verification:** `tests/test_orbit_maintenance.py`'s two RTN tests
+rewritten for magnitude semantics (real Basilisk, both pass -- 27
+tests total in that file with the new `chiefName` wiring smoke-tested
+separately, not added as a permanent test); `tests/test_vizard_labels.py`
+(new, no Basilisk needed -- `_rtn_panel_label` has no Basilisk import,
+unlike the rest of `engine.vizard`) covers the truncation-budget
+fallback directly. `chiefName` wiring confirmed end-to-end against real
+Basilisk with a standalone script (`build_phasing_keeping()` called
+directly, `controller.chiefName == "chief-1"` after). Not yet
+re-confirmed against a live running Vizard instance (same sandbox
+limitation as bug 1) -- please report back if "Unavailable" still
+appears or a label still doesn't fit.
+
+## Perturbation-model audit: gravity/third-body on every template, atmosphere-model choice, a historical-percentile drag margin
+
+Real user request, in three parts: "why can't I select the atmospheric
+drag model, other tools let me choose Jacchia-Roberts or NRLMSISE-00";
+"I am missing solar radiation pressure [in Propagation Setup]"; and "I
+need all example scenarios to have all perturbations activated ...
+spherical harmonics of 10th order, sun and moon third-body
+perturbations, 95th percentile/+2sigma atmospheric drag".
+
+**Atmosphere-model choice.** Checked Basilisk's own
+`src/simulation/environment/` tree directly (not assumed): it ships
+exactly `ExponentialAtmosphere`, `MsisAtmosphere` (NRLMSISE-00), and
+`TabularAtmosphere` -- no Jacchia-Roberts model at all, so that specific
+option genuinely cannot be offered. New
+`SpaceWeatherConfig.atmosphere_model` (`"nrlmsise00"` | `"exponential"`)
+lets `engine.service` build either; `"exponential"` is configured via
+Basilisk's own `simSetPlanetEnvironment.exponentialAtmosphere()` helper
+(the same sea-level Earth constants a real shipped Basilisk example,
+`examples/scenarioDragDeorbit.py`, uses for its own exponential-model
+deorbit case). Confirmed directly against real Basilisk (a standalone
+density-recorder run, not guessed) that this simple model under
+-predicts LEO density by many orders of magnitude versus NRLMSISE-00 --
+documented plainly as an inherent limitation of the model, not a wiring
+bug: pick it for speed/simplicity, never for an accurate drag estimate.
+`TabularAtmosphere` (a user-supplied density table) was deliberately
+left out -- it would need a new file-upload schema/GUI concept of its
+own.
+
+**Conservative ("worst-case") drag margin.** No such concept exists in
+Basilisk itself, and this project has no authoritative source for a
+specific fixed "worst-case" F10.7/Ap constant to hand-code -- asked the
+user how to define it rather than guessing a physical constant; answer:
+derive it statistically from REAL historical data. New
+`engine.spaceweather.compute_worst_case_activity()`/`generate_worst_case()`
+compute the requested percentile (default 95th) of `F10.7_OBS`/`AP_AVG`
+across a real historical CelesTrak extract (refuses fewer than 365 days
+of real history, and refuses `source="synthetic"` outright -- a
+percentile of a fabricated profile is not a real historical "worst
+case") and write a CSV holding that value CONSTANT across the whole
+scenario (a sustained-worst-case assumption, not a single spike).
+`SpaceWeatherConfig.activity_level`/`activity_percentile` expose it;
+`PropagationSetupDialog` gained matching combo/spinner controls, grey
+-ing out correctly when `atmosphere_model="exponential"` is selected
+(no F10.7/Ap dependence at all in that case).
+
+**Solar radiation pressure discoverability.** Already existed as a
+per-spacecraft `enable_srp` toggle on `SpacecraftEditorDialog`'s "Orbit
+/ mass" tab -- not a missing feature, a UX gap: looking for it
+specifically in `PropagationSetupDialog` and not finding it read as
+"not supported." Fixed with an explicit pointer `QLabel` in that
+dialog's space-weather group (never a docstring the user never sees).
+
+**Every example template audited individually, not blanket-edited** --
+`01` (clean two-body Kepler baseline) and `09` (Monte Carlo dispersion
+analysis whose own description explains its lesson specifically
+requires the ABSENCE of drag/SRP) were deliberately left untouched;
+`02`/`03` got gravity-only updates (drag would muddy `02`'s J2 -
+precession visual, or is physically negligible at `03`'s GEO altitude);
+`04`/`05`/`07`/`08` got the full set (10th-degree gravity, Sun+Moon
+third-body, drag, SRP, the conservative margin) since none of their own
+stated lessons depend on a clean/unperturbed baseline. `06` got gravity
+-only, preserving its explicit role as "the simple version" (`07` being
+"the realistic counterpart"). All built through
+`scripts/_generate_templates.py` (the existing regeneration source of
+truth, updated in place, not hand-edited JSON) -- see that script's own
+`_conservative_drag_margin()` helper and each `build_*()` function's
+comments for the per-template reasoning.
+
+**Earth-albedo/IR radiation pressure -- investigated, deliberately NOT
+added.** A second real user request. Basilisk's `earthRadiationModel`
+computes albedo/IR flux, but its own payload doc names
+`facetERPDynamicEffector` as the consumer that turns that flux into an
+actual orbital force -- and that module doesn't exist anywhere in this
+Basilisk build (checked the source tree and the installed package, not
+assumed). Adding it for real would mean writing a brand-new,
+never-before-exercised force-effector from scratch (the same
+`extForceTorque` manual-force-injection pattern this project's own
+thrust controllers already use, plus the standard flux/c * area * Cr
+formula solar SRP already uses) -- asked the user rather than silently
+writing untested physics code under a broader "add perturbations"
+instruction; answer: skip it, document the finding (see README's
+"Known limitations").
+
+**Verification:** `tests/test_spaceweather.py` grew from 14 to 21 tests
+(percentile computation matches `numpy.percentile` directly, short
+-history rejection, synthetic-source refusal, the full `resolve()`
+conservative-mode path) -- no Basilisk needed, this module has none.
+`tests/test_scenario_schema.py` grew by 6 (new field validation/round
+-trip). `tests/gui/test_propagation_setup_dialog.py` grew from 10 to 17
+(new controls' enable/disable gating, round-trip, the SRP pointer
+label's presence). `tests/test_scenario_templates.py` (41 tests)
+re-passes unchanged against the regenerated templates. The exponential
+-atmosphere wiring itself was confirmed against real Basilisk with a
+standalone density-recorder script (bypassing `SimulationService.build()`,
+which needs SPICE kernels this sandbox cannot fetch) -- plausible,
+positive LEO density recorded end-to-end. 644 passed, 99 skipped in
+this sandbox without a Basilisk build; the conservative-margin
+templates (`04`/`05`/`07`/`08`) need real network access to CelesTrak
+(or a local historical file) to actually RUN, not just validate --
+disclosed plainly in each file's own `description` and in this
+project's README, not a silent gap.
+

@@ -4,7 +4,7 @@
   "simulation_mode": "orbit_only",
   "gravity": {
     "central_body": "earth",
-    "central_body_degree": 0,
+    "central_body_degree": 10,
     "third_body_perturbers": [
       "sun",
       "moon"
@@ -95,7 +95,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 14.0,
@@ -110,6 +113,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "A geostationary communications satellite that actively maintains its altitude against real perturbations (Sun/Moon third-body gravity and solar radiation pressure -- the actual drivers of GEO longitude/altitude drift in practice) using a simple deadband thrust controller: it fires station_keeping's thruster whenever the propagated altitude drifts more than deadband_km from target_altitude_km, burning propellant tracked in propellant_kg.\n\nWhat to look at: run the CLI ('missionstudio run ... --out-dir out') and check command_summary/results for the propellant used over the 14-day run (see this project's README, 'Running the CLI', for the station-keeping summary output) -- a real budget question a mission designer has to answer: how much propellant does a decade of GEO station-keeping cost?\n\nTry changing: deadband_km (tighter = more frequent, smaller burns), thrust_n/isp_s (a more efficient thruster uses less propellant per correction), or removing third_body_perturbers/enable_srp to see how much slower the drift becomes without them (and how rarely the controller then needs to fire).",
+  "description": "A geostationary communications satellite that actively maintains its altitude against real perturbations (Sun/Moon third-body gravity and solar radiation pressure -- the actual drivers of GEO longitude/altitude drift in practice) using a simple deadband thrust controller: it fires station_keeping's thruster whenever the propagated altitude drifts more than deadband_km from target_altitude_km, burning propellant tracked in propellant_kg.\n\nWhat to look at: run the CLI ('missionstudio run ... --out-dir out') and check command_summary/results for the propellant used over the 14-day run (see this project's README, 'Running the CLI', for the station-keeping summary output) -- a real budget question a mission designer has to answer: how much propellant does a decade of GEO station-keeping cost?\n\nTry changing: deadband_km (tighter = more frequent, smaller burns), thrust_n/isp_s (a more efficient thruster uses less propellant per correction), or removing third_body_perturbers/enable_srp to see how much slower the drift becomes without them (and how rarely the controller then needs to fire).\n\ncentral_body_degree is 10 (not 0) despite GEO altitude: geosynchronous longitude drift is driven in real life partly by Earth's own longitudinal (tesseral) gravity anomalies, not just Sun/Moon/SRP -- a real GEO perturbation this spherical-harmonics degree can represent. Atmospheric drag is deliberately NOT enabled -- physically negligible at 42164 km (no meaningful atmosphere there); enabling it would misrepresent the physics, not add realism.",
   "schema_version": 1
 }

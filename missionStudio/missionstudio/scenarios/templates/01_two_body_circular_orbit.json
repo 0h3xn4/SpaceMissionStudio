@@ -85,7 +85,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 1.0,

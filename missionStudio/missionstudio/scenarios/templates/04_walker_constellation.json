@@ -4,8 +4,11 @@
   "simulation_mode": "orbit_only",
   "gravity": {
     "central_body": "earth",
-    "central_body_degree": 0,
-    "third_body_perturbers": []
+    "central_body_degree": 10,
+    "third_body_perturbers": [
+      "sun",
+      "moon"
+    ]
   },
   "spacecraft": [
     {
@@ -47,10 +50,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -119,10 +122,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -191,10 +194,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -263,10 +266,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -335,10 +338,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -407,10 +410,10 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
       "sensors": [],
@@ -445,7 +448,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "conservative",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 1.0,
@@ -460,6 +466,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "A small 6-satellite Walker delta constellation (2 orbital planes, 3 satellites per plane, phasing factor 1) at 700 km altitude / 53 deg inclination -- generated programmatically via engine.constellation.generate_walker_constellation() rather than hand-written, exactly how the GUI's 'Generate Walker constellation...' dialog (gui/constellation_dialog.py, off the spacecraft list's own button) and 'missionstudio generate-constellation' CLI subcommand build one.\n\nWhat to look at: open this in the GUI and look at Vizard's ground track (or plot each satellite's 'position_N' series) -- the 2 planes are spread 180 deg apart in RAAN ('delta' pattern; a 'star' pattern spreads them over 360 deg total instead), and satellites within a plane are evenly spaced by mean anomaly, offset between planes by the phasing factor. This is the standard way real LEO broadband/imaging constellations (the thing 'Starlink-shell-like' parameters like these are modeled after) achieve repeatable global coverage with a minimal satellite count.\n\nTry changing: total_satellites/num_planes (regenerate via the CLI/GUI, not by hand -editing this file's spacecraft list) to see how coverage geometry changes, or phasing_factor to change how planes interleave relative to each other.",
+  "description": "A small 6-satellite Walker delta constellation (2 orbital planes, 3 satellites per plane, phasing factor 1) at 700 km altitude / 53 deg inclination -- generated programmatically via engine.constellation.generate_walker_constellation() rather than hand-written, exactly how the GUI's 'Generate Walker constellation...' dialog (gui/constellation_dialog.py, off the spacecraft list's own button) and 'missionstudio generate-constellation' CLI subcommand build one.\n\nWhat to look at: open this in the GUI and look at Vizard's ground track (or plot each satellite's 'position_N' series) -- the 2 planes are spread 180 deg apart in RAAN ('delta' pattern; a 'star' pattern spreads them over 360 deg total instead), and satellites within a plane are evenly spaced by mean anomaly, offset between planes by the phasing factor. This is the standard way real LEO broadband/imaging constellations (the thing 'Starlink-shell-like' parameters like these are modeled after) achieve repeatable global coverage with a minimal satellite count.\n\nTry changing: total_satellites/num_planes (regenerate via the CLI/GUI, not by hand -editing this file's spacecraft list) to see how coverage geometry changes, or phasing_factor to change how planes interleave relative to each other.\n\nUpdated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, atmospheric drag, and solar radiation pressure on every satellite -- a 700 km Walker constellation genuinely experiences all of these. Drag uses a CONSERVATIVE, 95th-percentile sustained-worst-case F10.7/Ap margin computed from real historical CelesTrak data (see engine/spaceweather.py's own docstring) rather than day-to-day space weather -- running this template needs network access to CelesTrak (or a local historical space-weather file set via space_weather.local_file_path); set space_weather.activity_level back to 'nominal' to use ordinary resolved space weather instead.",
   "schema_version": 1
 }

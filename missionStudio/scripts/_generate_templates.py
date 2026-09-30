@@ -45,6 +45,7 @@ from missionstudio.schema.scenario import (
     ActuatorConfig,
     SimSettings,
     SpacecraftConfig,
+    SpaceWeatherConfig,
     StationKeepingConfig,
 )
 
@@ -52,6 +53,26 @@ OUT_DIR = Path(__file__).resolve().parent.parent / "missionstudio" / "scenarios"
 
 _INERTIA_SMALL = [5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0]
 _INERTIA_MEDIUM = [12.5, 0.0, 0.0, 0.0, 12.5, 0.0, 0.0, 0.0, 7.5]
+
+def _conservative_drag_margin() -> SpaceWeatherConfig:
+    """A conservative, sustained-worst-case atmospheric-drag margin -- a
+    fresh instance per call (like ``list(_INERTIA_SMALL)`` above, not a
+    single shared object, since ``SpaceWeatherConfig`` is mutable) for
+    every template where drag is physically relevant (a LEO altitude) and
+    doesn't undermine that template's own stated lesson (see each
+    ``build_*()`` function's own comment for why some are, or aren't,
+    drag-enabled at all). Real user request; see engine/spaceweather.py's
+    own docstring, "Conservative ('worst-case') drag margin", for exactly
+    what this computes (derived from real historical CelesTrak data,
+    never a fabricated constant). Needs network access to CelesTrak (or a
+    local historical space-weather file set via
+    ``space_weather.local_file_path``) to actually resolve when the
+    scenario is RUN -- schema validation/``save()`` itself never touches
+    the network.
+    """
+    return SpaceWeatherConfig(
+        source="celestrak", atmosphere_model="nrlmsise00", activity_level="conservative", activity_percentile=95.0,
+    )
 
 
 def _save(scenario: Scenario, filename: str) -> None:
@@ -96,9 +117,13 @@ def build_02_elliptical_orbit_with_perturbations() -> Scenario:
     return Scenario(
         name="02 - Elliptical orbit with perturbations",
         description=(
-            "A geostationary transfer orbit (GTO)-like eccentric orbit, with Earth's oblateness (J2, "
-            "via 8th-degree spherical harmonics) and third-body gravity from the Sun and Moon all "
-            "switched on. dynamics_task_rate_s is deliberately fine (1.0 s) here: coarser rates "
+            "A geostationary transfer orbit (GTO)-like eccentric orbit, with Earth's oblateness (J2 "
+            "and higher-order terms, via 10th-degree spherical harmonics) and third-body gravity from "
+            "the Sun and Moon all switched on. Drag is deliberately NOT enabled here (unlike other "
+            "templates updated for full perturbations) -- this one's whole point is isolating J2 + "
+            "third-body precession cleanly (see 'What to look at' below); a third perturbation source "
+            "would muddy that specific visual lesson. dynamics_task_rate_s is deliberately fine (1.0 s) "
+            "here: coarser rates "
             "introduce real truncation error into the spherical-harmonics gravity term itself (see "
             "this project's own HISTORY.md, 'What Phase 6 (Mission Sequence architecture) adds', for the "
             "measured effect of this on a real Basilisk run) -- always use a fine rate together with "
@@ -114,7 +139,7 @@ def build_02_elliptical_orbit_with_perturbations() -> Scenario:
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="orbit_only",
-        gravity=GravityConfig(central_body="earth", central_body_degree=8, third_body_perturbers=["sun", "moon"]),
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=3.0, dynamics_task_rate_s=1.0, integrator="rkf78"),
         spacecraft=[
             SpacecraftConfig(
@@ -145,11 +170,17 @@ def build_03_geo_station_keeping() -> Scenario:
             "Try changing: deadband_km (tighter = more frequent, smaller burns), thrust_n/isp_s (a "
             "more efficient thruster uses less propellant per correction), or removing "
             "third_body_perturbers/enable_srp to see how much slower the drift becomes without them "
-            "(and how rarely the controller then needs to fire)."
+            "(and how rarely the controller then needs to fire).\n\n"
+            "central_body_degree is 10 (not 0) despite GEO altitude: geosynchronous longitude drift "
+            "is driven in real life partly by Earth's own longitudinal (tesseral) gravity anomalies, "
+            "not just Sun/Moon/SRP -- a real GEO perturbation this spherical-harmonics degree can "
+            "represent. Atmospheric drag is deliberately NOT enabled -- physically negligible at "
+            "42164 km (no meaningful atmosphere there); enabling it would misrepresent the physics, "
+            "not add realism."
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="orbit_only",
-        gravity=GravityConfig(central_body="earth", central_body_degree=0, third_body_perturbers=["sun", "moon"]),
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=14.0, dynamics_task_rate_s=30.0, integrator="rkf78"),
         spacecraft=[
             SpacecraftConfig(
@@ -168,12 +199,18 @@ def build_03_geo_station_keeping() -> Scenario:
 
 
 def build_04_walker_constellation() -> Scenario:
+    # 700 km is genuinely drag-relevant LEO altitude -- drag/SRP enabled
+    # on the shared template so generate_walker_constellation() copies it
+    # onto every satellite (see this function's own description update
+    # below for the reasoning and the conservative-margin caveat).
     template = SpacecraftConfig(
         name="placeholder",  # replaced per-satellite by generate_walker_constellation()
         orbit=OrbitIC(type="classical_elements", semi_major_axis_km=1.0, eccentricity=0.0,
                        inclination_deg=0.0, raan_deg=0.0, arg_periapsis_deg=0.0, mean_anomaly_deg=0.0,
                        anomaly_type="mean"),
         dry_mass_kg=180.0,
+        enable_drag=True, drag_coeff=2.2, drag_area_m2=1.0,
+        enable_srp=True, srp_coeff=1.3, srp_area_m2=1.0,
     )
     request = WalkerConstellationRequest(
         total_satellites=6, num_planes=2, phasing_factor=1, altitude_km=700.0, inclination_deg=53.0,
@@ -198,12 +235,22 @@ def build_04_walker_constellation() -> Scenario:
             "repeatable global coverage with a minimal satellite count.\n\n"
             "Try changing: total_satellites/num_planes (regenerate via the CLI/GUI, not by hand "
             "-editing this file's spacecraft list) to see how coverage geometry changes, or "
-            "phasing_factor to change how planes interleave relative to each other."
+            "phasing_factor to change how planes interleave relative to each other.\n\n"
+            "Updated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, "
+            "atmospheric drag, and solar radiation pressure on every satellite -- a 700 km Walker "
+            "constellation genuinely experiences all of these. Drag uses a CONSERVATIVE, "
+            "95th-percentile sustained-worst-case F10.7/Ap margin computed from real historical "
+            "CelesTrak data (see engine/spaceweather.py's own docstring) rather than day-to-day space "
+            "weather -- running this template needs network access to CelesTrak (or a local historical "
+            "space-weather file set via space_weather.local_file_path); set "
+            "space_weather.activity_level back to 'nominal' to use ordinary resolved space weather "
+            "instead."
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="orbit_only",
-        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=1.0, dynamics_task_rate_s=30.0, integrator="rkf78"),
+        space_weather=_conservative_drag_margin(),
         spacecraft=spacecraft,
     )
 
@@ -229,18 +276,32 @@ def build_05_formation_flying_phasing() -> Scenario:
             "Try changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single "
             "-element list holds one separation for the whole run, more elements step through a "
             "schedule), or chief-1's own orbit to start with a larger initial mismatch and watch "
-            "follower-1 correct it."
+            "follower-1 correct it.\n\n"
+            "Updated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, "
+            "atmospheric drag, and solar radiation pressure on both spacecraft (identically, so any "
+            "chief/follower difference in behavior is real physics, not asymmetric configuration) -- a "
+            "CONSERVATIVE, 95th-percentile sustained-worst-case drag margin from real historical "
+            "CelesTrak data (see engine/spaceweather.py's own docstring), needing network access to "
+            "CelesTrak or a local historical file to actually run. NOTE: this specific change has NOT "
+            "been re-verified against a real multi-day Basilisk run the way this template's original "
+            "dynamics were (see README's 'Verification status') -- this development sandbox has no "
+            "route to the NAIF SPICE kernel host needed to run it at all; please report back if the "
+            "phasing controller's propellant budget or behavior looks off under the added "
+            "perturbations."
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="orbit_only",
-        # third_body_perturbers=["sun"]: follower-1's station_keeping (below,
-        # required by phasing_keeping) needs the real eclipse shadow factor
-        # for its eclipse-gated reboost burn, which needs a sun ephemeris --
-        # see engine.service.SimulationService.build()'s own
+        # third_body_perturbers=["sun", "moon"]: follower-1's station_keeping
+        # (below, required by phasing_keeping) needs the real eclipse shadow
+        # factor for its eclipse-gated reboost burn, which needs a sun
+        # ephemeris -- see engine.service.SimulationService.build()'s own
         # SimulationServiceError if this is missing (caught on a real run:
         # this template originally had an empty third_body_perturbers list).
-        gravity=GravityConfig(central_body="earth", central_body_degree=0, third_body_perturbers=["sun"]),
+        # "moon" added alongside "sun" for full-perturbation realism (see
+        # this function's own description update above).
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=7.0, dynamics_task_rate_s=30.0, integrator="rkf78"),
+        space_weather=_conservative_drag_margin(),
         spacecraft=[
             SpacecraftConfig(
                 name="chief-1",
@@ -265,12 +326,16 @@ def build_05_formation_flying_phasing() -> Scenario:
                 orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
                                inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
                 dry_mass_kg=400.0,
+                enable_drag=True, drag_coeff=2.2, drag_area_m2=1.0,
+                enable_srp=True, srp_coeff=1.3, srp_area_m2=1.0,
             ),
             SpacecraftConfig(
                 name="follower-1",
                 orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.001,
                                inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=-0.5),
                 dry_mass_kg=400.0,
+                enable_drag=True, drag_coeff=2.2, drag_area_m2=1.0,
+                enable_srp=True, srp_coeff=1.3, srp_area_m2=1.0,
                 station_keeping=StationKeepingConfig(
                     target_altitude_km=550.0, deadband_km=2.0, thrust_n=0.05, isp_s=1500.0, propellant_kg=5.0,
                 ),
@@ -308,7 +373,11 @@ def build_06_attitude_pointing_basic() -> Scenario:
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="full_attitude",
-        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        # Gravity harmonics/third-body added for realism (invisible to the
+        # attitude-pointing lesson below); drag/SRP deliberately NOT
+        # enabled -- this template's own role is to stay the SIMPLE
+        # version ('07' is explicitly "the realistic counterpart").
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=0.05, dynamics_task_rate_s=1.0, integrator="rkf78"),
         spacecraft=[
             SpacecraftConfig(
@@ -344,26 +413,37 @@ def build_07_attitude_pointing_with_adcs_hardware() -> Scenario:
             "Try changing: the reaction wheels' Js/u_max/maxMomentum (see the GUI's sensor/actuator "
             "editor for the full per-kind parameter list and units), or swap fsw_mode to "
             "'locationPointing' with fsw_params={'target_ground_station': '<name>'} once a "
-            "ground_stations entry exists in this scenario."
+            "ground_stations entry exists in this scenario.\n\n"
+            "Updated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, "
+            "atmospheric drag, and solar radiation pressure -- consistent with this template's own "
+            "role as the 'realistic counterpart' to '06'. Drag uses a CONSERVATIVE, 95th-percentile "
+            "sustained-worst-case F10.7/Ap margin from real historical CelesTrak data (see "
+            "engine/spaceweather.py's own docstring), needing network access to CelesTrak or a local "
+            "historical file to actually run."
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="full_attitude",
-        # third_body_perturbers=["sun"]: sat-1's PowerConfig (below) needs
-        # the real eclipse shadow factor for its solar-panel power
+        # third_body_perturbers=["sun", "moon"]: sat-1's PowerConfig (below)
+        # needs the real eclipse shadow factor for its solar-panel power
         # generation, which needs a sun ephemeris -- same reasoning as '05'
         # -- and sunSafePoint's own sun-pointing already conceptually wants
         # a real sun to point at. See engine.service.SimulationService.
         # build()'s own SimulationServiceError if this is missing (caught
         # on a real run: this template originally had an empty
-        # third_body_perturbers list).
-        gravity=GravityConfig(central_body="earth", central_body_degree=0, third_body_perturbers=["sun"]),
+        # third_body_perturbers list). "moon" added alongside "sun" for
+        # full-perturbation realism (see this function's own description
+        # update above).
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=0.05, dynamics_task_rate_s=1.0, integrator="rkf78"),
+        space_weather=_conservative_drag_margin(),
         spacecraft=[
             SpacecraftConfig(
                 name="sat-1",
                 orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
                                inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
                 dry_mass_kg=50.0,
+                enable_drag=True, drag_coeff=2.2, drag_area_m2=1.0,
+                enable_srp=True, srp_coeff=1.3, srp_area_m2=1.0,
                 inertia_kg_m2=list(_INERTIA_SMALL),
                 sigma_bn_init=[0.1, 0.2, -0.15],
                 omega_bn_b_init_rad_s=[0.001, -0.001, 0.0005],
@@ -409,18 +489,28 @@ def build_08_mission_sequence_orbit_raise() -> Scenario:
             "(negative = retrograde, LOWERS the opposite side of the orbit instead), or add a second "
             "maneuver command half an orbit later to circularize at the new higher altitude -- a "
             "genuine two-burn Hohmann transfer, built entirely from this project's own mission "
-            "-sequence commands."
+            "-sequence commands.\n\n"
+            "Updated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, "
+            "atmospheric drag, and solar radiation pressure -- physically relevant at 400 km, and this "
+            "template's own lesson (the Mission Sequence command layer / maneuver mechanics) doesn't "
+            "depend on a clean two-body baseline the way '01'/'09' deliberately do. Drag uses a "
+            "CONSERVATIVE, 95th-percentile sustained-worst-case F10.7/Ap margin from real historical "
+            "CelesTrak data (see engine/spaceweather.py's own docstring), needing network access to "
+            "CelesTrak or a local historical file to actually run."
         ),
         epoch_utc="2030-01-01T00:00:00",
         simulation_mode="orbit_only",
-        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
         sim_settings=SimSettings(duration_days=1.0, dynamics_task_rate_s=10.0, integrator="rkf78"),
+        space_weather=_conservative_drag_margin(),
         spacecraft=[
             SpacecraftConfig(
                 name="sat-1",
                 orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6778.0, eccentricity=0.0,
                                inclination_deg=28.5, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
                 dry_mass_kg=500.0,
+                enable_drag=True, drag_coeff=2.2, drag_area_m2=1.0,
+                enable_srp=True, srp_coeff=1.3, srp_area_m2=1.0,
             ),
         ],
         mission_sequence=[

@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 617 tests
+  exercised either way -- `pytest tests/` runs and passes 644 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -227,10 +227,18 @@ references it). No third-party schema library.
 
 **Orbital dynamics & propagation** -- central-body point-mass or Earth
 spherical-harmonics gravity plus third-body point-mass perturbers,
-atmospheric drag (NRLMSISE-00, Earth-only) and SRP, a selectable
-integrator (`euler`/`rk2`/`rkf45`/`rkf78`), and osculating Keplerian
-elements computed and exported alongside inertial position/velocity at
-every sample.
+atmospheric drag (Earth-only; a choice of NRLMSISE-00 or a simple
+exponential model -- see `SpaceWeatherConfig.atmosphere_model`'s own
+docstring for why not Jacchia-Roberts too: Basilisk has no such model)
+and SRP (per spacecraft, on that spacecraft's own "Orbit / mass" tab),
+a selectable integrator (`euler`/`rk2`/`rkf45`/`rkf78`), and osculating
+Keplerian elements computed and exported alongside inertial
+position/velocity at every sample. NRLMSISE-00 drag can also use a
+CONSERVATIVE, sustained-worst-case margin (a chosen percentile -- e.g.
+95th -- of REAL historical CelesTrak F10.7/Ap data, held constant
+across the whole scenario, never a fabricated number) instead of
+ordinary resolved space weather -- see `engine/spaceweather.py`'s own
+docstring, "Conservative ('worst-case') drag margin".
 
 **Attitude, sensors & actuators** -- every `fsw_mode` maps to a real
 Basilisk FSW module chain (attitude nav/guidance/control), idealized or
@@ -427,7 +435,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 617 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 644 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 99 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
@@ -677,6 +685,30 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
 * **Monte Carlo retains a fixed set of data per run** (each spacecraft's
   position/velocity) -- there is no per-run custom retention-policy
   selection in the schema yet.
+* **No Jacchia-Roberts atmosphere model, no Earth-albedo/IR radiation
+  pressure, no `TabularAtmosphere` (user-supplied density table).** All
+  three were real user questions/requests, checked directly against
+  Basilisk's own source (not assumed) before answering:
+  * Jacchia-Roberts genuinely doesn't exist anywhere in Basilisk (checked
+    `src/simulation/environment/` -- only `ExponentialAtmosphere`,
+    `MsisAtmosphere`, `TabularAtmosphere` do); `atmosphere_model` offers
+    the first two (see "Orbital dynamics & propagation" above), not the
+    one that doesn't exist.
+  * Basilisk's `earthRadiationModel` module computes Earth albedo/IR
+    flux, but its own payload comment names `facetERPDynamicEffector` as
+    the consumer that turns that flux into an actual orbital force --
+    and that module doesn't exist in this Basilisk build either (checked
+    the source tree and the installed package). Wiring this up for real
+    would mean writing a brand-new, never-before-exercised force
+    -effector from scratch (the same `extForceTorque` manual-force
+    -injection pattern this project's own thrust controllers use, plus
+    the standard flux/c * area * Cr formula solar SRP already uses) --
+    deliberately not done this round; real user decision, not a gap that
+    slipped through unnoticed.
+  * `TabularAtmosphere` (a user-supplied altitude/density CSV) would need
+    a new file-upload schema/GUI concept of its own -- out of scope for
+    the atmosphere-model-choice work that added `ExponentialAtmosphere`
+    as the second option.
 * **This development sandbox itself still can't reach the NAIF SPICE
   kernel host** (its network policy blocks it), so `engine.kernels`'s
   download step always fails here specifically -- correctly, with a
