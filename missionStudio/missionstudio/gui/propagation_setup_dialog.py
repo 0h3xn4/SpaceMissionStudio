@@ -242,7 +242,13 @@ class PropagationSetupDialog(QDialog):
         return group
 
     def _build_space_weather_group(self, space_weather: SpaceWeatherConfig) -> QGroupBox:
-        group = QGroupBox("Atmosphere & drag")
+        # "&&", not "&": Qt treats a single "&" in a QGroupBox title as a
+        # mnemonic marker (it consumes the "&" and underlines the next
+        # character instead of showing it) -- confirmed by actually
+        # rendering this dialog and looking at the PNG, where the plain
+        # "&" version rendered as a visibly broken "Atmosphere _drag".
+        # "&&" is Qt's own documented escape for a literal "&" character.
+        group = QGroupBox("Atmosphere && drag")
         form = QFormLayout(group)
 
         # Real user report: looked for solar radiation pressure in THIS

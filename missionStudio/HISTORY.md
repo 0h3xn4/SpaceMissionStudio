@@ -3378,3 +3378,43 @@ flattens the new form's rows back into one string so the same substring
 assertions still work), plus one new test asserting every expected row
 label is actually present. Full suite: 696 passed, 101 skipped.
 
+## A visual sweep for "raw panels" elsewhere in the app, and one real bug found by it
+
+Follow-up request: "check the rest of the app for similar raw panels".
+Grepped for the same free-text-summary shape across every `gui/*.py`
+file, and found nothing else built that way -- the Propagation setup
+summary really was the one outlier; every other panel
+(`kernel_status_widget.py`'s table, `monte_carlo_editor.py`'s own
+`QFormLayout`, every editor dialog) already uses labeled rows.
+`mission_output_widget.py`'s plain-text report log was deliberately
+left alone -- it's documented as a "debug console" for arbitrary,
+variable-shaped report data (series names/array values the user
+defines via `report` commands), where a monospace log is the
+appropriate format, not a settings dump with a fixed field set.
+
+Grepping isn't the same as looking, so every major screen was also
+actually RENDERED headless (`QT_QPA_PLATFORM=offscreen`,
+`QWidget.grab()` to a PNG) and inspected as an image, not just read as
+code: the full Scenario Editor tab, all 4 tabs of
+`SpacecraftEditorDialog`, the main window overview, `VizardDialog`,
+`GroundStationEditorDialog`, and `PropagationSetupDialog` itself (not
+just its scenario-editor summary). That caught a real bug the grep
+alone would have missed entirely: `PropagationSetupDialog`'s
+"Atmosphere & drag" `QGroupBox` title rendered as the visibly broken
+"Atmosphere _drag" in the actual screenshot -- Qt treats a lone `&` in
+a group box title as a mnemonic marker (the same mechanism behind
+`"&File"`/`"&Save"` menu shortcuts elsewhere in this app, which are all
+correct, intentional uses -- this was the one place a literal `&` was
+meant as prose, not a mnemonic). Fixed with `"&&"`, Qt's own documented
+escape for a literal ampersand -- confirmed by re-rendering and looking
+at the PNG again, not just trusting the source change.
+
+**Verification:** one new regression test
+(`test_propagation_setup_dialog.py`) asserts the group's stored title
+is the escaped `"Atmosphere && drag"` form, not the single-`&` one --
+`QGroupBox.title()` returns Qt's raw stored string, not the rendered/
+mnemonic-resolved text, confirmed directly (the first version of this
+test asserted the wrong thing and failed against the real widget,
+caught before it was ever committed). Full suite: 697 passed, 101
+skipped.
+

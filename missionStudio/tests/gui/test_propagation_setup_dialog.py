@@ -21,6 +21,25 @@ def dialog(qtbot):
     return d
 
 
+def test_atmosphere_drag_group_title_escapes_its_ampersand(dialog):
+    """Regression guard: QGroupBox("Atmosphere & drag") (a single "&")
+    used to render as visibly broken ("Atmosphere _drag" in a rendered
+    screenshot) because Qt treats a lone "&" in a group box title as a
+    mnemonic marker, consuming it instead of displaying it -- found by
+    actually rendering this dialog headless and looking at the PNG, not
+    by reading the source. "&&" is Qt's own escape for a literal "&";
+    QGroupBox.title() returns the raw (still-escaped) string Qt stores,
+    not the rendered/mnemonic-resolved text -- confirmed directly here,
+    not assumed -- so the regression to guard against is the single-"&"
+    form reappearing, not asserting against rendered pixels.
+    """
+    from PySide6.QtWidgets import QGroupBox
+
+    titles = [gb.title() for gb in dialog.findChildren(QGroupBox)]
+    assert "Atmosphere && drag" in titles
+    assert "Atmosphere & drag" not in titles
+
+
 def test_defaults_round_trip(dialog):
     got_gravity = dialog.to_gravity()
     got_sim = dialog.to_sim_settings()
