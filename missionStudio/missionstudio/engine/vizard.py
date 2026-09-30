@@ -109,22 +109,33 @@ analytical estimate -- see each source module's own docstring):
   this -- see its own module docstring). Same example's pattern for the
   "Tank" panel.
 * **Delta-V used** -- one more ``GenericStorage`` panel per spacecraft
-  with ``StationKeepingConfig`` configured (station-keeping delta-V,
+  with ``StationKeepingConfig`` configured ("SK Delta-V",
   ``StationKeepingController.deltaVOutMsg``), plus, for a spacecraft that
-  ALSO has ``PhasingKeepingConfig`` configured, two more:
-  ``PhasingKeepingController.deltaVOutMsg`` (phasing delta-V, kept as a
-  SEPARATE panel from station-keeping's own -- see that controller's
-  docstring for why: both draw from the one shared tank, but reporting
-  them separately shows the propellant cost of altitude-keeping and
-  phasing-keeping individually) and ``...separationOutMsg`` (the live
-  along-track separation from the chief, against the currently-scheduled
-  target -- "is the formation actually holding", arguably the single most
-  relevant live number for a phasing/formation-flying scenario). All
-  three are real ``DataStorageStatusMsgPayload`` messages those
-  controllers publish specifically for this (again, see their own module
+  ALSO has ``PhasingKeepingConfig`` configured, a second one ("Phasing
+  Delta-V", ``PhasingKeepingController.deltaVOutMsg``) -- kept SEPARATE
+  from station-keeping's own (see that controller's docstring for why:
+  both draw from the one shared tank, but reporting them separately shows
+  the propellant cost of altitude-keeping and phasing-keeping
+  individually). Both are real ``DataStorageStatusMsgPayload`` messages
+  those controllers publish specifically for this (see their own module
   docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
-  the propellant and delta-V/separation panels are never racing to
-  overwrite the same message.
+  the propellant and delta-V panels are never racing to overwrite the
+  same message.
+* **RTN separation from chief** -- THREE more ``GenericStorage`` panels
+  ("Radial (R)"/"Transverse (T)"/"Normal (N)") for a spacecraft with
+  ``PhasingKeepingConfig`` configured, from
+  ``PhasingKeepingController.separationRadialOutMsg``/
+  ``...TransverseOutMsg``/``...NormalOutMsg`` -- the REAL chief/follower
+  offset in the chief's own Hill frame (``orbitalMotion.rv2hill``, the
+  exact same function ``engine.formation``'s wizard itself uses to place
+  a follower), not an abstract single scalar. Real user feedback, in two
+  rounds: first that a single "Separation" number was too vague to
+  interpret, then (this round) that it should be broken out into the
+  same R/T/N terms the wizard itself already uses -- see
+  ``PhasingKeepingController``'s own docstring for the full reasoning,
+  including why ``storageLevel`` is clamped SYMMETRICALLY (sign
+  preserved, unlike the delta-V/propellant panels' plain non-negative
+  values) to a shared ``storageCapacity`` across all three panels.
 * **Live numeric values are Vizard's OWN, not this module's.** A real
   screenshot (from an actual user) showed every ``GenericStorage`` panel
   rendering its own live ``"<currentValue> / <maxValue> <units>"``
@@ -136,24 +147,11 @@ analytical estimate -- see each source module's own docstring):
   width, independent of how wide the panel itself grows for its own
   native readout column), which is what led to noticing the native
   column was there all along. Reverted: panel labels are short, static
-  names again ("SK Delta-V"/"Phasing Delta-V"/"Separation", not the
+  names ("SK Delta-V"/"Phasing Delta-V"/"Radial (R)"/etc., not the
   longer names an earlier version used -- still within that same fixed
   per-row width, confirmed against the same screenshot's truncation of
   "Delta-V (station-keeping)"), and Vizard's own native column is what
   shows the live numbers.
-  **Also fixes a real, screenshot-confirmed bug**: the separation panel's
-  ``storageCapacity`` used to equal the along-track TARGET itself, so
-  normal, on-target operation already sat at ~100% fill with no headroom
-  before an ordinary correction transient pushed ``storageLevel`` past
-  ``storageCapacity`` -- which rendered as a bar overflowing its own
-  panel, full window width, in the first screenshot.
-  ``PhasingKeepingController`` now gives that gauge 2x the target as
-  headroom and clamps what it actually writes to ``separationOutMsg``
-  (see that class's own docstring); the true, unclamped separation is
-  still available as ``lastSeparationKm``/``lastTargetSeparationKm``
-  (plain Python attributes) for anyone who needs the exact number, even
-  though nothing in this module reads them anymore now that the label
-  -bridge approach is reverted.
 * **Ground-station access windows** -- one ``GenericSensor`` marker per
   (ground station, spacecraft) pair that Phase 3's access analysis tracks,
   changing color LIVE between "no access" and "access" as
@@ -282,11 +280,10 @@ repro read back ``storageLevel`` at over 4x ``storageCapacity`` before
 the fix. Vizard does not appear to clamp an overflowing bar itself.
 Fixed in ``engine.orbit_maintenance.PhasingKeepingController.UpdateState``:
 the gauge now gets 2x the target as headroom, and the value actually
-WRITTEN to ``separationOutMsg`` is clamped to that capacity (``min()``,
+WRITTEN to the separation message is clamped to that capacity (``min()``,
 confirmed against the same manual repro to now read exactly at the
 capacity rather than 4x it) -- the true, unclamped number is kept
-separately (``lastSeparationKm``/``lastTargetSeparationKm``, plain
-Python attributes) for the live-value label below to still show.
+separately (plain Python attributes) for anything that needs it.
 Same screenshot ALSO seemed to show every panel's ``label`` as static
 text (e.g. "Propellant"), never a live number -- first "fixed" by adding
 a ``_LiveValueLabelBridge`` that rewrote ``label`` itself every tick to
@@ -319,6 +316,18 @@ mean-anomaly tracking read the follower as already on target and never
 corrected anything -- see ``engine.formation``'s own module docstring
 for the fix (place T as a direct mean-anomaly shift; layer R/N on
 afterward) and the full numerical confirmation.
+
+A THIRD round of feedback on the same panels, after both fixes above:
+the single "Separation" scalar (even correctly clamped) was still too
+abstract to interpret -- a user could see a number and a bar, but not
+what it actually meant geometrically. Replaced with the three
+``separationRadialOutMsg``/``separationTransverseOutMsg``/
+``separationNormalOutMsg`` panels described in "Live-data panels" above,
+each a REAL ``orbitalMotion.rv2hill`` decomposition (not the control
+law's own mean-anomaly-difference approximation) in the same R/T/N terms
+``engine.formation``'s wizard already asks for -- so the number Vizard
+shows during a run and the number a user typed into the wizard beforehand
+are directly comparable.
 """
 
 from __future__ import annotations
@@ -528,15 +537,42 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             phasing_dv_panel.dataStorageStateInMsg = phasing_dv_reader
             storages.append(phasing_dv_panel)
 
-            separation_panel = vizInterface.GenericStorage()
-            separation_panel.label = "Separation"
-            separation_panel.type = "Separation"
-            separation_panel.units = "km"
-            separation_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
-            separation_reader = messaging.DataStorageStatusMsgReader()
-            separation_reader.subscribeTo(phasing_controller.separationOutMsg)
-            separation_panel.dataStorageStateInMsg = separation_reader
-            storages.append(separation_panel)
+            # Three panels, not one: real user feedback was that a single
+            # "Separation" scalar was too vague to interpret -- Radial/
+            # Transverse/Normal, matching engine.formation's own wizard
+            # terminology exactly, is what a user can actually read and
+            # act on (see PhasingKeepingController's own docstring for
+            # where these numbers come from -- a real orbitalMotion.rv2hill
+            # decomposition, not an approximation).
+            radial_panel = vizInterface.GenericStorage()
+            radial_panel.label = "Radial (R)"
+            radial_panel.type = "Separation"
+            radial_panel.units = "km"
+            radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("blue"))
+            radial_reader = messaging.DataStorageStatusMsgReader()
+            radial_reader.subscribeTo(phasing_controller.separationRadialOutMsg)
+            radial_panel.dataStorageStateInMsg = radial_reader
+            storages.append(radial_panel)
+
+            transverse_panel = vizInterface.GenericStorage()
+            transverse_panel.label = "Transverse (T)"
+            transverse_panel.type = "Separation"
+            transverse_panel.units = "km"
+            transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
+            transverse_reader = messaging.DataStorageStatusMsgReader()
+            transverse_reader.subscribeTo(phasing_controller.separationTransverseOutMsg)
+            transverse_panel.dataStorageStateInMsg = transverse_reader
+            storages.append(transverse_panel)
+
+            normal_panel = vizInterface.GenericStorage()
+            normal_panel.label = "Normal (N)"
+            normal_panel.type = "Separation"
+            normal_panel.units = "km"
+            normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("green"))
+            normal_reader = messaging.DataStorageStatusMsgReader()
+            normal_reader.subscribeTo(phasing_controller.separationNormalOutMsg)
+            normal_panel.dataStorageStateInMsg = normal_reader
+            storages.append(normal_panel)
 
         generic_storage_list.append(storages or None)
         if storages:

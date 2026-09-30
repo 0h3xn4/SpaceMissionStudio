@@ -427,18 +427,26 @@ def test_phasing_keeping_dv_budget_is_passed_through_from_constructor():
     assert controller.dvBudgetMps == 717.7
 
 
-def test_phasing_keeping_publishes_separation_and_delta_v_messages():
+def test_phasing_keeping_publishes_rtn_separation_and_delta_v_messages():
     """Regression test for a real gap found while writing this feature:
     deltaVOutMsg must report a correct storageCapacity (the shared-tank
     budget) even on a tick where the thruster-arbitration branch returns
     before the state machine's own final block runs -- see UpdateState's
     two deltaVOutMsg.write() call sites and their comments for why.
+
+    Also the main regression test for the RTN separation telemetry (real
+    user feedback: a single "Separation" scalar was too vague) and for
+    the screenshot-confirmed clamping bug it must still not reintroduce --
+    this scenario's chief/follower are 90 deg apart in true anomaly, which
+    (see the R, T computed below) makes BOTH the radial and transverse
+    raw offsets far exceed the shared capacity, in OPPOSITE signs, so a
+    single tick here exercises negative and positive clamping at once.
     """
     from Basilisk.architecture import messaging
     from Basilisk.simulation import extForceTorque
     from Basilisk.utilities import orbitalMotion
 
-    from missionstudio.engine.orbit_maintenance import PhasingKeepingController, SeparationSchedule, _wrap_pm_pi
+    from missionstudio.engine.orbit_maintenance import PhasingKeepingController, SeparationSchedule
 
     nominal_a_m = 6928e3
     controller = PhasingKeepingController(
@@ -452,12 +460,7 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
     controller.extForceEffectorB = extForceTorque.ExtForceTorque()
     state_a = messaging.SCStatesMsg()
     state_b = messaging.SCStatesMsg()
-    # Same orbit shape (a, e, i, Omega, omega), true anomaly 90 deg apart --
-    # NOT the same as a 90 deg difference in absolute inertial position for
-    # an arbitrary pair of states (_mean_anomaly only ever looks at oe.f,
-    # never oe.omega -- two states 90 deg apart in omega but equal in f, as
-    # an earlier version of this test accidentally used, have IDENTICAL
-    # mean anomaly and so report zero separation here, not a large one).
+    # Same orbit shape (a, e, i, Omega, omega), true anomaly 90 deg apart.
     oe = orbitalMotion.ClassicElements()
     oe.a, oe.e, oe.i, oe.Omega, oe.omega = nominal_a_m, 0.001, 0.0, 0.0, 0.0
     oe.f = 0.0
@@ -472,24 +475,28 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
 
     controller.UpdateState(0)
 
-    _, m_a = controller._mean_anomaly(controller.mu, np.array(r_a), np.array(v_a))
-    _, m_b = controller._mean_anomaly(controller.mu, np.array(r_b), np.array(v_b))
-    expected_separation_km = abs(_wrap_pm_pi(m_b - m_a)) * nominal_a_m / 1000.0
+    rho_h, _rho_prime_h = orbitalMotion.rv2hill(r_a, v_a, r_b, v_b)
+    expected_radial_km, expected_transverse_km, expected_normal_km = np.array(rho_h) / 1000.0
+    # Sanity on the scenario itself: R and T must both be far outside the
+    # shared +/-100 km capacity (2x the 50 km target), in opposite signs --
+    # otherwise this test isn't exercising the clamp both ways as intended.
+    assert expected_radial_km < -100.0
+    assert expected_transverse_km > 100.0
 
-    # This scenario's chief/follower are ~90 deg apart in mean anomaly --
-    # a huge raw separation, far past the target -- so this doubles as
-    # a check that a real screenshot-confirmed bug stays fixed: the
-    # message's own storageLevel must be CLAMPED to storageCapacity (2x
-    # the target -- see PhasingKeepingController's own docstring for why
-    # not just the target itself) so a Vizard bar built from it can never
-    # overflow, while the TRUE, unclamped number is still available via
-    # lastSeparationKm/lastTargetSeparationKm (what engine.vizard's live
-    # -value label bridge actually reads for its on-screen text).
-    assert expected_separation_km > 100.0  # confirms this scenario really is a large-separation case
-    separation_payload = controller.separationOutMsg.read()
-    assert separation_payload.storageCapacity == pytest.approx(100.0)  # 2x the 50 km target
-    assert separation_payload.storageLevel == pytest.approx(100.0)  # clamped, not the raw ~10000+ km
-    assert controller.lastSeparationKm == pytest.approx(expected_separation_km)
+    radial_payload = controller.separationRadialOutMsg.read()
+    transverse_payload = controller.separationTransverseOutMsg.read()
+    normal_payload = controller.separationNormalOutMsg.read()
+
+    for payload in (radial_payload, transverse_payload, normal_payload):
+        assert payload.storageCapacity == pytest.approx(100.0)  # 2x the 50 km target, shared by all three
+    assert radial_payload.storageLevel == pytest.approx(-100.0)  # clamped negative, not the raw ~-6921 km
+    assert transverse_payload.storageLevel == pytest.approx(100.0)  # clamped positive, not the raw ~6928 km
+    assert normal_payload.storageLevel == pytest.approx(0.0)  # co-planar case: genuinely ~0, not clamped
+
+    # The true, unclamped numbers must still be the real geometry.
+    assert controller.lastRadialKm == pytest.approx(expected_radial_km)
+    assert controller.lastTransverseKm == pytest.approx(expected_transverse_km)
+    assert controller.lastNormalKm == pytest.approx(expected_normal_km, abs=1e-9)
     assert controller.lastTargetSeparationKm == pytest.approx(50.0)
 
     # The gauge's max must be correct even before any phasing burn has
@@ -500,12 +507,15 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
     assert delta_v_payload.storageCapacity == 717.7
 
 
-def test_phasing_keeping_separation_message_is_unclamped_when_within_capacity():
+def test_phasing_keeping_rtn_separation_is_unclamped_when_within_capacity():
     """Companion to the clamping regression test above: when the raw
-    separation is comfortably within the 2x-target capacity (here, right
-    at the target itself), storageLevel must pass through UNCHANGED, not
-    always get pinned to the capacity -- confirms the clamp is a min(),
-    not an accidental hard-set.
+    separation is comfortably within the shared 2x-target capacity,
+    storageLevel must pass through UNCHANGED, not always get pinned to
+    the capacity -- confirms the clamp is a min/max, not an accidental
+    hard-set. Also confirms the transverse (along-track) component reads
+    close to the along-track target for a follower placed there, and
+    radial/normal read close to zero for this co-planar, near-circular
+    scenario.
     """
     from Basilisk.architecture import messaging
     from Basilisk.simulation import extForceTorque
@@ -540,12 +550,22 @@ def test_phasing_keeping_separation_message_is_unclamped_when_within_capacity():
 
     controller.UpdateState(0)
 
-    payload = controller.separationOutMsg.read()
-    assert payload.storageCapacity == pytest.approx(2.0 * target_km)
-    # abs=0.5 (1% of target): true-anomaly-vs-mean-anomaly differ slightly
-    # for a nonzero eccentricity (0.001 here) -- this is real physics, not
-    # slack for a bug, and still small enough to clearly distinguish
-    # "passed through near-unchanged" from "clamped to 100.0".
-    assert payload.storageLevel == pytest.approx(target_km, abs=0.5)  # on-target: ~50% fill, not clamped
-    assert payload.storageLevel < payload.storageCapacity
-    assert controller.lastSeparationKm == pytest.approx(payload.storageLevel, abs=1e-9)
+    radial_payload = controller.separationRadialOutMsg.read()
+    transverse_payload = controller.separationTransverseOutMsg.read()
+    normal_payload = controller.separationNormalOutMsg.read()
+    for payload in (radial_payload, transverse_payload, normal_payload):
+        assert payload.storageCapacity == pytest.approx(2.0 * target_km)
+
+    # abs=0.5 (1% of target): a nonzero eccentricity (0.001 here) makes
+    # the Hill-frame T offset slightly different from a pure arc-length
+    # approximation -- real physics, not slack for a bug, and still small
+    # enough to clearly distinguish "passed through near-unchanged" from
+    # "clamped to 100.0".
+    assert transverse_payload.storageLevel == pytest.approx(target_km, abs=0.5)
+    assert transverse_payload.storageLevel < transverse_payload.storageCapacity
+    assert abs(radial_payload.storageLevel) < 1.0  # near-circular, co-planar: small, not clamped
+    assert normal_payload.storageLevel == pytest.approx(0.0, abs=1e-9)  # exactly co-planar here
+
+    assert controller.lastTransverseKm == pytest.approx(transverse_payload.storageLevel, abs=1e-9)
+    assert controller.lastRadialKm == pytest.approx(radial_payload.storageLevel, abs=1e-9)
+    assert controller.lastNormalKm == pytest.approx(normal_payload.storageLevel, abs=1e-9)

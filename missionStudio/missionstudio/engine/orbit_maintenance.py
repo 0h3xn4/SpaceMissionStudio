@@ -107,7 +107,8 @@ Verification status: the burn/bookkeeping logic is copied from
 memory (the shared-mass-bookkeeping fix above is this project's own,
 found and fixed after a full codebase audit). This whole module's
 ``requires_basilisk``-marked tests (``tests/test_orbit_maintenance.py``)
--- including the ``deltaVOutMsg``/``separationOutMsg`` telemetry this
+-- including the ``deltaVOutMsg``/``separationRadialOutMsg``/
+``separationTransverseOutMsg``/``separationNormalOutMsg`` telemetry this
 docstring describes above -- have been run for real against a genuine
 ``pip install "bsk[all]"`` Basilisk build (this project's own "vendoring"
 discovery -- see ``missionStudio/README.md``'s "Getting started"), not
@@ -138,6 +139,15 @@ _LOGGER = logging.getLogger(__name__)
 def _wrap_pm_pi(angle_rad: float) -> float:
     """Wrap an angle [rad] to (-pi, pi]."""
     return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _clamp_symmetric(value: float, limit: float) -> float:
+    """Clamp ``value`` to ``[-limit, limit]`` -- used for a live Vizard
+    GenericStorage panel's ``storageLevel`` (see
+    ``PhasingKeepingController.UpdateState``'s own comment): bounds the
+    BAR's fill without discarding sign, unlike a plain non-negative clamp.
+    """
+    return max(-limit, min(value, limit))
 
 
 def _eclipse_illumination_fraction(eclipse_payload) -> float:
@@ -418,23 +428,30 @@ class PhasingKeepingController(sysModel.SysModel):
       deliberately, so a user can see the propellant cost of altitude
       -keeping and phasing-keeping separately, even though both draw from
       the one shared tank).
-    * ``separationOutMsg`` -- the actual, LIVE along-track separation from
-      the chief (``storageLevel``, km) against 2x the currently-scheduled
-      target as headroom (``storageCapacity``, km -- NOT the raw target
+    * ``separationRadialOutMsg``/``separationTransverseOutMsg``/
+      ``separationNormalOutMsg`` -- the actual, LIVE chief/follower offset
+      in the chief's own Hill (RTN) frame (``storageLevel``, km each),
+      via ``orbitalMotion.rv2hill`` -- the exact same function
+      ``engine.formation``'s wizard itself uses to place a follower, so
+      these numbers are directly comparable to what a user typed into
+      that wizard's Radial/Along-track/Cross-track fields. Real user
+      feedback: a single scalar "separation" number wasn't interpretable
+      ("vague") -- three real distances in a named, familiar frame is
+      the fix. All three share ONE ``storageCapacity`` (2x the
+      currently-scheduled along-track target, km -- NOT the raw target
       itself; see UpdateState's own comment: a target-sized max leaves a
-      normal, on-target reading pegged at ~100% fill with no room for an
-      ordinary correction transient, which is what a real Vizard
-      screenshot caught overflowing the panel), both re-derived every
-      tick from the same osculating mean-anomaly difference the control
-      law itself uses (not smoothed, unlike the control law's own
-      ``error``, so this reads as the real instantaneous separation,
-      short-period noise included). ``storageLevel`` is CLAMPED to
-      ``storageCapacity`` so the bar itself can never overflow; the true,
-      unclamped numbers are ``self.lastSeparationKm``/
-      ``self.lastTargetSeparationKm`` (plain Python attributes,
-      ``engine.vizard``'s live-value label bridge reads these directly
-      for its on-screen text, same cross-object access pattern this
-      class's own thruster-arbitration check already uses).
+      normal, on-target transverse reading pegged at ~100% fill with no
+      room for an ordinary correction transient, which is what a real
+      Vizard screenshot caught overflowing the panel). ``storageLevel``
+      is CLAMPED to ``[-storageCapacity, storageCapacity]`` (sign
+      preserved -- unlike a plain non-negative clamp, since Vizard's own
+      native numeric readout for a panel prints the raw signed value) so
+      the bar itself can never overflow; the true, unclamped numbers are
+      ``self.lastRadialKm``/``self.lastTransverseKm``/``self.lastNormalKm``/
+      ``self.lastTargetSeparationKm`` (plain Python attributes, for
+      anything that needs the exact geometry -- nothing in this codebase
+      currently reads them, unlike an earlier revision's Vizard label
+      bridge, reverted; see ``engine.vizard``'s own module docstring).
     """
 
     IDLE, BURN_OUT, DRIFT, BURN_RESTORE = range(4)
@@ -464,7 +481,9 @@ class PhasingKeepingController(sysModel.SysModel):
         self.scStateInMsgB = messaging.SCStatesMsgReader()  # follower (maneuvered)
         self.eclipseInMsgB = messaging.EclipseMsgReader()
         self.deltaVOutMsg = messaging.DataStorageStatusMsg()
-        self.separationOutMsg = messaging.DataStorageStatusMsg()
+        self.separationRadialOutMsg = messaging.DataStorageStatusMsg()
+        self.separationTransverseOutMsg = messaging.DataStorageStatusMsg()
+        self.separationNormalOutMsg = messaging.DataStorageStatusMsg()
 
         # Wired up externally (see build_phasing_keeping): the follower's
         # extForceTorque effector and hub, and the co-located
@@ -498,11 +517,13 @@ class PhasingKeepingController(sysModel.SysModel):
         # is defensive, not the normal path.
         self.propellant = 0.0  # [kg]
         self.sunlitThreshold = eclipse_sunlit_threshold  # [-]
-        # Unclamped separation telemetry -- see UpdateState's own comment
-        # on why these (not separationOutMsg's own, possibly-clamped
-        # storageLevel) are what engine.vizard's live-value label bridge
-        # reads. Zero here only as a before-the-first-tick default.
-        self.lastSeparationKm = 0.0  # [km]
+        # Unclamped RTN separation telemetry -- see UpdateState's own
+        # comment on why these (not the separation*OutMsg messages' own,
+        # possibly-clamped storageLevel) are the true numbers. Zero here
+        # only as a before-the-first-tick default.
+        self.lastRadialKm = 0.0  # [km]
+        self.lastTransverseKm = 0.0  # [km]
+        self.lastNormalKm = 0.0  # [km]
         self.lastTargetSeparationKm = 0.0  # [km]
 
         semi_major_axis_m = nominal_a_m  # already the chief/follower shared SMA
@@ -602,45 +623,60 @@ class PhasingKeepingController(sysModel.SysModel):
             self._errorHistory.pop(0)
         error = self._circular_mean(np.array([e for _, e in self._errorHistory]))  # [rad]
 
-        # Live separation-from-chief telemetry, for Vizard's GenericStorage
-        # "separation" panel -- see this class's own docstring. Deliberately
-        # the RAW (unsmoothed, un-arbitrated) instantaneous separation --
-        # (mB - mA), not referenceTargetRad + error -- so this reads as the
-        # real current geometry, independent of which state the control law
-        # itself happens to be in this tick.
-        #
-        # abs(): a GenericStorage bar reads as a magnitude, and a target
-        # separation is always positive by schema (PhasingKeepingConfig.
-        # target_separation_km entries must all be > 0) -- the SIGNED
-        # value (ahead of/behind the chief) is still available in
-        # errorDegLog/this class's own telemetry for anyone who needs it.
-        rawSeparationKm = abs(_wrap_pm_pi(mB - mA)) * self.aNom / 1000.0  # [km]
+        # Live RTN separation-from-chief telemetry, for Vizard's
+        # GenericStorage "Radial"/"Transverse"/"Normal" panels -- see this
+        # class's own docstring. The REAL geometric offset in the chief's
+        # own Hill (RTN) frame, via ``orbitalMotion.rv2hill`` -- the exact
+        # same function (and axis convention) ``engine.formation``'s
+        # wizard itself uses to PLACE a follower, so these numbers are
+        # directly comparable to what a user typed into that wizard's R/T/N
+        # fields. Deliberately NOT derived from mB - mA (the control law's
+        # own mean-anomaly-difference approximation, still what actually
+        # drives burns below, unchanged) -- real user feedback: a single,
+        # abstract "separation" scalar wasn't interpretable ("vague");
+        # three real distances in a named, familiar frame are.
+        rhoH, _rhoPrimeH = orbitalMotion.rv2hill(rA, vA, rB, vB)
+        radialKm = float(rhoH[0]) / 1000.0  # [km]
+        transverseKm = float(rhoH[1]) / 1000.0  # [km]
+        normalKm = float(rhoH[2]) / 1000.0  # [km]
         targetKm = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
-        # Real bug found against a real running Vizard instance (screenshot
-        # from an actual user): a GenericStorage bar with storageLevel >
-        # storageCapacity renders broken (overflowing its own panel, full
-        # window width) rather than clamping itself -- and storageCapacity
-        # == targetKm means NORMAL, on-target operation already sits at
-        # ~100% fill (the opposite of the usual "full bar == bad" gauge
-        # convention), leaving no headroom at all before a real, ordinary
-        # correction transient (a fresh phasing error, right after a
-        # reconfiguration) pushes storageLevel past it. Fixed by giving
-        # the gauge 2x the target as headroom (on-target now reads a
-        # comfortable ~50% fill) AND clamping the value actually written
-        # to this message so the bar itself can never exceed 100% no
-        # matter how far off-target the real geometry gets. self.lastSeparationKm/
-        # self.lastTargetSeparationKm below keep the UNCLAMPED true numbers
-        # available (engine.vizard's live-value label bridge reads them
-        # directly, plain Python attributes, same cross-object access
-        # pattern this class's own thruster-arbitration check already
-        # uses) -- clamping only ever affects the bar's fill, never what
-        # the live text label next to it reports.
-        self.lastSeparationKm = rawSeparationKm
+        self.lastRadialKm = radialKm
+        self.lastTransverseKm = transverseKm
+        self.lastNormalKm = normalKm
         self.lastTargetSeparationKm = targetKm
-        separationMsg = messaging.DataStorageStatusMsgPayload()
-        separationMsg.storageCapacity = 2.0 * targetKm  # [km]
-        separationMsg.storageLevel = min(rawSeparationKm, separationMsg.storageCapacity)  # [km]
-        self.separationOutMsg.write(separationMsg, CurrentSimNanos, self.moduleID)
+
+        # Real bug found against a real running Vizard instance (screenshot
+        # from an actual user): a GenericStorage bar with storageLevel
+        # outside [-storageCapacity, storageCapacity] renders broken
+        # (overflowing its own panel, full window width) rather than
+        # clamping itself -- and storageCapacity == targetKm means NORMAL,
+        # on-target transverse holding already sits at ~100% fill (the
+        # opposite of the usual "full bar == bad" gauge convention),
+        # leaving no headroom before an ordinary correction transient (a
+        # fresh phasing error, right after a reconfiguration) pushes
+        # storageLevel past it. All three R/T/N panels share ONE capacity
+        # (2x the along-track target -- generous headroom for the
+        # actively-held T axis, and a common scale so the three bars'
+        # relative fill is directly comparable) and are clamped
+        # SYMMETRICALLY (preserves sign -- GenericStorage's own native
+        # numeric readout prints the raw value, sign included; only the
+        # bar's own fill is bounded, via _clamp_symmetric).
+        capacityKm = 2.0 * targetKm  # [km]
+
+        radialMsg = messaging.DataStorageStatusMsgPayload()
+        radialMsg.storageCapacity = capacityKm
+        radialMsg.storageLevel = _clamp_symmetric(radialKm, capacityKm)
+        self.separationRadialOutMsg.write(radialMsg, CurrentSimNanos, self.moduleID)
+
+        transverseMsg = messaging.DataStorageStatusMsgPayload()
+        transverseMsg.storageCapacity = capacityKm
+        transverseMsg.storageLevel = _clamp_symmetric(transverseKm, capacityKm)
+        self.separationTransverseOutMsg.write(transverseMsg, CurrentSimNanos, self.moduleID)
+
+        normalMsg = messaging.DataStorageStatusMsgPayload()
+        normalMsg.storageCapacity = capacityKm
+        normalMsg.storageLevel = _clamp_symmetric(normalKm, capacityKm)
+        self.separationNormalOutMsg.write(normalMsg, CurrentSimNanos, self.moduleID)
 
         # Also written here (not only in the final block below, which the
         # thrusterHeldByAltCtrl arbitration branch just below returns
