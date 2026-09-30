@@ -197,8 +197,12 @@ clamped), AND directly against Vizard's own Unity source
 ``value >= 0`` branch with no tolerance, confirming a negative
 ``storageLevel`` really does render "Unavailable" unconditionally, not
 inferred from field-comment wording. :func:`_rtn_panel_label`'s
-truncation-width budget is still only confirmed against a real
-screenshot (see that function's own docstring), not the Unity source.
+truncation-width budget is likewise now computed directly from Vizard's
+own panel-sizing code (:func:`_usable_label_width_px`) rather than a
+flat constant confirmed against one screenshot -- see that function's
+own docstring for the exact formula and its one remaining estimate
+(characters-per-pixel, since this project has no access to the actual
+TMP font's glyph metrics).
 The ``GenericSensor``/``DeviceCmdMsgPayload``/bridge-module wiring
 matches the field-level pattern in a second real shipped example
 (``examples/scenarioGroundLocationImaging.py``), but the specific
@@ -402,8 +406,10 @@ Fixed by :func:`_rtn_panel_label`, which folds the chief spacecraft's
 own name (``PhasingKeepingController.chiefName``, wired by
 :func:`build_phasing_keeping` from ``chief_sc_object.ModelTag``) into
 the label itself (e.g. "R vs chief-1") instead of a bare axis letter --
-see that function's own docstring for the fixed-width-truncation budget
-this has to stay inside.
+see that function's own docstring for the truncation-width budget this
+has to stay inside, computed per-scenario from the follower
+spacecraft's own name (Vizard's panel width scales with it -- not a
+flat constant).
 """
 
 from __future__ import annotations
@@ -414,24 +420,88 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-def _rtn_panel_label(axis_letter: str, chief_name: str, max_len: int = 14) -> str:
+_VIZARD_PANEL_TITLE_SUFFIX = " Storage"  # GenericStoragePanelMethods.cs: panelName = scName + " Storage"
+_VIZARD_MIN_BAR_WIDTH_PX = 90.0  # GenericStoragePanelMethods.cs: private int barWidth = 90
+_VIZARD_WIDE_BAR_TRIGGER_CHARS = 16  # GenericStoragePanelMethods.cs: if (panelName.Length > 16)
+_VIZARD_PIXELS_PER_TITLE_CHARACTER = 7.0  # GenericStoragePanelMethods.cs: pixelsPerCharacter = 7f
+_VIZARD_LABEL_MARGIN_PX = 3.0  # deviceName RectTransform's own sizeDelta = {x: -3, y: 15} in the prefab
+# Not a measured glyph metric (this project has no access to the actual
+# TMP font asset's per-character advance-width table -- it's a built-in
+# TextMeshPro font, not a custom asset checked into 0h3xn4/vizard) --
+# calibrated conservatively against the one confirmed real data point (a
+# real screenshot: "Transverse (T)", 14 characters, rendered in full
+# inside a 123px box, for a spacecraft named "follower-1" -- see
+# :func:`_usable_label_width_px`), which implies an UPPER bound of
+# ~8.8 px/character; padded up here so the computed character budget
+# stays an underestimate (never risks truncation) rather than an
+# overestimate, since a proportional font's actual per-character width
+# varies with which characters are used.
+_PIXELS_PER_LABEL_CHARACTER_ESTIMATE = 9.5
+
+
+def _usable_label_width_px(follower_name: str) -> float:
+    """The real, per-scenario pixel width available to a
+    ``GenericStorage`` panel row's own ``label`` text -- NOT a fixed
+    value. Reverse-engineered directly from Vizard's own Unity source
+    (``0h3xn4/vizard``):
+
+    ``GenericStoragePanelMethods.cs``'s ``InitializePanel()`` builds
+    ``panelName = spacecraftName + " Storage"`` and, only if that
+    exceeds 16 characters, widens ``barWidth`` to
+    ``panelName.Length * 7`` (pixels) -- applied via ``SetBarWidth()``
+    UNIFORMLY to every storage-device row in that spacecraft's own
+    panel, so the same bar width (and hence label width) is shared by
+    every row regardless of that row's own label length. A SHORT
+    spacecraft name (``len(name) + len(" Storage") <= 16``, i.e. 8
+    characters or fewer) never triggers the widening, leaving the
+    panel at the hardcoded 90px default -- narrower than the 123px a
+    real confirming screenshot (spacecraft named "follower-1", 10
+    characters) actually exercised.
+
+    ``GenericStorageUnitMethods.cs``'s own prefab
+    (``GenericStoragePanelUnit.prefab``) shows the ``deviceName`` TMP
+    text box is anchor-stretched inside that same bar's
+    ``backgroundRect`` with ``sizeDelta = {x: -3, y: 15}`` -- so usable
+    label width is ``barWidth - 3`` pixels. That same prefab confirms
+    the render mode this all matters for: ``m_enableAutoSizing: 0``
+    (no shrink-to-fit), ``m_TextWrappingMode: 1`` (NoWrap),
+    ``m_overflowMode: 3`` (``TextOverflowModes.Truncate``) -- a hard
+    per-pixel cutoff, not ellipsis or wrapping.
+    """
+    panel_title_len = len(follower_name) + len(_VIZARD_PANEL_TITLE_SUFFIX)
+    bar_width_px = (
+        panel_title_len * _VIZARD_PIXELS_PER_TITLE_CHARACTER
+        if panel_title_len > _VIZARD_WIDE_BAR_TRIGGER_CHARS
+        else _VIZARD_MIN_BAR_WIDTH_PX
+    )
+    return bar_width_px - _VIZARD_LABEL_MARGIN_PX
+
+
+def _rtn_panel_label(axis_letter: str, chief_name: str, follower_name: str) -> str:
     """Short ``GenericStorage`` panel label for an RTN separation panel,
     e.g. ``"R vs chief-1"`` -- real user feedback that "Radial (R)"/
     "Transverse (T)"/"Normal (N)" alone didn't say WHOSE offset it was.
 
-    ``max_len`` defaults to 14: the longest label confirmed NOT to get
-    cut off against a real running Vizard instance (a real user
-    screenshot showed "Transverse (T)", 14 characters, rendering in
-    full -- see this module's own docstring on the label-truncation bug
-    found and reverted in an earlier round). That screenshot is a lower
-    bound on the real per-row width, not a measured maximum, so a
-    ``chief_name`` short enough to fit under it (true for this project's
-    own template scenarios, e.g. "chief-1") is used directly; one long
-    enough to risk exceeding that bound falls back to the generic,
-    always-safe "vs chief" instead of gambling on a half-truncated name.
+    The safe length budget is computed from ``follower_name`` (the
+    spacecraft this panel actually lives on) via
+    :func:`_usable_label_width_px`, converted to a character count with
+    :data:`_PIXELS_PER_LABEL_CHARACTER_ESTIMATE` -- NOT a flat constant,
+    since Vizard's own panel width scales with that spacecraft's own
+    name (see that function's own docstring). Three tiers, each falling
+    back to the next only if it would exceed the computed budget:
+    ``"{axis} vs {chief_name}"`` -> the generic, shorter ``"{axis} vs
+    chief"`` -> the bare ``axis_letter`` alone (always fits, 1
+    character) -- so even an unusually narrow panel (a very short
+    follower spacecraft name) never risks a half-truncated label.
     """
-    named = f"{axis_letter} vs {chief_name}" if chief_name else f"{axis_letter} vs chief"
-    return named if len(named) <= max_len else f"{axis_letter} vs chief"
+    max_len = max(1, int(_usable_label_width_px(follower_name) / _PIXELS_PER_LABEL_CHARACTER_ESTIMATE))
+    named = f"{axis_letter} vs {chief_name}" if chief_name else ""
+    if named and len(named) <= max_len:
+        return named
+    generic = f"{axis_letter} vs chief"
+    if len(generic) <= max_len:
+        return generic
+    return axis_letter
 
 
 class VizardError(Exception):
@@ -641,7 +711,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             # where these numbers come from -- a real orbitalMotion.rv2hill
             # decomposition, not an approximation).
             radial_panel = vizInterface.GenericStorage()
-            radial_panel.label = _rtn_panel_label("R", phasing_controller.chiefName)
+            radial_panel.label = _rtn_panel_label("R", phasing_controller.chiefName, sc_name)
             radial_panel.type = "Separation"
             radial_panel.units = "km"
             radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("blue"))
@@ -651,7 +721,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             storages.append(radial_panel)
 
             transverse_panel = vizInterface.GenericStorage()
-            transverse_panel.label = _rtn_panel_label("T", phasing_controller.chiefName)
+            transverse_panel.label = _rtn_panel_label("T", phasing_controller.chiefName, sc_name)
             transverse_panel.type = "Separation"
             transverse_panel.units = "km"
             transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
@@ -661,7 +731,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             storages.append(transverse_panel)
 
             normal_panel = vizInterface.GenericStorage()
-            normal_panel.label = _rtn_panel_label("N", phasing_controller.chiefName)
+            normal_panel.label = _rtn_panel_label("N", phasing_controller.chiefName, sc_name)
             normal_panel.type = "Separation"
             normal_panel.units = "km"
             normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("green"))

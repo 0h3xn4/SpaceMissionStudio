@@ -2702,28 +2702,57 @@ measuring.** "Radial (R)" on a follower's own storage panel doesn't say
 which chief it's relative to. Fixed by threading the chief spacecraft's
 own `ModelTag` through as `PhasingKeepingController.chiefName` (wired
 by `build_phasing_keeping` from `chief_sc_object.ModelTag`), and a new
-`engine.vizard._rtn_panel_label(axis_letter, chief_name)` helper that
-folds it into the label itself (e.g. `"R vs chief-1"`) -- falling back
-to a generic `"R vs chief"` when a chief name is long enough to risk
-exceeding Vizard's confirmed per-row label-truncation width (14
-characters, the longest confirmed NOT to truncate against a real
-running Vizard instance in an earlier round -- see that same function's
-own docstring).
+`engine.vizard._rtn_panel_label(axis_letter, chief_name, follower_name)`
+helper that folds it into the label itself (e.g. `"R vs chief-1"`) --
+originally falling back to a generic `"R vs chief"` past a flat,
+14-character budget (the longest confirmed NOT to truncate against one
+real screenshot).
+
+**Later refined once the Unity source was available (see above):**
+that flat 14-character budget turned out to be specific to the
+screenshot's own scenario, not a universal constant.
+`GenericStoragePanelMethods.cs`'s `InitializePanel()` sets
+`panelName = spacecraftName + " Storage"` and only widens the row's bar
+(and hence its label's usable width) past a hardcoded 90px default when
+`panelName.Length > 16` -- to `panelName.Length * 7` pixels, applied
+via `SetBarWidth()` UNIFORMLY to every row in that spacecraft's own
+panel. The confirming screenshot's spacecraft ("follower-1", 10
+characters) crossed that threshold (123px usable); a SHORTER name (8
+characters or fewer, e.g. "sat-1") never does, leaving only 87px --
+narrower than what "14 characters" was actually confirmed against. The
+prefab (`GenericStoragePanelUnit.prefab`) also confirms the render mode
+this matters for: `m_enableAutoSizing: 0`, `m_TextWrappingMode: 1`
+(NoWrap), `m_overflowMode: 3` (`TextOverflowModes.Truncate`) -- a hard
+per-pixel cutoff.
+
+Fixed: `_usable_label_width_px(follower_name)` computes the real,
+per-scenario usable width from Vizard's own formula; no glyph-metrics
+table is available for the font in this repo (a built-in TMP font, not
+a checked-in asset), so pixel width is converted to a character budget
+via a conservative estimate (`_PIXELS_PER_LABEL_CHARACTER_ESTIMATE`,
+calibrated against the one confirmed real data point and padded up so
+it underestimates rather than overestimates). `_rtn_panel_label` now
+has THREE fallback tiers, not two: `"{axis} vs {chief}"` ->
+`"{axis} vs chief"` -> the bare axis letter alone (always 1 character,
+always fits) -- since on a narrow enough panel even the generic
+fallback can exceed the budget.
 
 **Verification:** `tests/test_orbit_maintenance.py`'s two RTN tests
 rewritten for magnitude semantics (real Basilisk, both pass -- 27
 tests total in that file with the new `chiefName` wiring smoke-tested
 separately, not added as a permanent test); `tests/test_vizard_labels.py`
-(new, no Basilisk needed -- `_rtn_panel_label` has no Basilisk import,
-unlike the rest of `engine.vizard`) covers the truncation-budget
-fallback directly. `chiefName` wiring confirmed end-to-end against real
-Basilisk with a standalone script (`build_phasing_keeping()` called
-directly, `controller.chiefName == "chief-1"` after). The magnitude fix
-itself is now confirmed against Vizard's own Unity source (see bug 1
-above); the label-truncation width (14 characters) is still only
-confirmed against a real screenshot, not re-derived from the Unity
-source's own label-sizing code -- please report back if a label still
-doesn't fit.
+rewritten (8 tests, no Basilisk needed -- these functions have no
+Basilisk import, unlike the rest of `engine.vizard`) to cover the
+width-aware budget directly, including the narrow-panel/deeper-fallback
+case. `chiefName` wiring confirmed end-to-end against real Basilisk
+with a standalone script (`build_phasing_keeping()` called directly,
+`controller.chiefName == "chief-1"` after); label output for this
+project's own `05_formation_flying_phasing` template's actual
+spacecraft names confirmed the same way. Both the magnitude fix (bug 1)
+and the truncation-width formula (bug 2) are now confirmed directly
+against Vizard's own Unity source rather than inferred from a
+screenshot or field comments -- only the characters-per-pixel
+conversion remains an estimate (no font glyph metrics available).
 
 ## Perturbation-model audit: gravity/third-body on every template, atmosphere-model choice, a historical-percentile drag margin
 
