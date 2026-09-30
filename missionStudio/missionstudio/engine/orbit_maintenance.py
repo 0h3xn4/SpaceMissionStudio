@@ -419,12 +419,22 @@ class PhasingKeepingController(sysModel.SysModel):
       -keeping and phasing-keeping separately, even though both draw from
       the one shared tank).
     * ``separationOutMsg`` -- the actual, LIVE along-track separation from
-      the chief (``storageLevel``, km) against the currently-scheduled
-      target (``storageCapacity``, km) -- both re-derived every tick from
-      the same osculating mean-anomaly difference the control law itself
-      uses (not smoothed, unlike the control law's own ``error``, so this
-      reads as the real instantaneous separation, short-period noise
-      included).
+      the chief (``storageLevel``, km) against 2x the currently-scheduled
+      target as headroom (``storageCapacity``, km -- NOT the raw target
+      itself; see UpdateState's own comment: a target-sized max leaves a
+      normal, on-target reading pegged at ~100% fill with no room for an
+      ordinary correction transient, which is what a real Vizard
+      screenshot caught overflowing the panel), both re-derived every
+      tick from the same osculating mean-anomaly difference the control
+      law itself uses (not smoothed, unlike the control law's own
+      ``error``, so this reads as the real instantaneous separation,
+      short-period noise included). ``storageLevel`` is CLAMPED to
+      ``storageCapacity`` so the bar itself can never overflow; the true,
+      unclamped numbers are ``self.lastSeparationKm``/
+      ``self.lastTargetSeparationKm`` (plain Python attributes,
+      ``engine.vizard``'s live-value label bridge reads these directly
+      for its on-screen text, same cross-object access pattern this
+      class's own thruster-arbitration check already uses).
     """
 
     IDLE, BURN_OUT, DRIFT, BURN_RESTORE = range(4)
@@ -488,6 +498,12 @@ class PhasingKeepingController(sysModel.SysModel):
         # is defensive, not the normal path.
         self.propellant = 0.0  # [kg]
         self.sunlitThreshold = eclipse_sunlit_threshold  # [-]
+        # Unclamped separation telemetry -- see UpdateState's own comment
+        # on why these (not separationOutMsg's own, possibly-clamped
+        # storageLevel) are what engine.vizard's live-value label bridge
+        # reads. Zero here only as a before-the-first-tick default.
+        self.lastSeparationKm = 0.0  # [km]
+        self.lastTargetSeparationKm = 0.0  # [km]
 
         semi_major_axis_m = nominal_a_m  # already the chief/follower shared SMA
         self.smoothingWindowS = float(2.0 * np.pi * np.sqrt(semi_major_axis_m ** 3 / mu))  # [s] orbit period
@@ -592,14 +608,38 @@ class PhasingKeepingController(sysModel.SysModel):
         # (mB - mA), not referenceTargetRad + error -- so this reads as the
         # real current geometry, independent of which state the control law
         # itself happens to be in this tick.
-        separationMsg = messaging.DataStorageStatusMsgPayload()
+        #
         # abs(): a GenericStorage bar reads as a magnitude, and a target
         # separation is always positive by schema (PhasingKeepingConfig.
         # target_separation_km entries must all be > 0) -- the SIGNED
         # value (ahead of/behind the chief) is still available in
         # errorDegLog/this class's own telemetry for anyone who needs it.
-        separationMsg.storageLevel = abs(_wrap_pm_pi(mB - mA)) * self.aNom / 1000.0  # [km]
-        separationMsg.storageCapacity = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
+        rawSeparationKm = abs(_wrap_pm_pi(mB - mA)) * self.aNom / 1000.0  # [km]
+        targetKm = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
+        # Real bug found against a real running Vizard instance (screenshot
+        # from an actual user): a GenericStorage bar with storageLevel >
+        # storageCapacity renders broken (overflowing its own panel, full
+        # window width) rather than clamping itself -- and storageCapacity
+        # == targetKm means NORMAL, on-target operation already sits at
+        # ~100% fill (the opposite of the usual "full bar == bad" gauge
+        # convention), leaving no headroom at all before a real, ordinary
+        # correction transient (a fresh phasing error, right after a
+        # reconfiguration) pushes storageLevel past it. Fixed by giving
+        # the gauge 2x the target as headroom (on-target now reads a
+        # comfortable ~50% fill) AND clamping the value actually written
+        # to this message so the bar itself can never exceed 100% no
+        # matter how far off-target the real geometry gets. self.lastSeparationKm/
+        # self.lastTargetSeparationKm below keep the UNCLAMPED true numbers
+        # available (engine.vizard's live-value label bridge reads them
+        # directly, plain Python attributes, same cross-object access
+        # pattern this class's own thruster-arbitration check already
+        # uses) -- clamping only ever affects the bar's fill, never what
+        # the live text label next to it reports.
+        self.lastSeparationKm = rawSeparationKm
+        self.lastTargetSeparationKm = targetKm
+        separationMsg = messaging.DataStorageStatusMsgPayload()
+        separationMsg.storageCapacity = 2.0 * targetKm  # [km]
+        separationMsg.storageLevel = min(rawSeparationKm, separationMsg.storageCapacity)  # [km]
         self.separationOutMsg.write(separationMsg, CurrentSimNanos, self.moduleID)
 
         # Also written here (not only in the final block below, which the

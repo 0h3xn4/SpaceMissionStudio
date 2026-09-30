@@ -452,10 +452,18 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
     controller.extForceEffectorB = extForceTorque.ExtForceTorque()
     state_a = messaging.SCStatesMsg()
     state_b = messaging.SCStatesMsg()
-    r_a = [7000e3, 0.0, 0.0]
-    v_a = [0.0, 7500.0, 0.0]
-    r_b = [0.0, 7000e3, 0.0]
-    v_b = [-7500.0, 0.0, 0.0]
+    # Same orbit shape (a, e, i, Omega, omega), true anomaly 90 deg apart --
+    # NOT the same as a 90 deg difference in absolute inertial position for
+    # an arbitrary pair of states (_mean_anomaly only ever looks at oe.f,
+    # never oe.omega -- two states 90 deg apart in omega but equal in f, as
+    # an earlier version of this test accidentally used, have IDENTICAL
+    # mean anomaly and so report zero separation here, not a large one).
+    oe = orbitalMotion.ClassicElements()
+    oe.a, oe.e, oe.i, oe.Omega, oe.omega = nominal_a_m, 0.001, 0.0, 0.0, 0.0
+    oe.f = 0.0
+    r_a, v_a = orbitalMotion.elem2rv(controller.mu, oe)
+    oe.f = np.radians(90.0)
+    r_b, v_b = orbitalMotion.elem2rv(controller.mu, oe)
     _write_sc_state(state_a, r_a, v_a)
     _write_sc_state(state_b, r_b, v_b)
     controller.scStateInMsgA.subscribeTo(state_a)
@@ -468,9 +476,21 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
     _, m_b = controller._mean_anomaly(controller.mu, np.array(r_b), np.array(v_b))
     expected_separation_km = abs(_wrap_pm_pi(m_b - m_a)) * nominal_a_m / 1000.0
 
+    # This scenario's chief/follower are ~90 deg apart in mean anomaly --
+    # a huge raw separation, far past the target -- so this doubles as
+    # a check that a real screenshot-confirmed bug stays fixed: the
+    # message's own storageLevel must be CLAMPED to storageCapacity (2x
+    # the target -- see PhasingKeepingController's own docstring for why
+    # not just the target itself) so a Vizard bar built from it can never
+    # overflow, while the TRUE, unclamped number is still available via
+    # lastSeparationKm/lastTargetSeparationKm (what engine.vizard's live
+    # -value label bridge actually reads for its on-screen text).
+    assert expected_separation_km > 100.0  # confirms this scenario really is a large-separation case
     separation_payload = controller.separationOutMsg.read()
-    assert separation_payload.storageLevel == pytest.approx(expected_separation_km)
-    assert separation_payload.storageCapacity == pytest.approx(50.0)
+    assert separation_payload.storageCapacity == pytest.approx(100.0)  # 2x the 50 km target
+    assert separation_payload.storageLevel == pytest.approx(100.0)  # clamped, not the raw ~10000+ km
+    assert controller.lastSeparationKm == pytest.approx(expected_separation_km)
+    assert controller.lastTargetSeparationKm == pytest.approx(50.0)
 
     # The gauge's max must be correct even before any phasing burn has
     # actually accumulated delta-V (this scenario's first tick is still
@@ -478,3 +498,54 @@ def test_phasing_keeping_publishes_separation_and_delta_v_messages():
     # above, which confirms IDLE -> BURN_OUT transitions on the NEXT tick).
     delta_v_payload = controller.deltaVOutMsg.read()
     assert delta_v_payload.storageCapacity == 717.7
+
+
+def test_phasing_keeping_separation_message_is_unclamped_when_within_capacity():
+    """Companion to the clamping regression test above: when the raw
+    separation is comfortably within the 2x-target capacity (here, right
+    at the target itself), storageLevel must pass through UNCHANGED, not
+    always get pinned to the capacity -- confirms the clamp is a min(),
+    not an accidental hard-set.
+    """
+    from Basilisk.architecture import messaging
+    from Basilisk.simulation import extForceTorque
+    from Basilisk.utilities import orbitalMotion
+
+    from missionstudio.engine.orbit_maintenance import PhasingKeepingController, SeparationSchedule
+
+    nominal_a_m = 6928e3
+    target_km = 50.0
+    controller = PhasingKeepingController(
+        name="pk", mu=3.986004418e14, nominal_a_m=nominal_a_m,
+        separation_schedule=SeparationSchedule(distances_km=[target_km], interval_days=0.0,
+                                                semi_major_axis_m=nominal_a_m),
+        tolerance_fraction=0.1, restore_tolerance_fraction=0.5, correction_window_days=1.0,
+        max_drift_days=5.0, max_delta_a_m=1000.0, thrust_n=0.05, isp_s=1500.0, dry_mass_kg=400.0,
+    )
+    controller.extForceEffectorB = extForceTorque.ExtForceTorque()
+    state_a = messaging.SCStatesMsg()
+    state_b = messaging.SCStatesMsg()
+    target_rad = target_km * 1000.0 / nominal_a_m  # matches SeparationSchedule's own arc-length formula
+    oe = orbitalMotion.ClassicElements()
+    oe.a, oe.e, oe.i, oe.Omega, oe.omega = nominal_a_m, 0.001, 0.0, 0.0, 0.0
+    oe.f = 0.0
+    r_a, v_a = orbitalMotion.elem2rv(controller.mu, oe)
+    oe.f = target_rad  # follower exactly on-target, ahead of the chief
+    r_b, v_b = orbitalMotion.elem2rv(controller.mu, oe)
+    _write_sc_state(state_a, r_a, v_a)
+    _write_sc_state(state_b, r_b, v_b)
+    controller.scStateInMsgA.subscribeTo(state_a)
+    controller.scStateInMsgB.subscribeTo(state_b)
+    controller.Reset(0)
+
+    controller.UpdateState(0)
+
+    payload = controller.separationOutMsg.read()
+    assert payload.storageCapacity == pytest.approx(2.0 * target_km)
+    # abs=0.5 (1% of target): true-anomaly-vs-mean-anomaly differ slightly
+    # for a nonzero eccentricity (0.001 here) -- this is real physics, not
+    # slack for a bug, and still small enough to clearly distinguish
+    # "passed through near-unchanged" from "clamped to 100.0".
+    assert payload.storageLevel == pytest.approx(target_km, abs=0.5)  # on-target: ~50% fill, not clamped
+    assert payload.storageLevel < payload.storageCapacity
+    assert controller.lastSeparationKm == pytest.approx(payload.storageLevel, abs=1e-9)

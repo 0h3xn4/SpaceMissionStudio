@@ -261,9 +261,11 @@ delta-V used -- station-keeping and phasing-keeping reported as separate
 panels, since both draw from one shared tank -- live along-track
 separation from the chief for a phasing formation, ground-station
 access-window indicators -- all driven by real, already-simulated
-values, not static snapshots), custom 3D models per spacecraft (purely
-cosmetic), and a **Launch Vizard** action that starts the external
-application itself, not just configures what feeds it.
+values, not static snapshots, and every panel's own live current/max
+numbers rendered directly as on-screen text, not just a bar's fill
+fraction), custom 3D models per spacecraft (purely cosmetic), and a
+**Launch Vizard** action that starts the external application itself,
+not just configures what feeds it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
