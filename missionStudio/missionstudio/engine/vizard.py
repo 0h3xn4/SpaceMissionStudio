@@ -125,28 +125,35 @@ analytical estimate -- see each source module's own docstring):
   docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
   the propellant and delta-V/separation panels are never racing to
   overwrite the same message.
-* **Live numeric values, on every panel above** -- a real Vizard
-  screenshot (from an actual user, not this project's own -- no display
-  in this development sandbox) showed every ``GenericStorage`` bar's
-  ``label`` text as static (e.g. "Propellant"), never the live number
-  itself, leaving the bar's fill fraction as the only "how much"
-  indicator. :func:`enable_vizard` now attaches one small
-  ``_LiveValueLabelBridge`` ``SysModel`` per panel (same locally-defined
-  -inside-this-function, kept-alive-via-the-returned-list pattern as
-  ``_AccessIndicatorBridge`` above) that rewrites that panel's own
-  ``label`` every tick to ``"<name>: <current>/<max> <units>"``, so the
-  same screenshot's static caption becomes a live readout instead.
+* **Live numeric values are Vizard's OWN, not this module's.** A real
+  screenshot (from an actual user) showed every ``GenericStorage`` panel
+  rendering its own live ``"<currentValue> / <maxValue> <units>"``
+  readout natively, in a column separate from ``label`` -- this module
+  briefly (mis-)diagnosed that as missing and added a custom
+  ``_LiveValueLabelBridge`` that rewrote ``label`` itself to embed the
+  same numbers as text; a SECOND real screenshot showed that text
+  getting cut off (Vizard truncates a panel row's ``label`` at a fixed
+  width, independent of how wide the panel itself grows for its own
+  native readout column), which is what led to noticing the native
+  column was there all along. Reverted: panel labels are short, static
+  names again ("SK Delta-V"/"Phasing Delta-V"/"Separation", not the
+  longer names an earlier version used -- still within that same fixed
+  per-row width, confirmed against the same screenshot's truncation of
+  "Delta-V (station-keeping)"), and Vizard's own native column is what
+  shows the live numbers.
   **Also fixes a real, screenshot-confirmed bug**: the separation panel's
   ``storageCapacity`` used to equal the along-track TARGET itself, so
   normal, on-target operation already sat at ~100% fill with no headroom
   before an ordinary correction transient pushed ``storageLevel`` past
   ``storageCapacity`` -- which rendered as a bar overflowing its own
-  panel, full window width, in that same screenshot.
+  panel, full window width, in the first screenshot.
   ``PhasingKeepingController`` now gives that gauge 2x the target as
   headroom and clamps what it actually writes to ``separationOutMsg``
-  (see that class's own docstring); the live-value label above still
-  shows the TRUE, unclamped separation (``lastSeparationKm``), so nothing
-  is hidden, only the bar's own fill is kept from visually breaking.
+  (see that class's own docstring); the true, unclamped separation is
+  still available as ``lastSeparationKm``/``lastTargetSeparationKm``
+  (plain Python attributes) for anyone who needs the exact number, even
+  though nothing in this module reads them anymore now that the label
+  -bridge approach is reverted.
 * **Ground-station access windows** -- one ``GenericSensor`` marker per
   (ground station, spacecraft) pair that Phase 3's access analysis tracks,
   changing color LIVE between "no access" and "access" as
@@ -280,13 +287,38 @@ confirmed against the same manual repro to now read exactly at the
 capacity rather than 4x it) -- the true, unclamped number is kept
 separately (``lastSeparationKm``/``lastTargetSeparationKm``, plain
 Python attributes) for the live-value label below to still show.
-Same screenshot surfaced a second, unrelated gap: every panel's ``label``
-was static text (e.g. "Propellant"), never the live number itself --
-fixed by :class:`_LiveValueLabelBridge` below, which rewrites each
-panel's ``label`` every tick to embed its current/max value as visible
-text (confirmed, via the same manual repro, to read e.g.
-``"Propellant: 5.00/5.00 kg"`` after a real run, not just the static
-caption).
+Same screenshot ALSO seemed to show every panel's ``label`` as static
+text (e.g. "Propellant"), never a live number -- first "fixed" by adding
+a ``_LiveValueLabelBridge`` that rewrote ``label`` itself every tick to
+embed the current/max value as text. A SECOND real screenshot (the
+follow-up report) showed that this was solving a problem Vizard didn't
+have: it already renders a live ``"<currentValue> / <maxValue> <units>"``
+readout natively, in a column separate from ``label`` -- invisible in
+the FIRST screenshot only because the panel was narrow at the time, not
+because it doesn't exist. The label-bridge text, once long enough to
+embed real numbers, then got cut off by a fixed-width truncation on each
+row's own ``label`` area (unrelated to the native readout column, which
+doesn't share that limit) -- exactly what the second screenshot showed
+("Delta-V (station-keeping): 0" cut off mid-word). Reverted entirely:
+panel labels are short, static names again, and Vizard's own native
+column is what shows live values -- see this module's "Live-data panels"
+section above for the current, much simpler design.
+
+That same follow-up report also caught a SEPARATE, deeper bug, this
+time in ``engine.formation`` rather than here: the wizard-generated
+follower's along-track separation (what the ``phasing_keeping`` control
+law is actually supposed to hold) was reading wildly larger than
+requested. Root-caused to ``engine.formation.generate_phasing_follower``
+placing the ENTIRE requested (R, T, N) Hill-frame offset via a single
+``hill2rv`` call from the chief's state -- confirmed, independent of
+offset size, that ``orbitalMotion.rv2elem()`` decomposing a
+near-circular state built that way puts essentially the WHOLE
+along-track angle into ``omega`` (argument of periapsis), never into
+``f`` (true anomaly), so ``PhasingKeepingController``'s ``f``-only
+mean-anomaly tracking read the follower as already on target and never
+corrected anything -- see ``engine.formation``'s own module docstring
+for the fix (place T as a direct mean-anomaly shift; layer R/N on
+afterward) and the full numerical confirmation.
 """
 
 from __future__ import annotations
@@ -339,27 +371,19 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     this checkout's own examples).
 
     Returns:
-        ``(viz, access_indicator_bridges, generic_storage_list, generic_sensor_list, label_bridges)``
+        ``(viz, access_indicator_bridges, generic_storage_list, generic_sensor_list)``
         -- the ``vizInterface.VizInterface`` instance
         ``vizSupport.enableUnityVisualization()`` built; the (possibly
         empty) list of ``_AccessIndicatorBridge`` ``SysModel`` instances
-        this function registered on ``scSim``'s task; the per-spacecraft
-        ``GenericStorage``/``GenericSensor`` panel lists (each entry
-        ``None`` or a list, parallel to ``sc_objects``) this function
-        built and handed to ``enableUnityVisualization()``; and the
-        (possibly empty) list of ``_LiveValueLabelBridge`` ``SysModel``
-        instances that keep each ``GenericStorage`` panel's ``label``
-        showing its live current/max value as text (see "Live-data
-        panels" below). The caller MUST keep ALL FIVE alive (e.g. as
-        attributes on a long-lived object) for as long as the simulation
-        runs -- see ``access_indicator_bridges``' own comment below,
-        which turned out to apply to
-        ``generic_storage_list``/``generic_sensor_list`` too (see the
-        "Real bug found" note below, second occurrence), and applies to
-        ``label_bridges`` for the exact same reason
-        ``access_indicator_bridges`` needs it in the first place (a
-        custom Python ``SysModel`` with virtual methods Basilisk calls
-        back into via a SWIG director).
+        this function registered on ``scSim``'s task; and the
+        per-spacecraft ``GenericStorage``/``GenericSensor`` panel lists
+        (each entry ``None`` or a list, parallel to ``sc_objects``) this
+        function built and handed to ``enableUnityVisualization()``. The
+        caller MUST keep ALL FOUR alive (e.g. as attributes on a
+        long-lived object) for as long as the simulation runs -- see
+        ``access_indicator_bridges``' own comment below, which turned out
+        to apply to ``generic_storage_list``/``generic_sensor_list`` too
+        (see the "Real bug found" note below, second occurrence).
 
     Args:
         sc_objects: every ``spacecraft.Spacecraft`` in this run, in the
@@ -432,54 +456,6 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             payload.deviceCmd = self._ACCESS_CMD if has_access else self._NO_ACCESS_CMD
             self.cmdOutMsg.write(payload, CurrentSimNanos, self.moduleID)
 
-    class _LiveValueLabelBridge(sysModel.SysModel):
-        """Rewrites a GenericStorage panel's own ``label`` field each tick
-        to embed its live current/max value as visible on-screen text --
-        real user feedback (a screenshot from an actual running Vizard
-        instance) confirmed Vizard renders ``GenericStorage.label`` as
-        text next to/on the bar, but does not print the numeric value
-        itself anywhere on its own, leaving the bar's fill fraction as
-        the only thing communicating "how much" -- this closes that gap.
-
-        ``value_source`` is EITHER a Basilisk message reader (called each
-        tick for a fresh payload, ``is_reader=True``) or a plain Python
-        object whose attributes are read directly (``is_reader=False`` --
-        used for :attr:`PhasingKeepingController.lastSeparationKm`/
-        ``lastTargetSeparationKm``, the TRUE unclamped numbers, since that
-        controller's own ``separationOutMsg`` deliberately reports a
-        clamped ``storageLevel`` instead -- see that class's docstring).
-        Every argument is captured as an explicit constructor parameter
-        (never a closure over a ``for sc_object in sc_objects`` loop
-        variable, which would see only the LAST spacecraft's values by
-        the time Basilisk actually calls UpdateState) -- same reason
-        _AccessIndicatorBridge's own constructor takes ``access_out_msg``
-        explicitly rather than closing over it.
-        """
-
-        def __init__(self, name: str, panel, base_label: str, units: str, decimals: int,
-                     value_source, current_field: str, max_field: str, is_reader: bool):
-            super().__init__()
-            self.ModelTag = name
-            self.panel = panel
-            self.base_label = base_label
-            self.units = units
-            self.decimals = decimals
-            self.value_source = value_source
-            self.current_field = current_field
-            self.max_field = max_field
-            self.is_reader = is_reader
-
-        def Reset(self, CurrentSimNanos):
-            pass
-
-        def UpdateState(self, CurrentSimNanos):
-            source = self.value_source() if self.is_reader else self.value_source
-            current = getattr(source, self.current_field)
-            maximum = getattr(source, self.max_field)
-            self.panel.label = (
-                f"{self.base_label}: {current:.{self.decimals}f}/{maximum:.{self.decimals}f} {self.units}"
-            )
-
     generic_storage_list: List[Optional[list]] = []
     generic_sensor_list: List[Optional[list]] = []
     spacecraft_with_storage_panel: List[str] = []
@@ -495,17 +471,6 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     # where this list is attached to ``viz`` below, and
     # ``engine.service``'s own retention of the returned ``viz``.
     access_indicator_bridges: List[object] = []
-    # Same MUST-stay-alive reasoning as access_indicator_bridges above --
-    # _LiveValueLabelBridge is a custom Python SysModel too.
-    label_bridges: List[object] = []
-
-    def _add_label_bridge(sc_name: str, tag: str, panel, base_label: str, units: str, decimals: int,
-                           value_source, current_field: str, max_field: str, is_reader: bool) -> None:
-        bridge = _LiveValueLabelBridge(f"{sc_name}_{tag}_label", panel, base_label, units, decimals,
-                                        value_source, current_field, max_field, is_reader)
-        scSim.AddModelToTask(task_name, bridge)
-        label_bridges.append(bridge)
-
     for sc_object in sc_objects:
         sc_name = sc_object.ModelTag
         storages = []
@@ -523,11 +488,6 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             panel.batteryStateInMsg = battery_reader
             storages.append(panel)
 
-            label_reader = messaging.PowerStorageStatusMsgReader()
-            label_reader.subscribeTo(battery.batPowerOutMsg)
-            _add_label_bridge(sc_name, "battery", panel, "Battery", panel.units, 1,
-                               label_reader, "storageLevel", "storageCapacity", True)
-
         controller = station_keeping_by_spacecraft.get(sc_name)
         if controller is not None:
             panel = vizInterface.GenericStorage()
@@ -540,13 +500,14 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             panel.fuelTankStateInMsg = tank_reader
             storages.append(panel)
 
-            label_reader = messaging.FuelTankMsgReader()
-            label_reader.subscribeTo(controller.fuelTankOutMsg)
-            _add_label_bridge(sc_name, "propellant", panel, "Propellant", panel.units, 2,
-                               label_reader, "fuelMass", "maxFuelMass", True)
-
+            # "SK Delta-V" (not "Delta-V (station-keeping)"): Vizard
+            # truncates a GenericStorage panel's own label text at a
+            # fixed width per row (confirmed against a real running
+            # Vizard instance -- a real screenshot showed the longer name
+            # cut off mid-word) -- kept short deliberately, same reason
+            # below for "Phasing Delta-V"/"Separation".
             dv_panel = vizInterface.GenericStorage()
-            dv_panel.label = "Delta-V (station-keeping)"
+            dv_panel.label = "SK Delta-V"
             dv_panel.type = "Delta-V"
             dv_panel.units = "m/s"
             dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("yellow"))
@@ -555,15 +516,10 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             dv_panel.dataStorageStateInMsg = dv_reader
             storages.append(dv_panel)
 
-            label_reader = messaging.DataStorageStatusMsgReader()
-            label_reader.subscribeTo(controller.deltaVOutMsg)
-            _add_label_bridge(sc_name, "sk_dv", dv_panel, "Delta-V (station-keeping)", dv_panel.units, 2,
-                               label_reader, "storageLevel", "storageCapacity", True)
-
         phasing_controller = phasing_keeping_by_spacecraft.get(sc_name)
         if phasing_controller is not None:
             phasing_dv_panel = vizInterface.GenericStorage()
-            phasing_dv_panel.label = "Delta-V (phasing)"
+            phasing_dv_panel.label = "Phasing Delta-V"
             phasing_dv_panel.type = "Delta-V"
             phasing_dv_panel.units = "m/s"
             phasing_dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("orange"))
@@ -572,13 +528,8 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             phasing_dv_panel.dataStorageStateInMsg = phasing_dv_reader
             storages.append(phasing_dv_panel)
 
-            label_reader = messaging.DataStorageStatusMsgReader()
-            label_reader.subscribeTo(phasing_controller.deltaVOutMsg)
-            _add_label_bridge(sc_name, "phasing_dv", phasing_dv_panel, "Delta-V (phasing)",
-                               phasing_dv_panel.units, 2, label_reader, "storageLevel", "storageCapacity", True)
-
             separation_panel = vizInterface.GenericStorage()
-            separation_panel.label = "Separation from chief"
+            separation_panel.label = "Separation"
             separation_panel.type = "Separation"
             separation_panel.units = "km"
             separation_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
@@ -586,15 +537,6 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             separation_reader.subscribeTo(phasing_controller.separationOutMsg)
             separation_panel.dataStorageStateInMsg = separation_reader
             storages.append(separation_panel)
-
-            # is_reader=False: reads phasing_controller.lastSeparationKm/
-            # lastTargetSeparationKm directly (the TRUE, unclamped
-            # numbers), NOT separationOutMsg's own storageLevel (which is
-            # deliberately clamped so the BAR can't overflow -- see
-            # PhasingKeepingController's own docstring).
-            _add_label_bridge(sc_name, "separation", separation_panel, "Separation from chief",
-                               separation_panel.units, 2, phasing_controller,
-                               "lastSeparationKm", "lastTargetSeparationKm", False)
 
         generic_storage_list.append(storages or None)
         if storages:
@@ -695,7 +637,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     # raised exactly that "You tried to add this variable ... To this
     # class" error before initialization ever got as far as running a
     # single step) so the caller (engine.service.SimulationService.build())
-    # can retain all five for the instance's lifetime -- see this
+    # can retain all four for the instance's lifetime -- see this
     # function's docstring (both "Real bug found" notes) for why these
     # specifically need a persistent Python reference at all.
     # generic_storage_list/generic_sensor_list are the exact objects
@@ -703,7 +645,5 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     # genericSensorList=) -- VizSpacecraftData's matching fields are
     # std::vector<GenericStorage *>/std::vector<GenericSensor *> (raw
     # pointers), so those are the SAME objects VizInterface now holds
-    # dangling pointers to unless something keeps them alive. label_bridges
-    # is a custom Python SysModel list, same "must stay task-registered
-    # AND Python-alive together" reasoning as access_indicator_bridges.
-    return viz, access_indicator_bridges, generic_storage_list, generic_sensor_list, label_bridges
+    # dangling pointers to unless something keeps them alive.
+    return viz, access_indicator_bridges, generic_storage_list, generic_sensor_list

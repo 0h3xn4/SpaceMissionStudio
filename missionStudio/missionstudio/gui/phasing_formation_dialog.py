@@ -107,13 +107,17 @@ class PhasingFormationDialog(QDialog):
         self.radial_km.setToolTip(
             "Radial offset at epoch [km] -- outward along the chief's position vector. This is a STARTING "
             "geometry only: the active phasing controller does not hold radial separation, so this will "
-            "drift over the run (see the dialog's own top note)."
+            "drift over the run (see the dialog's own top note). Also makes the along-track target above "
+            "less exactly achieved at epoch, more so than the cross-track offset below does -- leave this "
+            "at 0 unless you specifically need a radial offset."
         )
         self.along_track_km = _double_spin(-100000.0, 100000.0, 3, 1.0, 50.0)
         self.along_track_km.setToolTip(
             "Along-track offset at epoch [km] -- ahead of the chief along its velocity direction. This IS "
             "actively held: it becomes phasing_keeping.target_separation_km, the one separation component "
-            "the controller maintains via along-track burns for the whole run."
+            "the controller maintains via along-track burns for the whole run. Achieved exactly at epoch "
+            "when Radial and Cross-track are both 0; a nonzero radial offset especially will make the "
+            "follower start somewhat short of this target instead (the controller will still correct it)."
         )
         self.cross_track_km = _double_spin(-10000.0, 10000.0, 3, 1.0, 0.0)
         self.cross_track_km.setToolTip(

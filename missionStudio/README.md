@@ -261,11 +261,10 @@ delta-V used -- station-keeping and phasing-keeping reported as separate
 panels, since both draw from one shared tank -- live along-track
 separation from the chief for a phasing formation, ground-station
 access-window indicators -- all driven by real, already-simulated
-values, not static snapshots, and every panel's own live current/max
-numbers rendered directly as on-screen text, not just a bar's fill
-fraction), custom 3D models per spacecraft (purely cosmetic), and a
-**Launch Vizard** action that starts the external application itself,
-not just configures what feeds it.
+values, not static snapshots, with Vizard's own native live current/max
+readout on every panel), custom 3D models per spacecraft (purely
+cosmetic), and a **Launch Vizard** action that starts the external
+application itself, not just configures what feeds it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
@@ -406,12 +405,12 @@ python3 -m pytest tests/ -v
 
 Without Basilisk on `PYTHONPATH`, this runs 614 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 96 whose premise is
+full PySide6 GUI, run headless) and skips 99 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
 With Basilisk installed (`pip install "bsk[all]"` -- see "Getting
-started" above), the 96 skips above run for real instead of skipping.
+started" above), the 99 skips above run for real instead of skipping.
 See "Verification status" above for how thoroughly that's actually been
 exercised -- short version: yes, including a real full multi-day run.
 

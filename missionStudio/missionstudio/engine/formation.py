@@ -29,11 +29,9 @@ phasing formation..." in the GUI).
 
 Unlike ``engine.constellation`` (deliberately Basilisk-free -- see that
 module's docstring: a Walker pattern is naturally expressed directly in
-classical elements, no coordinate transform needed), a genuine 3-axis
-Hill-frame offset needs a real state-vector round trip (classical
-elements -> r,v -> Hill-frame offset -> r,v -> classical elements), so
-this module uses Basilisk's own ``Basilisk.utilities.orbitalMotion``
-functions (``elem2rv``/``hill2rv``/``rv2elem``) for every step -- never a
+classical elements, no coordinate transform needed), this module uses
+Basilisk's own ``Basilisk.utilities.orbitalMotion`` functions
+(``elem2rv``/``hill2rv``/``rv2elem``/``M2E``/``E2f``) -- never a
 hand-rolled equivalent -- plus ``Basilisk.utilities.simIncludeGravBody``
 for a real ``mu``/``radEquator`` (the same body-constants source
 ``engine.service`` itself uses, rather than a second hardcoded copy like
@@ -50,22 +48,47 @@ axis directly; see that module's matching check), surfaced here as a
 :class:`~missionstudio.schema.scenario.ScenarioValidationError` up front
 rather than left to fail later inside a run.
 
+**Along-track (T) is NOT placed via a single ``hill2rv`` call from the
+chief's state, and this is deliberate, not an oversight** -- a real,
+100%-reproducible bug, found from an actual user's report (a real
+Vizard run showing a requested 500 km separation reading as ~0 km at
+generation time): ``orbitalMotion.rv2elem()`` decomposing a
+``hill2rv``-perturbed near-circular state puts essentially the ENTIRE
+along-track angle into ``omega`` (argument of periapsis), not ``f`` (true
+anomaly) -- confirmed directly, independent of offset size (1 km through
+500 km all came back with ``f`` within floating-point noise of the
+CHIEF's own ``f``). ``engine.orbit_maintenance.PhasingKeepingController``
+only ever reads ``f``/mean-anomaly (never ``omega``) to measure
+along-track separation, so a follower placed that way was invisible to
+it: the controller believed it was already on target and never fired.
+Fixed by placing T as a DIRECT mean-anomaly shift on the chief's own
+``(a, e, i, Omega, omega)`` (Kepler's equation, via ``M2E``/``E2f``,
+same arc-length convention ``engine.orbit_maintenance.SeparationSchedule``
+itself uses) -- this is exactly what a real, propagated Basilisk state
+started this way reports back through the SAME ``rv2elem`` call
+``PhasingKeepingController`` makes every tick, confirmed numerically
+(500 km requested reads back as exactly 500.000 km).
+
+R/N (radial/cross-track) are layered on AFTERWARD via ``hill2rv``, on
+top of that already-correct T placement -- see
+:func:`generate_phasing_follower`'s own docstring for why, and for how
+much each one, individually, still perturbs the along-track reading
+(R much more than N).
+
 IMPORTANT LIMITATION, stated here and surfaced in the GUI dialog itself:
 :class:`engine.orbit_maintenance.PhasingKeepingController` only closes
 the loop on the ALONG-TRACK (transverse) component of chief/follower
 separation (see that class's own docstring) -- it has no radial or
-cross-track control authority at all. This generator computes and
-applies a full 3-axis (R, T, N) offset for the follower's INITIAL state,
-but only the T component of that offset feeds
+cross-track control authority at all. Only T feeds
 ``phasing_keeping.target_separation_km`` as the actively-maintained
 target; any radial/cross-track offset requested is a STARTING geometry
 only and will drift over the run exactly as any other uncontrolled
 orbital difference would (this also means the follower's resulting
 semi-major-axis/inclination/RAAN will differ slightly from the chief's
 own whenever a nonzero radial/cross-track offset is requested -- expected
-and physically correct, not a bug: a real 3-axis offset at one instant
-implies a genuinely different, if nearby, orbital plane/altitude, exactly
-the same way ``05_formation_flying_phasing.json``'s own hand-written
+and physically correct, not a bug: a real offset in those axes implies a
+genuinely different, if nearby, orbital plane/altitude, exactly the same
+way ``05_formation_flying_phasing.json``'s own hand-written
 along-track-only offset already relies on the along-track control law
 tolerating a small, otherwise-uncontrolled orbital mismatch).
 """
@@ -100,19 +123,22 @@ class PhasingFormationRequest:
     position vector, along-track = along the chief's velocity direction,
     cross-track = along the chief's orbit-normal (angular momentum)
     direction, exactly ``Basilisk.utilities.orbitalMotion.hillFrame``'s
-    own axis convention. The follower's relative velocity in that frame
-    at epoch is taken as zero (a fixed geometric offset "dropped in
-    place", not a bounded/periodic relative orbit solved for -- see
-    module docstring: the active along-track control law is what holds
-    station over time, the same way the bundled template's own simpler
-    true-anomaly-shift offset already relies on it).
+    own axis convention -- but NOT all three are placed the same way; see
+    module docstring for why ``along_track_km`` is a direct mean-anomaly
+    shift while ``radial_km``/``cross_track_km`` are a genuine Hill-frame
+    perturbation layered on afterward. Relative velocity at epoch is
+    taken as zero for the R/N part (a fixed geometric offset "dropped in
+    place", not a bounded/periodic relative orbit solved for -- the
+    active along-track control law is what holds station over time, the
+    same way the bundled template's own simpler true-anomaly-shift offset
+    already relies on it).
     """
 
     chief_name: str
     follower_name: str
-    radial_km: float = 0.0  # [km] Hill-frame R offset at epoch
-    along_track_km: float = 50.0  # [km] Hill-frame T offset at epoch -- also phasing_keeping's target
-    cross_track_km: float = 0.0  # [km] Hill-frame N offset at epoch
+    radial_km: float = 0.0  # [km] Hill-frame R offset at epoch -- starting geometry only, see module docstring
+    along_track_km: float = 50.0  # [km] direct mean-anomaly shift at epoch -- also phasing_keeping's target
+    cross_track_km: float = 0.0  # [km] Hill-frame N offset at epoch -- starting geometry only, see module docstring
     reconfiguration_interval_days: float = 90.0  # [day]
     tolerance_fraction: float = 0.10  # [-]
     restore_tolerance_fraction: float = 0.02  # [-]
@@ -170,15 +196,23 @@ def generate_phasing_follower(request: PhasingFormationRequest, chief: Spacecraf
     "you only supply what's needed" pattern as
     ``engine.constellation.generate_walker_constellation``), with:
 
-    * ``orbit`` set from a real Hill-frame offset applied to ``chief``'s
-      current orbit at epoch (see module docstring) -- computed via
-      Basilisk's own ``orbitalMotion`` functions.
+    * ``orbit`` set from ``chief``'s current orbit at epoch, offset by
+      ``request`` (see module docstring for exactly how T vs R/N are
+      each applied, and why differently) -- computed via Basilisk's own
+      ``orbitalMotion`` functions, never a hand-rolled equivalent.
     * ``station_keeping`` set from ``request`` (required alongside
       ``phasing_keeping`` -- see ``PhasingKeepingConfig``'s docstring).
     * ``phasing_keeping`` set, targeting ``chief.name`` at
       ``abs(request.along_track_km)`` -- the only component of the
       requested offset the controller actively maintains; see module
-      docstring's limitation note.
+      docstring's limitation note. Achieved to that exact value (as
+      independently confirmed by ``PhasingKeepingController``'s own
+      mean-anomaly-difference tracking) whenever R and N are both 0;
+      progressively less exact the larger a nonzero R/N is also
+      requested (R affects it much more than N -- see module docstring),
+      in which case the difference simply becomes the follower's real
+      initial phasing error for the controller to correct with a small
+      burn once the run starts, same as any other starting mismatch.
 
     Raises :class:`~missionstudio.schema.scenario.ScenarioValidationError`
     if ``request`` is invalid or ``chief.orbit.type`` is not
@@ -213,17 +247,59 @@ def generate_phasing_follower(request: PhasingFormationRequest, chief: Spacecraf
     chief_oe.Omega = np.radians(chief.orbit.raan_deg)
     chief_oe.omega = np.radians(chief.orbit.arg_periapsis_deg)
     if chief.orbit.anomaly_type == "mean":
-        eccentric_anomaly = orbitalMotion.M2E(np.radians(chief.orbit.mean_anomaly_deg), chief.orbit.eccentricity)
+        chief_mean_anomaly = np.radians(chief.orbit.mean_anomaly_deg)
+        eccentric_anomaly = orbitalMotion.M2E(chief_mean_anomaly, chief.orbit.eccentricity)
         chief_oe.f = orbitalMotion.E2f(eccentric_anomaly, chief.orbit.eccentricity)
     else:
         chief_oe.f = np.radians(chief.orbit.true_anomaly_deg)
-    r_chief_n, v_chief_n = orbitalMotion.elem2rv(mu, chief_oe)
+        eccentric_anomaly = orbitalMotion.f2E(chief_oe.f, chief.orbit.eccentricity)
+        chief_mean_anomaly = orbitalMotion.E2M(eccentric_anomaly, chief.orbit.eccentricity)
 
-    rho_h = np.array([request.radial_km, request.along_track_km, request.cross_track_km]) * 1000.0  # [m]
-    rho_prime_h = np.zeros(3)  # [m/s] see PhasingFormationRequest's own docstring
-    r_follower_n, v_follower_n = orbitalMotion.hill2rv(r_chief_n, v_chief_n, rho_h, rho_prime_h)
+    # Along-track (T): a DIRECT mean-anomaly shift on the chief's own
+    # (a, e, i, Omega, omega) -- deliberately NOT routed through
+    # orbitalMotion.hill2rv (see below for why). Uses the exact same
+    # arc-length approximation (theta = distance / a) as
+    # engine.orbit_maintenance.SeparationSchedule itself, so this is
+    # EXACTLY the separation PhasingKeepingController's own
+    # mean-anomaly-difference tracking will read at epoch -- confirmed
+    # against a real Basilisk run (see this function's docstring for the
+    # bug this fixes).
+    along_track_rad = request.along_track_km * 1000.0 / chief_oe.a  # [rad]
+    follower_oe = orbitalMotion.ClassicElements()
+    follower_oe.a, follower_oe.e, follower_oe.i = chief_oe.a, chief_oe.e, chief_oe.i
+    follower_oe.Omega, follower_oe.omega = chief_oe.Omega, chief_oe.omega
+    follower_eccentric_anomaly = orbitalMotion.M2E(chief_mean_anomaly + along_track_rad, chief_oe.e)
+    follower_oe.f = orbitalMotion.E2f(follower_eccentric_anomaly, chief_oe.e)
+    r_follower_n, v_follower_n = orbitalMotion.elem2rv(mu, follower_oe)
 
-    follower_oe = orbitalMotion.rv2elem(mu, r_follower_n, v_follower_n)
+    # Radial/cross-track (R, N): layered on AFTERWARD as a Hill-frame
+    # perturbation of the along-track-correct state above (rather than
+    # applying the full 3-axis (R, T, N) offset to the CHIEF's state in
+    # one hill2rv call, an earlier version of this function did and a
+    # real user found broken -- see this function's own docstring).
+    # ``orbitalMotion.rv2elem`` has to re-derive (a, e, omega, f) from
+    # the perturbed state vectors, and for a near-circular orbit that
+    # decomposition is inherently ambiguous -- ANY nonzero R (much more
+    # than N; confirmed numerically: R=1 km alone already misreads a
+    # 500 km along-track target as ~350 km, R=5 km as ~155 km, while
+    # N=50 km alone only costs a few percent) shifts some of the
+    # along-track angle into ``omega``/``a``/``e`` instead of leaving it
+    # in ``f``, which is exactly what PhasingKeepingController's tracking
+    # reads. Doing R/N SECOND, on top of an already-correct T placement,
+    # keeps that leakage a small residual on top of a real target instead
+    # of swallowing the entire requested separation (what a raw T-only
+    # hill2rv call from the chief did: EVERY tested along-track offset,
+    # regardless of magnitude, came back reading ~0 km). Any resulting
+    # mismatch between the requested and actually-achieved along-track
+    # separation is not silently hidden either way: it becomes the
+    # follower's real initial phasing error, which
+    # PhasingKeepingController will simply correct with a small burn once
+    # the run starts, same as it would for any other initial mismatch.
+    if request.radial_km != 0.0 or request.cross_track_km != 0.0:
+        rho_h = np.array([request.radial_km, 0.0, request.cross_track_km]) * 1000.0  # [m]
+        rho_prime_h = np.zeros(3)  # [m/s] see PhasingFormationRequest's own docstring
+        r_follower_n, v_follower_n = orbitalMotion.hill2rv(r_follower_n, v_follower_n, rho_h, rho_prime_h)
+        follower_oe = orbitalMotion.rv2elem(mu, r_follower_n, v_follower_n)
 
     follower = copy.deepcopy(template)
     follower.name = request.follower_name

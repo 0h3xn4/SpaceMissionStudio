@@ -78,8 +78,3 @@ def test_generic_storage_and_sensor_lists_are_retained_after_build(tmp_path):
     # follower-1 has station_keeping configured -- exactly one spacecraft's
     # entry in the per-spacecraft-parallel list should carry a real panel.
     assert any(entry for entry in service._viz_generic_storage_list)
-    # One _LiveValueLabelBridge per GenericStorage panel -- see
-    # engine.vizard.enable_vizard()'s own docstring for why this needs
-    # the exact same persistent-reference treatment.
-    assert service._viz_label_bridges is not None
-    assert len(service._viz_label_bridges) > 0

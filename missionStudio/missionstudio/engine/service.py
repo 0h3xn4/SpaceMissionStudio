@@ -438,16 +438,10 @@ class SimulationService:
         # docstring, second "Real bug found" note, for why these also
         # need a persistent Python reference despite looking like
         # "plain data" structs.
-        #
-        # _viz_label_bridges: same requirement as
-        # _viz_access_indicator_bridges (another custom Python SysModel
-        # list) -- see enable_vizard()'s own docstring for what these do
-        # (keep each GenericStorage panel's label showing its live value).
         self._viz = None
         self._viz_access_indicator_bridges = None
         self._viz_generic_storage_list = None
         self._viz_generic_sensor_list = None
-        self._viz_label_bridges = None
 
     @property
     def spacecraft_handles(self) -> Dict[str, "_SpacecraftHandle"]:
@@ -983,7 +977,6 @@ class SimulationService:
                     self._viz_access_indicator_bridges,
                     self._viz_generic_storage_list,
                     self._viz_generic_sensor_list,
-                    self._viz_label_bridges,
                 ) = vizard.enable_vizard(
                     self.scSim, dyn_task_name, sc_objects_in_order, self.vizard_request,
                     rw_effectors_by_spacecraft=rw_effectors_in_order,
