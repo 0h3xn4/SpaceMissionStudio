@@ -372,3 +372,109 @@ def test_phasing_keeping_runs_normally_with_finite_state():
     # running its real logic and logging a real (non-placeholder) value.
     assert not np.isnan(controller.errorDegLog[-1])
     assert len(controller.tLog) == 1
+
+
+# -- Live delta-V-used/separation telemetry (engine.vizard's GenericStorage
+# panels) -------------------------------------------------------------------
+
+def test_station_keeping_dv_budget_is_tsiolkovsky_closed_form():
+    from missionstudio.engine.orbit_maintenance import StationKeepingController
+    from missionstudio.engine.propellant_bookkeeping import total_delta_v_budget
+
+    controller = StationKeepingController(
+        name="sk", mu=3.986004418e14, nominal_alt_m=550e3, deadband_m=2e3, r_planet_m=6378137.0,
+        thrust_n=0.05, isp_s=1500.0, dry_mass_kg=400.0, propellant_kg=5.0,
+    )
+    assert controller.dvBudgetMps == total_delta_v_budget(400.0, 5.0, 1500.0)
+    assert controller.dvBudgetMps > 0.0
+
+
+def test_station_keeping_publishes_delta_v_message_after_update():
+    from Basilisk.architecture import messaging
+    from Basilisk.simulation import extForceTorque
+
+    from missionstudio.engine.orbit_maintenance import StationKeepingController
+
+    controller = StationKeepingController(
+        name="sk", mu=3.986004418e14, nominal_alt_m=550e3, deadband_m=2e3, r_planet_m=6378137.0,
+        thrust_n=0.05, isp_s=1500.0, dry_mass_kg=400.0, propellant_kg=5.0,
+    )
+    controller.extForceEffector = extForceTorque.ExtForceTorque()
+    sc_state_msg = messaging.SCStatesMsg()
+    # Below the deadband -> burnOn immediately -> nonzero delta-V this tick.
+    _write_sc_state(sc_state_msg, [6378137.0 + 540e3, 0.0, 0.0], [0.0, 7500.0, 0.0])
+    controller.scStateInMsg.subscribeTo(sc_state_msg)
+    controller.Reset(0)
+
+    controller.UpdateState(int(1e9))  # dt = 1 s
+
+    payload = controller.deltaVOutMsg.read()
+    assert payload.storageLevel == controller._cumulativeDv
+    assert payload.storageLevel > 0.0
+    assert payload.storageCapacity == controller.dvBudgetMps
+
+
+def test_phasing_keeping_dv_budget_is_passed_through_from_constructor():
+    from missionstudio.engine.orbit_maintenance import PhasingKeepingController, SeparationSchedule
+
+    controller = PhasingKeepingController(
+        name="pk", mu=3.986004418e14, nominal_a_m=6928e3,
+        separation_schedule=SeparationSchedule(distances_km=[50.0], interval_days=0.0, semi_major_axis_m=6928e3),
+        tolerance_fraction=0.1, restore_tolerance_fraction=0.5, correction_window_days=1.0,
+        max_drift_days=5.0, max_delta_a_m=1000.0, thrust_n=0.05, isp_s=1500.0, dry_mass_kg=400.0,
+        dv_budget_mps=717.7,
+    )
+    assert controller.dvBudgetMps == 717.7
+
+
+def test_phasing_keeping_publishes_separation_and_delta_v_messages():
+    """Regression test for a real gap found while writing this feature:
+    deltaVOutMsg must report a correct storageCapacity (the shared-tank
+    budget) even on a tick where the thruster-arbitration branch returns
+    before the state machine's own final block runs -- see UpdateState's
+    two deltaVOutMsg.write() call sites and their comments for why.
+    """
+    from Basilisk.architecture import messaging
+    from Basilisk.simulation import extForceTorque
+    from Basilisk.utilities import orbitalMotion
+
+    from missionstudio.engine.orbit_maintenance import PhasingKeepingController, SeparationSchedule, _wrap_pm_pi
+
+    nominal_a_m = 6928e3
+    controller = PhasingKeepingController(
+        name="pk", mu=3.986004418e14, nominal_a_m=nominal_a_m,
+        separation_schedule=SeparationSchedule(distances_km=[50.0], interval_days=0.0,
+                                                semi_major_axis_m=nominal_a_m),
+        tolerance_fraction=0.1, restore_tolerance_fraction=0.5, correction_window_days=1.0,
+        max_drift_days=5.0, max_delta_a_m=1000.0, thrust_n=0.05, isp_s=1500.0, dry_mass_kg=400.0,
+        dv_budget_mps=717.7,
+    )
+    controller.extForceEffectorB = extForceTorque.ExtForceTorque()
+    state_a = messaging.SCStatesMsg()
+    state_b = messaging.SCStatesMsg()
+    r_a = [7000e3, 0.0, 0.0]
+    v_a = [0.0, 7500.0, 0.0]
+    r_b = [0.0, 7000e3, 0.0]
+    v_b = [-7500.0, 0.0, 0.0]
+    _write_sc_state(state_a, r_a, v_a)
+    _write_sc_state(state_b, r_b, v_b)
+    controller.scStateInMsgA.subscribeTo(state_a)
+    controller.scStateInMsgB.subscribeTo(state_b)
+    controller.Reset(0)
+
+    controller.UpdateState(0)
+
+    _, m_a = controller._mean_anomaly(controller.mu, np.array(r_a), np.array(v_a))
+    _, m_b = controller._mean_anomaly(controller.mu, np.array(r_b), np.array(v_b))
+    expected_separation_km = abs(_wrap_pm_pi(m_b - m_a)) * nominal_a_m / 1000.0
+
+    separation_payload = controller.separationOutMsg.read()
+    assert separation_payload.storageLevel == pytest.approx(expected_separation_km)
+    assert separation_payload.storageCapacity == pytest.approx(50.0)
+
+    # The gauge's max must be correct even before any phasing burn has
+    # actually accumulated delta-V (this scenario's first tick is still
+    # in IDLE -- see test_phasing_keeping_runs_normally_with_finite_state
+    # above, which confirms IDLE -> BURN_OUT transitions on the NEXT tick).
+    delta_v_payload = controller.deltaVOutMsg.read()
+    assert delta_v_payload.storageCapacity == 717.7

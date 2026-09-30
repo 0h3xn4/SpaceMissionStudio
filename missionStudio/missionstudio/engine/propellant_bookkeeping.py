@@ -47,7 +47,25 @@ also adjusting the same mass.
 
 from __future__ import annotations
 
+import math
 from typing import Tuple
+
+
+def total_delta_v_budget(dry_mass_kg: float, propellant_kg: float, isp_s: float,
+                          g0_mps2: float = 9.80665) -> float:
+    """Theoretical total delta-V [m/s] a full ``propellant_kg`` tank could
+    ever deliver, via the closed-form Tsiolkovsky rocket equation
+    (``isp * g0 * ln((dry + propellant) / dry)``) -- NOT the same
+    computation as :func:`apply_propellant_burn`'s own tick-by-tick
+    explicit-Euler mass-flow integration above (that one remains the sole
+    source of truth for what a run actually simulates); this is a single
+    closed-form reference number, used only as the "how much could this
+    tank ever deliver" scale for a live Vizard delta-V gauge
+    (``engine.vizard``) -- never fed back into simulated physics.
+    """
+    if propellant_kg <= 0.0 or dry_mass_kg <= 0.0:
+        return 0.0
+    return isp_s * g0_mps2 * math.log((dry_mass_kg + propellant_kg) / dry_mass_kg)
 
 
 def apply_propellant_burn(current_total_mass_kg: float, propellant_kg: float, thrust_n: float,
