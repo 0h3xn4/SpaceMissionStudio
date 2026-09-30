@@ -75,6 +75,33 @@ def test_dispersion_dialog_normal(qtbot):
     assert config.bounds is None
 
 
+def test_dispersion_dialog_hides_fields_not_used_by_the_selected_kind(qtbot):
+    """Regression guard for a real bug: Bounds/Mean/Std-deviation used
+    to all be visible and editable at once regardless of Kind, even
+    though to_dataclass() only ever uses the pair matching the current
+    kind -- a value typed into the "wrong" row was silently discarded
+    with no indication. Only the relevant row(s) should be visible.
+    """
+    from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
+
+    dialog = _DispersionEditorDialog(["sat-1"])
+    qtbot.addWidget(dialog)
+    dialog.show()  # isVisible() below needs the whole ancestor chain shown, not just setVisible() called
+    dialog.quantity_combo.setCurrentText("dry_mass_kg")
+
+    dialog.kind_combo.setCurrentText("uniform")
+    assert dialog.bounds_lo_spin.isVisible()
+    assert dialog.bounds_hi_spin.isVisible()
+    assert not dialog.mean_spin.isVisible()
+    assert not dialog.std_spin.isVisible()
+
+    dialog.kind_combo.setCurrentText("normal")
+    assert not dialog.bounds_lo_spin.isVisible()
+    assert not dialog.bounds_hi_spin.isVisible()
+    assert dialog.mean_spin.isVisible()
+    assert dialog.std_spin.isVisible()
+
+
 def test_dispersion_dialog_kind_choices_follow_quantity(qtbot):
     from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
 

@@ -3471,3 +3471,63 @@ and 743x531) with every label fully visible. Five new regression tests
 `sizeHint().width()` for the two dialogs most likely to regress
 visibly. Full suite: 702 passed, 101 skipped.
 
+## Two more real UX bugs, found by continuing the same check
+
+Follow-up request: "check the rest of the app for other UX issues".
+Two genuine bugs found, neither a guess:
+
+**Monte Carlo dispersion dialog showed all three value fields at
+once, regardless of Kind.** `_DispersionEditorDialog` always displayed
+Bounds AND Mean AND Std-deviation, editable, no matter which "Kind"
+(uniform/normal/uniform_euler_mrp) was selected -- but
+`to_dataclass()` only ever uses the pair matching the current kind,
+silently discarding the rest. A user could type a Mean/Std-deviation
+value while Kind="uniform" and have it vanish with zero indication
+anything was ignored. Fixed by hiding whichever row(s) don't apply to
+the selected kind (`_on_kind_changed`, wired to `kind_combo`'s own
+signal), so the dialog only shows what will actually be used.
+
+**`PropagationSetupDialog`'s "Atmosphere & drag" description text was
+silently cut off mid-sentence**, ending at "...open a" with the rest
+of the paragraph missing -- found by rendering the dialog and looking
+at the PNG (again), not by reading the source, where the text is
+complete. Root-caused precisely by comparing the label's actual
+`geometry().height()` (27px) against its own `heightForWidth(520)`
+(68px): `QFormLayout.addRow(single_spanning_widget)` did not reserve
+this label its full wrapped height, unlike this dialog's OWN top-level
+`intro_label` (added via plain `QVBoxLayout.addWidget()`, which has
+never had this problem). Fixed by restructuring the group to use a
+`QVBoxLayout` for the description label plus a nested `QFormLayout`
+for the actual fields, mirroring the already-proven-correct pattern.
+Fixing that alone uncovered a SECOND, related bug: the dialog's window
+never grew to match its new (taller) `sizeHint()` on first `show()`
+(measured directly: window stayed 871x734 while `sizeHint()` said
+871x768), clipping the group's own last two rows against its border.
+Fixed with an explicit `self.resize(self.sizeHint())` at the end of
+`__init__`, after every group is built.
+
+Searched for the same `form.addRow(wrapped_label)` shape (the root
+cause of the second bug) everywhere else in `gui/`; one more instance
+turned up (`mission_sequence_editor.py`'s "assignment" command page),
+but direct measurement showed it was NOT actually clipped (no
+`setMaximumWidth` cap and no extra `QGroupBox` nesting meant it
+happened to converge correctly on the first layout pass) -- left alone
+rather than "fixed" on spec, since it isn't broken.
+
+**Verification, more rigorous than the pattern-matching used to find
+the bugs**: wrote a script that renders every dialog in the app (every
+`_CommandEditorDialog`/`_ItemEditorDialog`/`_DispersionEditorDialog`
+"kind" selection included -- 25 total dialog/state combinations) and
+directly compares every word-wrapped `QLabel`'s allocated
+`geometry().height()` against its own `heightForWidth()`, rather than
+trusting that fixing the two found instances covered everything.
+Confirmed clean everywhere, including cycling through every tab of
+`SpacecraftEditorDialog` (`QTabWidget` defers layout for hidden tabs,
+so checking only the initially-visible one could have missed a real
+bug on another tab). Two new regression tests
+(`test_dispersion_dialog_hides_fields_not_used_by_the_selected_kind`,
+`test_srp_pointer_label_gets_its_full_wrapped_height_not_clipped`)
+plus one for the resize fix
+(`test_dialog_resizes_to_its_own_sizehint_on_construction`). Full
+suite: 705 passed, 101 skipped.
+

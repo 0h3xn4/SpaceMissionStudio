@@ -137,6 +137,20 @@ class PropagationSetupDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # Real bug, found by actually rendering this dialog: on first
+        # show(), Qt sized this window smaller than its OWN sizeHint()
+        # (871x734 vs 871x768 -- measured directly) -- a nested
+        # QGroupBox/QVBoxLayout/QFormLayout structure containing a
+        # heightForWidth-dependent QLabel (srp_pointer above) doesn't
+        # always converge to its final preferred size within Qt's
+        # initial layout pass. Left alone, that shortfall clipped the
+        # bottom two rows of the "Atmosphere & drag" group against the
+        # group box's own border. Explicitly resizing to sizeHint() here
+        # (computed AFTER every group is built, so it reflects the real,
+        # final content) forces the window to actually match what its
+        # own layout says it needs.
+        self.resize(self.sizeHint())
+
     # -- construction ---------------------------------------------------------
     def _build_gravity_group(self, gravity: GravityConfig) -> QGroupBox:
         group = QGroupBox("Gravity")
@@ -249,7 +263,7 @@ class PropagationSetupDialog(QDialog):
         # "&" version rendered as a visibly broken "Atmosphere _drag".
         # "&&" is Qt's own documented escape for a literal "&" character.
         group = QGroupBox("Atmosphere && drag")
-        form = QFormLayout(group)
+        group_layout = QVBoxLayout(group)
 
         # Real user report: looked for solar radiation pressure in THIS
         # dialog, didn't find it, read that as "not supported" -- it's a
@@ -257,6 +271,17 @@ class PropagationSetupDialog(QDialog):
         # coefficient either way), on SpacecraftEditorDialog's "Orbit /
         # mass" tab instead. See this module's own docstring for the full
         # reasoning on why it stays there rather than moving here.
+        #
+        # Added via group_layout.addWidget(), NOT form.addRow(): a real
+        # rendering bug, found by actually looking at this dialog (not
+        # just reading the code) -- QFormLayout.addRow() given a single
+        # spanning widget did not reserve this label its full wrapped
+        # height (confirmed directly: geometry().height() was 27px while
+        # the label's own heightForWidth(520) said it needed 68px), so
+        # two of its three lines were silently clipped off. A plain
+        # QVBoxLayout.addWidget(), the same mechanism this dialog's own
+        # top-level intro_label already uses successfully, doesn't have
+        # that negotiation problem.
         srp_pointer = QLabel(
             "Atmospheric drag and solar radiation pressure are set PER SPACECRAFT (each needs that "
             "spacecraft's own cross-section/coefficient) -- open a spacecraft in the scenario's "
@@ -264,7 +289,10 @@ class PropagationSetupDialog(QDialog):
         )
         srp_pointer.setWordWrap(True)
         srp_pointer.setMaximumWidth(520)
-        form.addRow(srp_pointer)
+        group_layout.addWidget(srp_pointer)
+
+        form = QFormLayout()
+        group_layout.addLayout(form)
 
         self.atmosphere_model_combo = QComboBox()
         # (display text, schema value) -- SpaceWeatherConfig.atmosphere_model's

@@ -40,6 +40,43 @@ def test_atmosphere_drag_group_title_escapes_its_ampersand(dialog):
     assert "Atmosphere & drag" not in titles
 
 
+def test_srp_pointer_label_gets_its_full_wrapped_height_not_clipped(dialog):
+    """Regression guard for a real rendering bug, found by actually
+    looking at this dialog (not just reading the code): the SRP-pointer
+    QLabel inside the "Atmosphere & drag" group used to be added via
+    QFormLayout.addRow(single_widget), which did not reserve it its full
+    wrapped height -- its geometry() was 27px tall while its own
+    heightForWidth() said it needed 68px, silently clipping 2 of its 3
+    lines. Moved to a plain QVBoxLayout.addWidget() (the same mechanism
+    this dialog's own top-level intro_label already used successfully),
+    which doesn't have that negotiation problem.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    dialog.show()
+    for _ in range(3):
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
+
+    srp_labels = [w for w in dialog.findChildren(QLabel) if "PER SPACECRAFT" in w.text()]
+    assert srp_labels, "expected to find the SRP-pointer QLabel"
+    label = srp_labels[0]
+    needed_height = label.heightForWidth(label.geometry().width())
+    assert label.geometry().height() >= needed_height
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(dialog):
+    """Regression guard: this dialog's window used to stay at whatever
+    size Qt's FIRST layout pass guessed (871x734, measured directly),
+    smaller than its own later-computed sizeHint() (871x768) once every
+    group was actually built -- clipping the bottom rows of the last
+    group against its own border. Explicitly resizing to sizeHint() at
+    the end of __init__ (after every group exists) fixes it.
+    """
+    assert dialog.size() == dialog.sizeHint()
+
+
 def test_defaults_round_trip(dialog):
     got_gravity = dialog.to_gravity()
     got_sim = dialog.to_sim_settings()

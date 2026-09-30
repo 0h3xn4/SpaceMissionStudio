@@ -102,19 +102,21 @@ class _DispersionEditorDialog(QDialog):
         form.addRow("Quantity", self.quantity_combo)
 
         self.kind_combo = QComboBox()
+        self.kind_combo.currentTextChanged.connect(self._on_kind_changed)
         form.addRow("Kind", self.kind_combo)
 
         self.bounds_lo_spin = _spin(-1.0e9, 1.0e9, decimals=6, value=0.0)
         self.bounds_hi_spin = _spin(-1.0e9, 1.0e9, decimals=6, value=1.0)
-        bounds_row = QHBoxLayout()
-        bounds_row.addWidget(self.bounds_lo_spin)
-        bounds_row.addWidget(self.bounds_hi_spin)
-        form.addRow("Bounds [lo, hi]", bounds_row)
+        self._bounds_row = QHBoxLayout()
+        self._bounds_row.addWidget(self.bounds_lo_spin)
+        self._bounds_row.addWidget(self.bounds_hi_spin)
+        form.addRow("Bounds [lo, hi]", self._bounds_row)
 
         self.mean_spin = _spin(-1.0e9, 1.0e9, decimals=6, value=0.0)
         form.addRow("Mean", self.mean_spin)
         self.std_spin = _spin(0.0, 1.0e9, decimals=6, value=1.0)
         form.addRow("Std deviation", self.std_spin)
+        self._form = form
 
         layout.addLayout(form)
 
@@ -134,6 +136,14 @@ class _DispersionEditorDialog(QDialog):
                 self.mean_spin.setValue(item.mean)
             if item.std_deviation is not None:
                 self.std_spin.setValue(item.std_deviation)
+        # _on_kind_changed already ran (connected above, and both
+        # _refresh_kind_choices()/setCurrentIndex() fire
+        # currentTextChanged as they go) -- one more explicit call in
+        # case the final kind ended up the SAME as whatever the combo
+        # happened to default to, which fires no signal at all, and
+        # would otherwise leave the row visibility out of sync with the
+        # real selection.
+        self._on_kind_changed(self.kind_combo.currentText())
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)
@@ -148,6 +158,34 @@ class _DispersionEditorDialog(QDialog):
         index = self.kind_combo.findText(current)
         if index >= 0:
             self.kind_combo.setCurrentIndex(index)
+
+    def _on_kind_changed(self, kind: str) -> None:
+        """Real user-facing bug this fixes: Bounds/Mean/Std-deviation
+        were ALL shown and editable at once regardless of Kind, but
+        to_dataclass() only ever uses the pair that matches the
+        currently-selected kind (see its own field-by-field ``if kind
+        == ...`` logic) -- a value typed into whichever row doesn't
+        match was silently discarded with no indication anything was
+        ignored. Hiding the irrelevant row(s) makes the dialog show
+        only what will actually be used.
+        """
+        needs_bounds = kind in ("uniform", "uniform_euler_mrp")
+        needs_normal = kind == "normal"
+        self._set_row_visible(self._bounds_row, needs_bounds)
+        self._set_row_visible(self.mean_spin, needs_normal)
+        self._set_row_visible(self.std_spin, needs_normal)
+
+    def _set_row_visible(self, field, visible: bool) -> None:
+        label = self._form.labelForField(field)
+        if label is not None:
+            label.setVisible(visible)
+        if isinstance(field, QHBoxLayout):
+            for i in range(field.count()):
+                widget = field.itemAt(i).widget()
+                if widget is not None:
+                    widget.setVisible(visible)
+        else:
+            field.setVisible(visible)
 
     def _on_accept(self) -> None:
         try:
