@@ -156,12 +156,18 @@ def _clamp_magnitude(value: float, limit: float) -> float:
     chief" sign -- a real user screenshot then showed exactly the panels
     that were negative at that moment (Radial, Normal) rendering
     "Unavailable" in Vizard, while the one that happened to be positive
-    (Transverse) rendered normally; see this class's own docstring for
-    the full reasoning and its one open caveat (no live Vizard GUI in
-    this development sandbox to visually re-confirm the client-side
-    rendering behavior directly -- the field-comment wording plus that
-    exact positive/negative split in the screenshot is what this
-    conclusion rests on).
+    (Transverse) rendered normally.
+
+    CONFIRMED, not just inferred from the field comments: the ``0h3xn4/
+    vizard`` Unity project's own source --
+    ``VizardUnityProject/Assets/Scripts/MainScene/MainSceneGUI/
+    GenericStoragePanel/GenericStorageUnitMethods.cs``,
+    ``UpdateCurrentValue()`` -- branches on ``value >= 0`` with no
+    tolerance whatsoever: ``value < 0`` unconditionally sets
+    ``hoverText``/``verboseText`` to ``"Unavailable"`` (``"Stale"`` in
+    VR), grays the bar, and zeroes its width, regardless of
+    ``maxValue``/color thresholds/anything else. See this class's own
+    docstring for the full reasoning.
     """
     return min(abs(value), limit)
 

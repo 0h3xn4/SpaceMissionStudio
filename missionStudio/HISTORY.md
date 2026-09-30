@@ -2657,13 +2657,37 @@ value of the storage device"`) and the wire-format
 `vizMessage.proto`'s (identical wording) -- `GenericStorage` is
 documented as a non-negative gauge, the same kind of quantity as the
 battery/propellant/delta-V panels right next to it. A negative
-`storageLevel` is out of that contract; Vizard's own (closed-source)
-client evidently rejects it outright rather than rendering a broken
-bar the way an OVER-capacity value did in an earlier round. No live
-Vizard GUI is available in this development sandbox to visually
-re-confirm the client's rendering behavior directly -- this conclusion
-rests on the field-comment wording plus the exact positive/negative
-split matching the screenshot, not a repro.
+`storageLevel` is out of that contract; Vizard's own client evidently
+rejects it outright rather than rendering a broken bar the way an
+OVER-capacity value did in an earlier round.
+
+**Later CONFIRMED directly, not just inferred from field comments:**
+the `0h3xn4/vizard` Unity project (cloned into this session separately
+-- Vizard's client had been assumed closed-source/unavailable to this
+project up to that point, which turned out not to be the case) was
+checked against this exact question.
+`GenericStorageUnitMethods.cs`'s `UpdateCurrentValue()` reads:
+
+```csharp
+float value = (float) myMsg.CurrentValue;
+...
+if (value >= 0) { /* normal bar + "<value> / <maxValue> <units>" */ }
+else
+{
+    hoverText.text = "Unavailable";
+    verboseText.text = "Unavailable";   // "Stale" in VR
+    verboseText.color = Color.gray;
+    measurementRect.GetComponent<Image>().color = Color.gray;
+    measurementRect.sizeDelta = new Vector2(0, barHeight);
+}
+```
+
+A hard `value >= 0` branch, unconditional -- no tolerance for a small
+negative number, nothing to do with `maxValue` or color thresholds.
+Exactly the mechanism this section's own reasoning (field-comment
+wording plus the screenshot's positive/negative split) had inferred,
+now confirmed from the actual rendering code rather than circumstantial
+evidence.
 
 Fixed in `orbit_maintenance.py`: `_clamp_symmetric` replaced with
 `_clamp_magnitude` (`min(abs(value), limit)`) -- `storageLevel` now
@@ -2694,10 +2718,12 @@ separately, not added as a permanent test); `tests/test_vizard_labels.py`
 unlike the rest of `engine.vizard`) covers the truncation-budget
 fallback directly. `chiefName` wiring confirmed end-to-end against real
 Basilisk with a standalone script (`build_phasing_keeping()` called
-directly, `controller.chiefName == "chief-1"` after). Not yet
-re-confirmed against a live running Vizard instance (same sandbox
-limitation as bug 1) -- please report back if "Unavailable" still
-appears or a label still doesn't fit.
+directly, `controller.chiefName == "chief-1"` after). The magnitude fix
+itself is now confirmed against Vizard's own Unity source (see bug 1
+above); the label-truncation width (14 characters) is still only
+confirmed against a real screenshot, not re-derived from the Unity
+source's own label-sizing code -- please report back if a label still
+doesn't fit.
 
 ## Perturbation-model audit: gravity/third-body on every template, atmosphere-model choice, a historical-percentile drag margin
 

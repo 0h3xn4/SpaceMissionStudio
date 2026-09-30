@@ -187,14 +187,18 @@ matches a real, shipped multi-satellite Basilisk example line-for-line
 (cited above), AND has since been confirmed rendering correctly against
 a real running Vizard instance (the same screenshot cited above --
 "Propellant"/"Delta-V"/"Separation" panels all visible and updating).
-The R/T/N panels' MAGNITUDE fix and :func:`_rtn_panel_label` (see
-"Real bug found from a real running Vizard screenshot, FOURTH round"
-below) are confirmed only up to ``PhasingKeepingController``'s own real
--Basilisk unit tests (``storageLevel`` is genuinely non-negative and
-correctly clamped) -- NOT yet against a real running Vizard instance
-rendering the fixed panels, since no live Vizard GUI is available in
-this development sandbox; please report back if "Unavailable" still
-appears or a label still doesn't fit.
+The R/T/N panels' MAGNITUDE fix (see "Real bug found from a real
+running Vizard screenshot, FOURTH round" below) is confirmed TWO ways
+now: against ``PhasingKeepingController``'s own real-Basilisk unit
+tests (``storageLevel`` is genuinely non-negative and correctly
+clamped), AND directly against Vizard's own Unity source
+(``0h3xn4/vizard``,
+``GenericStorageUnitMethods.cs``'s ``UpdateCurrentValue()``) -- a hard
+``value >= 0`` branch with no tolerance, confirming a negative
+``storageLevel`` really does render "Unavailable" unconditionally, not
+inferred from field-comment wording. :func:`_rtn_panel_label`'s
+truncation-width budget is still only confirmed against a real
+screenshot (see that function's own docstring), not the Unity source.
 The ``GenericSensor``/``DeviceCmdMsgPayload``/bridge-module wiring
 matches the field-level pattern in a second real shipped example
 (``examples/scenarioGroundLocationImaging.py``), but the specific
@@ -356,11 +360,32 @@ gauge, the same kind of quantity as the battery/propellant/delta-V
 panels right next to it. At the screenshot's moment Radial and Normal
 happened to be negative and Transverse happened to be positive -- which
 lines up with a non-negative-only widget rejecting a negative value it
-was never designed to receive. No live Vizard GUI was available in this
-development sandbox to visually re-confirm that rendering behavior
-directly (no display, and Vizard's own client is closed-source); this
-conclusion rests on the field-comment wording plus that exact
-positive/negative split matching the screenshot, not a repro. Fixed in
+was never designed to receive.
+
+CONFIRMED directly, not just inferred from field-comment wording: the
+Vizard Unity source (``0h3xn4/vizard``, cloned separately -- Vizard's
+own client was previously assumed closed-source/unavailable to this
+project, which turned out not to be the case) shows exactly this.
+``GenericStorageUnitMethods.cs``'s ``UpdateCurrentValue()`` reads:
+
+.. code-block:: csharp
+
+    float value = (float) myMsg.CurrentValue;
+    ...
+    if (value >= 0) { /* normal bar + "<value> / <maxValue> <units>" */ }
+    else
+    {
+        hoverText.text = "Unavailable";
+        verboseText.text = "Unavailable";   // "Stale" in VR
+        verboseText.color = Color.gray;
+        measurementRect.GetComponent<Image>().color = Color.gray;
+        measurementRect.sizeDelta = new Vector2(0, barHeight);
+    }
+
+A hard ``value >= 0`` branch, unconditional, with no tolerance for a
+small negative number and nothing to do with ``maxValue`` or color
+thresholds -- exactly what the screenshot's positive/negative split
+showed. Fixed in
 ``PhasingKeepingController.UpdateState``/``_clamp_magnitude`` (see that
 function's own docstring): ``storageLevel`` now publishes ``abs()``,
 clamped to ``[0, storageCapacity]`` -- MAGNITUDE, not signed direction.
