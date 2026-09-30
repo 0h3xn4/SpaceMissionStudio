@@ -85,11 +85,16 @@ class WalkerConstellationDialog(QDialog):
         self._central_body = central_body
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Generates a full Walker-pattern constellation from a few high-level requirements -- "
             "every satellite's mass/sensors/actuators/power/etc. are cloned from the template you pick below; "
             "only orbit and name differ. Added to (not replacing) this scenario's spacecraft list."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         form = QFormLayout()
         form.addRow("Central body (from this scenario)", QLabel(central_body))

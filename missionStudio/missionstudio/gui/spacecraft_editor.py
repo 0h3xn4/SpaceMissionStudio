@@ -551,11 +551,16 @@ class SpacecraftEditorDialog(QDialog):
         # simulated physics.
         viz_model_tab = QWidget()
         viz_model_layout = QVBoxLayout(viz_model_tab)
-        viz_model_layout.addWidget(QLabel(
+        viz_model_description_label = QLabel(
             "Replaces this spacecraft's default cube icon in Vizard with a custom 3D model. "
             "PURELY COSMETIC -- never affects simulated physics (mass, drag/SRP area, etc. are set "
             "on the Orbit/mass and Power tabs and are unchanged by anything here)."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        viz_model_description_label.setWordWrap(True)
+        viz_model_layout.addWidget(viz_model_description_label)
 
         model0 = config if config else None
         self.viz_model_group = QGroupBox("Custom 3D model")

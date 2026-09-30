@@ -76,12 +76,21 @@ class PhasingFormationDialog(QDialog):
         self._central_body = central_body
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Generates a new follower spacecraft that holds a target along-track separation from an "
             "existing chief spacecraft (schema.scenario.PhasingKeepingConfig), from a Radial/Transverse/"
             "Normal (Hill-frame) offset at epoch -- see the Radial/Cross-track fields' own tooltips for an "
             "important limitation. Added to (not replacing) this scenario's spacecraft list."
-        ))
+        )
+        # Real bug, from a real user screenshot: without word-wrap, Qt
+        # sizes this QLabel (and so the whole dialog) to fit this entire
+        # paragraph on ONE line -- thousands of pixels wide. The window
+        # manager then centers that oversized dialog, pushing most of it
+        # (including every row's own label) off the left edge of the
+        # screen, leaving only a thin right-hand sliver visible -- exactly
+        # what the screenshot showed.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         form = QFormLayout()
         form.addRow("Central body (from this scenario)", QLabel(central_body))

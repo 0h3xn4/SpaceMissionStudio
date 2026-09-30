@@ -54,10 +54,15 @@ class SpacecraftTemplateDialog(QDialog):
         self.resize(520, 320)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Start a new spacecraft from a physically-reasonable preset instead of a blank default -- "
             "you can adjust everything (including the orbit) in the editor that opens next."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         body = QHBoxLayout()
         self.list_widget = QListWidget()

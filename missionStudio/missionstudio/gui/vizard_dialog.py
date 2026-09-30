@@ -55,10 +55,15 @@ class VizardDialog(QDialog):
         self.setWindowTitle("Vizard visualization")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Vizard is a separate application and cannot be embedded here -- pick how this run "
             "feeds it. See missionStudio/README.md for how to open Vizard itself."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         self.disabled_radio = QRadioButton("Disabled (no Vizard output this run)")
         self.save_file_radio = QRadioButton("Write a .bin playback file to open in Vizard afterward")

@@ -3418,3 +3418,56 @@ test asserted the wrong thing and failed against the real widget,
 caught before it was ever committed). Full suite: 697 passed, 101
 skipped.
 
+## A real user screenshot: "Generate phasing formation" rendered almost entirely off-screen
+
+A real user sent a screenshot of the "Generate phasing formation"
+dialog that looked badly broken: every row's own label was missing --
+only thin fragments of text were visible hugging the LEFT edge of the
+screen ("t holds a target along-track separation from an existing
+chief spacecraft...", "pied from here)"), with each input field
+stretched to fill the entire visible width.
+
+**Root-caused directly from the fragments themselves**, not guessed:
+those fragments are the TAIL ENDS of longer strings -- the visible
+"...pied from here)" is the end of the row label "Template spacecraft
+(everything else copied from here)", and the long visible sentence
+fragment is the middle of this dialog's own top description paragraph.
+That only makes sense if the dialog's true left edge sits far off the
+left of the screen (a large NEGATIVE x position) -- which happens when
+a window manager centers a dialog that's far wider than the screen
+(`center_x = (screen_width - dialog_width) / 2`, strongly negative once
+`dialog_width` is in the thousands of pixels). Checked
+`phasing_formation_dialog.py` directly: its top description `QLabel`
+(a full paragraph, matching the visible fragment exactly) had no
+`setWordWrap(True)` call -- without it, Qt sizes a `QLabel` to fit its
+ENTIRE text on one line, and everything else in the dialog's
+`QVBoxLayout` is forced just as wide. Confirmed the mechanism by
+actually reproducing it: rendering the dialog at its natural size
+(`.show()`, no forced resize -- the earlier "raw panels" sweep's own
+blind spot, since every dialog checked there WAS explicitly resized in
+the test script, accidentally masking exactly this bug) showed the
+same oversized layout.
+
+**The same copy-pasted shape (a `QVBoxLayout` starting with an
+unwrapped top description `QLabel`) turned up, with the identical bug,
+in four more places** once checked systematically:
+`constellation_dialog.py` (`WalkerConstellationDialog`, the sibling
+dialog `phasing_formation_dialog.py`'s own docstring says it mirrors),
+`vizard_dialog.py`, `spacecraft_template_dialog.py`'s static banner
+label, and `spacecraft_editor.py`'s Vizard-model tab description. Fixed
+identically in all five: assign the `QLabel` to a variable,
+`.setWordWrap(True)`, then add it to the layout -- matching the
+word-wrap pattern this codebase already uses correctly elsewhere (e.g.
+`sensor_actuator_editor.py`'s hint label,
+`propagation_setup_dialog.py`'s own top label, which rendered correctly
+in the earlier sweep specifically BECAUSE it already had this call).
+
+**Verification:** re-rendered both `PhasingFormationDialog` and
+`WalkerConstellationDialog` at natural size (no forced resize) and
+looked at the resulting PNGs -- both now render at a sane size (569x682
+and 743x531) with every label fully visible. Five new regression tests
+(one per fixed dialog) assert the long description label's
+`wordWrap()` is `True`, plus a loose upper bound on the dialog's
+`sizeHint().width()` for the two dialogs most likely to regress
+visibly. Full suite: 702 passed, 101 skipped.
+

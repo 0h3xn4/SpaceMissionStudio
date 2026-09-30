@@ -37,6 +37,28 @@ def test_dialog_every_tab_is_independently_scrollable(qtbot):
         assert isinstance(dialog.tabs.widget(i), QScrollArea), f"tab {i} ({dialog.tabs.tabText(i)!r}) isn't scrollable"
 
 
+def test_long_description_labels_wrap_instead_of_blowing_up_dialog_width(qtbot):
+    """Regression guard for a real bug, found via an actual user
+    screenshot of gui.phasing_formation_dialog.PhasingFormationDialog
+    (same copy-pasted top-description-QLabel shape, same missing
+    word-wrap): the Vizard-model tab's own description QLabel had the
+    identical problem. See that dialog's own test docstring for the
+    full explanation of what goes wrong without setWordWrap(True).
+    """
+    from PySide6.QtWidgets import QLabel
+
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+
+    description_labels = [w for w in dialog.findChildren(QLabel) if len(w.text()) > 100]
+    assert description_labels, "expected to find at least one long description QLabel"
+    assert all(w.wordWrap() for w in description_labels)
+
+
 def test_dialog_natural_size_stays_reasonable(qtbot):
     """A loose upper bound, not a pixel-exact check: guards against the
     whole-dialog-height blowing up again (it briefly reached ~1450px
