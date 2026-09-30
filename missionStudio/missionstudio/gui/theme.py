@@ -67,7 +67,15 @@ _C = {
     "accent_soft": "#E8ECFC",   # accent tint for subtle highlights (selected tab, etc.)
     "on_accent": "#FFFFFF",     # text/icon color drawn ON the accent color
     "danger": "#C0392B",
+    "success": "#1F8A4C",
 }
+
+# Public alias -- other gui/ modules (e.g. feedback.py's toast/inline
+# -validation helpers) reuse these exact colors rather than re-picking
+# their own, so a toast/error-highlight reads as part of the same
+# themed system instead of a visually foreign addition. `_C` itself
+# stays the name used throughout this file's own `_qss()` for brevity.
+PALETTE = _C
 
 
 def _qss() -> str:
@@ -165,6 +173,20 @@ def _qss() -> str:
     QLineEdit:disabled, QPlainTextEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
         color: {c['text_disabled']};
         background-color: {c['surface_alt']};
+    }}
+    /* Inline field-validation state -- see gui/feedback.py's
+       mark_invalid()/clear_invalid(). A dynamic Qt property, not a
+       pseudo-state, because Qt only offers a fixed built-in set of
+       pseudo-states (:hover/:focus/:disabled/...) and this is an
+       application-defined one -- the officially documented way to add
+       a custom QSS selector (Qt docs: "Qt Style Sheets Reference" ->
+       "Qt Style Sheets and Widget Style"). */
+    QLineEdit[state="error"], QDoubleSpinBox[state="error"], QSpinBox[state="error"], QComboBox[state="error"] {{
+        border: 1px solid {c['danger']};
+    }}
+    QLineEdit[state="error"]:focus, QDoubleSpinBox[state="error"]:focus,
+    QSpinBox[state="error"]:focus, QComboBox[state="error"]:focus {{
+        border: 1px solid {c['danger']};
     }}
     QLineEdit::placeholder {{
         color: {c['text_muted']};

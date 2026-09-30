@@ -3201,3 +3201,98 @@ limitation noted throughout this project's history) -- the isolated
 Basilisk-API-level verification above is real, but the full wiring
 through an actual multi-sample run hasn't been watched end-to-end here.
 
+## GUI "reactiveness": toasts, inline validation, and a real data-loss bug found along the way
+
+Real user feedback: "make the GUI more 'reactive'... the user always
+knows and understands what they did. visual cues would help... a better
+display of settings, setups, parameters and values would help.
+currently, everything looks very raw and unfinished." theme.py already
+covers the app's visual CHROME (colors/borders/spacing -- an earlier
+session's response to similar "looks unfinished" feedback), so this
+request was really about something one level down: does the app
+visibly react when you DO something?
+
+A survey of the widget layer (spawned as a subagent to keep this out of
+the main context, since it only needed to report back concrete
+file:line findings, not make any changes) found the app already does
+several of these right -- a window-title asterisk for unsaved changes,
+a busy progress bar + disabled Run action + working Abort during a run,
+QMessageBox.critical for every real error path -- but two patterns
+repeated across most of the individual editor dialogs:
+
+1. **No feedback on success**, only on failure. Add/remove/save a
+   spacecraft (or sensor, or mission-sequence step) and the only signal
+   anything happened is a list silently changing length -- no
+   confirmation, no indication of WHICH item just changed.
+2. **No live validation**, only a blocking dialog at Save/Run time that
+   names the problem but not which of a dialog's many fields caused it.
+
+Built two small, reusable primitives in a new `gui/feedback.py` (no new
+dependency -- plain `QLabel`/Qt's own documented dynamic-property QSS
+mechanism) rather than a one-off fix per dialog:
+
+* `show_toast(window, message, kind=...)` -- a small, non-blocking,
+  auto-dismissing notification anchored to a window's bottom-right
+  corner, multiple stacking without overlapping. Not a guess at what
+  "better feedback" should look like -- this exact gap was ALREADY
+  documented in this app's own code: `MainWindow.on_launch_vizard`'s
+  docstring admits a status-bar message is "easy to miss/get
+  overwritten by the 'Running...' message that follows moments later"
+  and had to be promoted to a one-time blocking dialog just to be
+  noticed. A toast is the general-purpose version of that fix.
+* `mark_invalid(widget, message)`/`clear_invalid(widget)` -- a red
+  border (a new `[state="error"]` QSS rule in theme.py, using Qt's
+  documented dynamic-property selector mechanism -- Qt only ships a
+  fixed set of built-in pseudo-states like `:hover`/`:focus`, so a
+  custom one like this is the officially sanctioned way to add another)
+  plus the reason as a tooltip, live as the user types.
+
+Wired into `main_window.py` (a toast on New/Open/Save/Run
+complete/Run cancelled) and, as a complete worked example for the
+inline-validation half, `spacecraft_editor.py`'s Name field (live,
+per-keystroke empty/duplicate-name checking -- the dialog already knows
+the other spacecraft names at construction time, no extra plumbing
+needed) plus a toast on every Add/Edit/Remove, with the newly added/
+edited row auto-selected in the list so it's obvious at a glance which
+one just changed.
+
+**A real bug found while wiring this in, not a hypothetical**:
+`SpacecraftEditorDialog._on_accept()` called `self.accept()`
+unconditionally -- an empty/duplicate name wasn't checked until AFTER
+the dialog had already closed, in the caller
+(`_on_add`/`_on_edit`/`_on_new_from_template`), which then showed a
+`QMessageBox` and returned -- by which point the dialog (and every
+other edit the user had just made in it) was already gone and silently
+discarded. The exact same duplicate-name mistake this feature was
+built to catch inline was ALSO capable of quietly destroying a user's
+work. Fixed by checking the name (empty AND duplicate) inside
+`_on_accept()` itself, before `accept()`, so the dialog only closes
+once the name is actually valid -- the outer checks in
+`_on_add`/`_on_edit`/`_on_new_from_template` are now unreachable in
+practice but left in place as a harmless second guard.
+
+**A real Qt lifetime bug found by the test suite, not guessed**: the
+first version of `show_toast()`'s auto-dismiss timer called
+`toast.deleteLater()`. Running the full `main_window` test suite
+surfaced `RuntimeError: libshiboken: Internal C++ object (_Toast)
+already deleted` on three tests -- a window can legitimately be closed
+(destroying its child toast along with it, via Qt's normal parent-child
+ownership) BEFORE that toast's own auto-dismiss timer fires, and the
+timer's callback still tried to touch the now-dangling wrapper. Fixed
+with `shiboken6.isValid()` (the documented way to check whether a
+`QObject`'s underlying C++ object is still alive) guarding the dismiss
+callback, and switched to `hide()` instead of `deleteLater()`
+regardless (avoids a caller -- tests do this -- holding a dangling
+reference to whatever `show_toast()` returned).
+
+**Verification:** 13 new tests (`tests/gui/test_feedback.py`: toast
+visibility/position/stacking/auto-dismiss/kind-coloring, inline mark/
+clear; `tests/gui/test_spacecraft_editor.py`: live inline validation on
+the Name field, the accept-blocks-and-keeps-the-dialog-open regression
+guard for the data-loss bug above, toast-on-add/remove). Full suite:
+687 passed, 101 skipped. All of this is Basilisk-free GUI-layer code,
+run and confirmed headless (`QT_QPA_PLATFORM=offscreen`) in this
+development sandbox exactly like every other GUI test in this project
+-- nothing here needed a real display or a real user's machine to
+verify.
+

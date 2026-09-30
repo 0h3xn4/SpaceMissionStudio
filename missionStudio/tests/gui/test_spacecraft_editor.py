@@ -693,6 +693,69 @@ def test_dialog_rejects_empty_name(qtbot):
         dialog.to_dataclass()
 
 
+def test_dialog_name_field_shows_inline_error_while_empty(qtbot):
+    """gui.feedback's inline-validation primitive, live as the user
+    types -- not just the to_dataclass()-time exception the test above
+    already covers.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("")
+    assert dialog.name_edit.property("state") == "error"
+
+    dialog.name_edit.setText("sat-42")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_dialog_name_field_shows_inline_error_on_duplicate(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog(other_spacecraft_names=["sat-1", "sat-2"])
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("sat-2")
+    assert dialog.name_edit.property("state") == "error"
+    assert "sat-2" in dialog.name_edit.toolTip()
+
+    dialog.name_edit.setText("sat-3")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_dialog_accept_blocks_and_keeps_dialog_open_on_empty_name(qtbot):
+    """Regression guard for a real data-loss UX bug: _on_accept() used to
+    call self.accept() unconditionally, so a duplicate/empty name wasn't
+    caught until the (already-closed) dialog's caller checked afterward
+    -- silently discarding every edit the user just made. _on_accept()
+    must now refuse to close the dialog itself.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0  # neither Accepted nor Rejected -- still open
+    assert dialog.name_edit.property("state") == "error"
+
+
+def test_dialog_accept_blocks_on_duplicate_name(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog(other_spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("sat-1")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0
+    assert dialog.name_edit.property("state") == "error"
+
+
 def test_list_widget_from_list_to_list_round_trip(qtbot):
     from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
     from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
@@ -730,6 +793,32 @@ def test_list_widget_add_via_dialog(qtbot, monkeypatch):
     assert lw.list_widget.count() == 1
     assert lw.to_list()[0].name == "added-sat"
     assert changed_count == [1]
+    assert lw.list_widget.currentRow() == 0  # the new spacecraft is selected, not left unselected
+
+
+def test_list_widget_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog, SpacecraftListWidget
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+
+    def fake_exec(self):
+        self.name_edit.setText("toasted-sat")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SpacecraftEditorDialog, "exec", fake_exec)
+    lw._on_add()
+
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("toasted-sat" in t.text() for t in toasts)
+
+    lw.list_widget.setCurrentRow(0)
+    lw._on_remove()
+
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("toasted-sat" in t.text() and "Removed" in t.text() for t in toasts)
 
 
 def test_list_widget_new_from_template(qtbot, monkeypatch):

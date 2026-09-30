@@ -87,6 +87,7 @@ from ..schema.scenario import (
     SUPPORTED_SENSOR_KINDS,
     SUPPORTED_THRUST_FRAMES,
 )
+from .feedback import clear_invalid, mark_invalid, show_toast
 from .orbit_ic_widget import OrbitIcWidget
 from .sensor_actuator_editor import SensorActuatorListWidget
 
@@ -226,6 +227,7 @@ class SpacecraftEditorDialog(QDialog):
 
         top_form = QFormLayout()
         self.name_edit = QLineEdit(config.name if config else "sat-1")
+        self.name_edit.textChanged.connect(self._on_name_changed)
         top_form.addRow("Name", self.name_edit)
         self.dry_mass_kg = _spin(0.001, 1.0e6, decimals=3, step=10.0, value=config.dry_mass_kg if config else 100.0)
         top_form.addRow("Dry mass [kg]", self.dry_mass_kg)
@@ -606,7 +608,41 @@ class SpacecraftEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer_layout.addWidget(buttons)
 
+    def _on_name_changed(self, text: str) -> None:
+        """Live, per-keystroke feedback (theme.py's ``[state="error"]``
+        red-border rule, via gui.feedback) for the one field whose
+        validity this dialog can check WITHOUT a full
+        :meth:`to_dataclass` call -- ``self._other_spacecraft_names`` is
+        already known at construction time. Catches the exact mistake
+        (an empty or duplicate name) before the user even reaches OK,
+        rather than only after :meth:`_on_accept` rejects it.
+        """
+        name = text.strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+        elif name in self._other_spacecraft_names:
+            mark_invalid(self.name_edit, f"A spacecraft named {name!r} already exists")
+        else:
+            clear_invalid(self.name_edit)
+
     def _on_accept(self) -> None:
+        # Real UX bug this used to have: an empty/duplicate name wasn't
+        # checked HERE at all -- to_dataclass() doesn't care, so accept()
+        # always succeeded, the dialog closed, and only THEN did the
+        # caller (_on_add/_on_edit/_on_new_from_template) notice the
+        # duplicate and show a QMessageBox -- by which point the dialog
+        # was already gone and every edit the user just made was silently
+        # discarded. Checking it here, before accept(), keeps the dialog
+        # (and the user's edits) open so they can just fix the name.
+        name = self.name_edit.text().strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+            self.name_edit.setFocus()
+            return
+        if name in self._other_spacecraft_names:
+            mark_invalid(self.name_edit, f"A spacecraft named {name!r} already exists")
+            self.name_edit.setFocus()
+            return
         try:
             self.to_dataclass()
         except ScenarioValidationError as exc:
@@ -896,6 +932,8 @@ class SpacecraftListWidget(QWidget):
                 return
             self._configs.append(config)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._configs) - 1)
+            show_toast(self.window(), f"Added spacecraft {config.name!r}")
             self.changed.emit()
 
     def _on_new_from_template(self) -> None:
@@ -928,6 +966,8 @@ class SpacecraftListWidget(QWidget):
                 return
             self._configs.append(config)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._configs) - 1)
+            show_toast(self.window(), f"Added spacecraft {config.name!r} from template")
             self.changed.emit()
 
     def _on_edit(self) -> None:
@@ -946,14 +986,18 @@ class SpacecraftListWidget(QWidget):
                 return
             self._configs[row] = new_config
             self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated spacecraft {new_config.name!r}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
+        name = self._configs[row].name
         del self._configs[row]
         self._refresh_list()
+        show_toast(self.window(), f"Removed spacecraft {name!r}", kind="info")
         self.changed.emit()
 
     def _on_generate_constellation(self) -> None:

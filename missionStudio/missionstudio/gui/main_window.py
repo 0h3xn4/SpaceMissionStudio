@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from ..logging_setup import get_log_file_path
 from ..schema.scenario import Scenario, ScenarioValidationError, load_scenario
+from .feedback import show_toast
 from .kernel_status_widget import KernelStatusWidget
 from .load_scenario_widget import LoadScenarioWidget
 from .mission_output_widget import MissionOutputWidget
@@ -390,6 +391,7 @@ class MainWindow(QMainWindow):
         self.mission_output_widget.clear()
         self._mark_clean()
         self.statusBar().showMessage("New scenario.")
+        show_toast(self, "New scenario")
         self.left_tabs.setCurrentWidget(self.scenario_editor)
 
     def on_open(self) -> None:
@@ -423,6 +425,7 @@ class MainWindow(QMainWindow):
         self.mission_output_widget.clear()
         self._mark_clean()
         self.statusBar().showMessage(f"Opened {path}")
+        show_toast(self, f"Opened {path.name}")
         self.left_tabs.setCurrentWidget(self.scenario_editor)
         return True
 
@@ -451,6 +454,7 @@ class MainWindow(QMainWindow):
         self._current_path = path
         self._mark_clean()
         self.statusBar().showMessage(f"Saved {path}")
+        show_toast(self, f"Saved {path.name}")
 
     # -- run-in-progress feedback -------------------------------------------
     def _set_running(self, running: bool) -> None:
@@ -815,6 +819,7 @@ class MainWindow(QMainWindow):
 
     def _on_run_finished(self, result, command_summary=None) -> None:
         self._stop_busy(f"Run complete: {len(result.series)} result series.")
+        show_toast(self, f"Run complete -- {len(result.series)} result series")
         # set_live_result(), not set_result(): a live run's final chunk and
         # its "finished" result always share the same series names, so
         # using set_result() here would rebuild series_combo and silently
@@ -843,6 +848,7 @@ class MainWindow(QMainWindow):
         instead of "complete".
         """
         self._stop_busy("Run cancelled by user.")
+        show_toast(self, "Run cancelled", kind="info")
         self.results_widget.set_live_result(partial_result, self._last_run_epoch_utc)
         if command_summary is not None:
             self.mission_output_widget.set_command_summary(command_summary)
