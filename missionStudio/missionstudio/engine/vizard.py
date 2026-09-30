@@ -121,21 +121,25 @@ analytical estimate -- see each source module's own docstring):
   docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
   the propellant and delta-V panels are never racing to overwrite the
   same message.
-* **RTN separation from chief** -- THREE more ``GenericStorage`` panels
-  ("Radial (R)"/"Transverse (T)"/"Normal (N)") for a spacecraft with
+* **RTN separation from chief** -- THREE more ``GenericStorage`` panels,
+  labeled by :func:`_rtn_panel_label` (e.g. "R vs chief-1"/"T vs
+  chief-1"/"N vs chief-1" -- naming WHICH chief, not just the axis; see
+  that function's own docstring) for a spacecraft with
   ``PhasingKeepingConfig`` configured, from
   ``PhasingKeepingController.separationRadialOutMsg``/
   ``...TransverseOutMsg``/``...NormalOutMsg`` -- the REAL chief/follower
   offset in the chief's own Hill frame (``orbitalMotion.rv2hill``, the
   exact same function ``engine.formation``'s wizard itself uses to place
-  a follower), not an abstract single scalar. Real user feedback, in two
-  rounds: first that a single "Separation" number was too vague to
-  interpret, then (this round) that it should be broken out into the
-  same R/T/N terms the wizard itself already uses -- see
-  ``PhasingKeepingController``'s own docstring for the full reasoning,
-  including why ``storageLevel`` is clamped SYMMETRICALLY (sign
-  preserved, unlike the delta-V/propellant panels' plain non-negative
-  values) to a shared ``storageCapacity`` across all three panels.
+  a follower), not an abstract single scalar. Real user feedback, across
+  three rounds: first that a single "Separation" number was too vague to
+  interpret; then that it should be broken out into the same R/T/N terms
+  the wizard itself already uses; then (this round) two more issues with
+  that breakout -- see ``PhasingKeepingController``'s own docstring for
+  the full reasoning on both, and "Real bug found from a real running
+  Vizard screenshot, THIRD occurrence" below for the first one
+  (``storageLevel`` is ``abs()``-clamped to ``[0, storageCapacity]``,
+  MAGNITUDE only, unlike an earlier revision's signed, symmetric clamp)
+  -- shared ``storageCapacity`` across all three panels is unchanged.
 * **Live numeric values are Vizard's OWN, not this module's.** A real
   screenshot (from an actual user) showed every ``GenericStorage`` panel
   rendering its own live ``"<currentValue> / <maxValue> <units>"``
@@ -147,11 +151,11 @@ analytical estimate -- see each source module's own docstring):
   width, independent of how wide the panel itself grows for its own
   native readout column), which is what led to noticing the native
   column was there all along. Reverted: panel labels are short, static
-  names ("SK Delta-V"/"Phasing Delta-V"/"Radial (R)"/etc., not the
-  longer names an earlier version used -- still within that same fixed
-  per-row width, confirmed against the same screenshot's truncation of
-  "Delta-V (station-keeping)"), and Vizard's own native column is what
-  shows the live numbers.
+  names ("SK Delta-V"/"Phasing Delta-V"/:func:`_rtn_panel_label`'s
+  output, not the longer names an earlier version used -- still within
+  that same fixed per-row width, confirmed against the same screenshot's
+  truncation of "Delta-V (station-keeping)"), and Vizard's own native
+  column is what shows the live numbers.
 * **Ground-station access windows** -- one ``GenericSensor`` marker per
   (ground station, spacecraft) pair that Phase 3's access analysis tracks,
   changing color LIVE between "no access" and "access" as
@@ -183,6 +187,14 @@ matches a real, shipped multi-satellite Basilisk example line-for-line
 (cited above), AND has since been confirmed rendering correctly against
 a real running Vizard instance (the same screenshot cited above --
 "Propellant"/"Delta-V"/"Separation" panels all visible and updating).
+The R/T/N panels' MAGNITUDE fix and :func:`_rtn_panel_label` (see
+"Real bug found from a real running Vizard screenshot, FOURTH round"
+below) are confirmed only up to ``PhasingKeepingController``'s own real
+-Basilisk unit tests (``storageLevel`` is genuinely non-negative and
+correctly clamped) -- NOT yet against a real running Vizard instance
+rendering the fixed panels, since no live Vizard GUI is available in
+this development sandbox; please report back if "Unavailable" still
+appears or a label still doesn't fit.
 The ``GenericSensor``/``DeviceCmdMsgPayload``/bridge-module wiring
 matches the field-level pattern in a second real shipped example
 (``examples/scenarioGroundLocationImaging.py``), but the specific
@@ -328,6 +340,45 @@ law's own mean-anomaly-difference approximation) in the same R/T/N terms
 ``engine.formation``'s wizard already asks for -- so the number Vizard
 shows during a run and the number a user typed into the wizard beforehand
 are directly comparable.
+
+**Real bug found from a real running Vizard screenshot, FOURTH round**
+(a real user report on the R/T/N panels from the round above): the
+Radial and Normal panels showed "Unavailable" instead of a number/bar,
+while Transverse (right next to them, same panel construction) rendered
+normally. Root cause: ``PhasingKeepingController.UpdateState`` clamped
+``storageLevel`` SYMMETRICALLY at that point (``[-storageCapacity,
+storageCapacity]``, sign preserved, so a trailing vs. leading follower
+would still read with the correct sign) -- but GenericStorage's own
+field comments, in both ``vizStructures.h`` and the wire-format
+``vizMessage.proto`` (``"current/maximum absolute value of the storage
+device"``), document ``currentValue``/``maxValue`` as a non-negative
+gauge, the same kind of quantity as the battery/propellant/delta-V
+panels right next to it. At the screenshot's moment Radial and Normal
+happened to be negative and Transverse happened to be positive -- which
+lines up with a non-negative-only widget rejecting a negative value it
+was never designed to receive. No live Vizard GUI was available in this
+development sandbox to visually re-confirm that rendering behavior
+directly (no display, and Vizard's own client is closed-source); this
+conclusion rests on the field-comment wording plus that exact
+positive/negative split matching the screenshot, not a repro. Fixed in
+``PhasingKeepingController.UpdateState``/``_clamp_magnitude`` (see that
+function's own docstring): ``storageLevel`` now publishes ``abs()``,
+clamped to ``[0, storageCapacity]`` -- MAGNITUDE, not signed direction.
+This is a real, honest trade-off, not a full fix: Vizard's live panels
+can no longer show "ahead of"/"behind the chief" the way the previous
+(broken) revision intended to; the signed numbers remain available as
+``lastRadialKm``/``lastTransverseKm``/``lastNormalKm`` on the controller
+itself for anything that needs them, just not live in Vizard.
+
+The SAME round of feedback also asked a separate, simpler question: the
+panels never said WHOSE offset they were measuring -- "Radial (R)" on a
+follower's own storage panel doesn't say which chief it's relative to.
+Fixed by :func:`_rtn_panel_label`, which folds the chief spacecraft's
+own name (``PhasingKeepingController.chiefName``, wired by
+:func:`build_phasing_keeping` from ``chief_sc_object.ModelTag``) into
+the label itself (e.g. "R vs chief-1") instead of a bare axis letter --
+see that function's own docstring for the fixed-width-truncation budget
+this has to stay inside.
 """
 
 from __future__ import annotations
@@ -336,6 +387,26 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def _rtn_panel_label(axis_letter: str, chief_name: str, max_len: int = 14) -> str:
+    """Short ``GenericStorage`` panel label for an RTN separation panel,
+    e.g. ``"R vs chief-1"`` -- real user feedback that "Radial (R)"/
+    "Transverse (T)"/"Normal (N)" alone didn't say WHOSE offset it was.
+
+    ``max_len`` defaults to 14: the longest label confirmed NOT to get
+    cut off against a real running Vizard instance (a real user
+    screenshot showed "Transverse (T)", 14 characters, rendering in
+    full -- see this module's own docstring on the label-truncation bug
+    found and reverted in an earlier round). That screenshot is a lower
+    bound on the real per-row width, not a measured maximum, so a
+    ``chief_name`` short enough to fit under it (true for this project's
+    own template scenarios, e.g. "chief-1") is used directly; one long
+    enough to risk exceeding that bound falls back to the generic,
+    always-safe "vs chief" instead of gambling on a half-truncated name.
+    """
+    named = f"{axis_letter} vs {chief_name}" if chief_name else f"{axis_letter} vs chief"
+    return named if len(named) <= max_len else f"{axis_letter} vs chief"
 
 
 class VizardError(Exception):
@@ -545,7 +616,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             # where these numbers come from -- a real orbitalMotion.rv2hill
             # decomposition, not an approximation).
             radial_panel = vizInterface.GenericStorage()
-            radial_panel.label = "Radial (R)"
+            radial_panel.label = _rtn_panel_label("R", phasing_controller.chiefName)
             radial_panel.type = "Separation"
             radial_panel.units = "km"
             radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("blue"))
@@ -555,7 +626,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             storages.append(radial_panel)
 
             transverse_panel = vizInterface.GenericStorage()
-            transverse_panel.label = "Transverse (T)"
+            transverse_panel.label = _rtn_panel_label("T", phasing_controller.chiefName)
             transverse_panel.type = "Separation"
             transverse_panel.units = "km"
             transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
@@ -565,7 +636,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             storages.append(transverse_panel)
 
             normal_panel = vizInterface.GenericStorage()
-            normal_panel.label = "Normal (N)"
+            normal_panel.label = _rtn_panel_label("N", phasing_controller.chiefName)
             normal_panel.type = "Separation"
             normal_panel.units = "km"
             normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("green"))

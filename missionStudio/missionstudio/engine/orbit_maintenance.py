@@ -141,13 +141,29 @@ def _wrap_pm_pi(angle_rad: float) -> float:
     return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def _clamp_symmetric(value: float, limit: float) -> float:
-    """Clamp ``value`` to ``[-limit, limit]`` -- used for a live Vizard
-    GenericStorage panel's ``storageLevel`` (see
-    ``PhasingKeepingController.UpdateState``'s own comment): bounds the
-    BAR's fill without discarding sign, unlike a plain non-negative clamp.
+def _clamp_magnitude(value: float, limit: float) -> float:
+    """Return ``abs(value)`` clamped to ``[0, limit]`` -- used for a live
+    Vizard GenericStorage panel's ``storageLevel`` (see
+    ``PhasingKeepingController.UpdateState``'s own comment).
+
+    GenericStorage's own field comments -- both
+    ``vizStructures.h``'s (``"current/maximum absolute value of the
+    storage device"``) and the wire-format ``vizMessage.proto``'s
+    (identical wording) -- document ``currentValue``/``maxValue`` as a
+    non-negative gauge, e.g. a battery charge or a propellant tank level.
+    An earlier revision of this function (``_clamp_symmetric``) clamped
+    to ``[-limit, limit]`` instead, to preserve "ahead of"/"behind the
+    chief" sign -- a real user screenshot then showed exactly the panels
+    that were negative at that moment (Radial, Normal) rendering
+    "Unavailable" in Vizard, while the one that happened to be positive
+    (Transverse) rendered normally; see this class's own docstring for
+    the full reasoning and its one open caveat (no live Vizard GUI in
+    this development sandbox to visually re-confirm the client-side
+    rendering behavior directly -- the field-comment wording plus that
+    exact positive/negative split in the screenshot is what this
+    conclusion rests on).
     """
-    return max(-limit, min(value, limit))
+    return min(abs(value), limit)
 
 
 def _eclipse_illumination_fraction(eclipse_payload) -> float:
@@ -443,15 +459,28 @@ class PhasingKeepingController(sysModel.SysModel):
       normal, on-target transverse reading pegged at ~100% fill with no
       room for an ordinary correction transient, which is what a real
       Vizard screenshot caught overflowing the panel). ``storageLevel``
-      is CLAMPED to ``[-storageCapacity, storageCapacity]`` (sign
-      preserved -- unlike a plain non-negative clamp, since Vizard's own
-      native numeric readout for a panel prints the raw signed value) so
-      the bar itself can never overflow; the true, unclamped numbers are
-      ``self.lastRadialKm``/``self.lastTransverseKm``/``self.lastNormalKm``/
+      is ``abs(...)`` CLAMPED to ``[0, storageCapacity]`` (see
+      :func:`_clamp_magnitude`'s own docstring for why NOT signed --
+      GenericStorage is a non-negative gauge widget, and a real user
+      screenshot showed a signed, negative ``storageLevel`` rendering as
+      "Unavailable" rather than a bar). Live Vizard panels therefore show
+      MAGNITUDE only, not "ahead of"/"behind the chief" direction; the
+      true, signed numbers are ``self.lastRadialKm``/
+      ``self.lastTransverseKm``/``self.lastNormalKm``/
       ``self.lastTargetSeparationKm`` (plain Python attributes, for
-      anything that needs the exact geometry -- nothing in this codebase
-      currently reads them, unlike an earlier revision's Vizard label
-      bridge, reverted; see ``engine.vizard``'s own module docstring).
+      anything that needs the exact signed geometry -- nothing in this
+      codebase currently reads them, same as before this round's fix;
+      not fed into the exported CSV/results plots either, see this
+      module's own "None of this feeds back into simulated physics..."
+      note in ``engine.vizard``).
+    * ``chiefName`` -- the chief spacecraft's own ``ModelTag`` (a plain
+      ``str`` attribute, not a message), wired by :func:`build_phasing_keeping`
+      so ``engine.vizard`` can label each panel with WHICH chief the
+      number is measured against (e.g. ``"R vs chief-1"``) -- real user
+      feedback that "Radial (R)"/etc. alone didn't say whose offset it
+      was. Defaults to ``""`` (falls back to a generic "vs chief" label)
+      when constructed directly, e.g. in a unit test, rather than via
+      :func:`build_phasing_keeping`.
     """
 
     IDLE, BURN_OUT, DRIFT, BURN_RESTORE = range(4)
@@ -492,6 +521,12 @@ class PhasingKeepingController(sysModel.SysModel):
         self.extForceEffectorB = None
         self.scObjectB = None
         self.altitudeControllerB = None
+        # The chief spacecraft's own ModelTag -- plain str, not a message
+        # -- so engine.vizard can label the RTN panels with WHOSE offset
+        # they show (see this class's own docstring). "" (the default
+        # for a controller built directly, e.g. in a unit test, rather
+        # than via build_phasing_keeping) falls back to a generic label.
+        self.chiefName = ""
 
         self.mu = mu  # [m^3/s^2]
         self.aNom = nominal_a_m  # [m]
@@ -657,25 +692,34 @@ class PhasingKeepingController(sysModel.SysModel):
         # storageLevel past it. All three R/T/N panels share ONE capacity
         # (2x the along-track target -- generous headroom for the
         # actively-held T axis, and a common scale so the three bars'
-        # relative fill is directly comparable) and are clamped
-        # SYMMETRICALLY (preserves sign -- GenericStorage's own native
-        # numeric readout prints the raw value, sign included; only the
-        # bar's own fill is bounded, via _clamp_symmetric).
+        # relative fill is directly comparable).
         capacityKm = 2.0 * targetKm  # [km]
 
+        # A SECOND real bug found against a real running Vizard instance,
+        # a later screenshot: storageLevel was clamped SYMMETRICALLY at
+        # this point (preserving sign, so "ahead of"/"behind the chief"
+        # would still read correctly) -- but the Radial/Normal panels,
+        # negative at that moment, rendered "Unavailable" instead of a
+        # bar, while Transverse (positive at that moment) rendered fine.
+        # GenericStorage's own field comments document currentValue/
+        # maxValue as a non-negative gauge ("absolute value of the
+        # storage device") -- see _clamp_magnitude's own docstring for
+        # the full reasoning. Fixed by publishing magnitude, not signed
+        # value; the true signed numbers stay available as this
+        # instance's own lastRadialKm/lastTransverseKm/lastNormalKm.
         radialMsg = messaging.DataStorageStatusMsgPayload()
         radialMsg.storageCapacity = capacityKm
-        radialMsg.storageLevel = _clamp_symmetric(radialKm, capacityKm)
+        radialMsg.storageLevel = _clamp_magnitude(radialKm, capacityKm)
         self.separationRadialOutMsg.write(radialMsg, CurrentSimNanos, self.moduleID)
 
         transverseMsg = messaging.DataStorageStatusMsgPayload()
         transverseMsg.storageCapacity = capacityKm
-        transverseMsg.storageLevel = _clamp_symmetric(transverseKm, capacityKm)
+        transverseMsg.storageLevel = _clamp_magnitude(transverseKm, capacityKm)
         self.separationTransverseOutMsg.write(transverseMsg, CurrentSimNanos, self.moduleID)
 
         normalMsg = messaging.DataStorageStatusMsgPayload()
         normalMsg.storageCapacity = capacityKm
-        normalMsg.storageLevel = _clamp_symmetric(normalKm, capacityKm)
+        normalMsg.storageLevel = _clamp_magnitude(normalKm, capacityKm)
         self.separationNormalOutMsg.write(normalMsg, CurrentSimNanos, self.moduleID)
 
         # Also written here (not only in the final block below, which the
@@ -849,6 +893,7 @@ def build_phasing_keeping(scSim, task_name: str, tag: str, mu: float, chief_sc_o
         controller.eclipseInMsgB.subscribeTo(follower_eclipse_out_msg)
     controller.extForceEffectorB = follower_station_keeping_controller.extForceEffector
     controller.scObjectB = follower_sc_object
+    controller.chiefName = chief_sc_object.ModelTag
     # Thruster-arbitration link: phasing pauses while the follower's own
     # altitude controller is actively reboosting (see UpdateState).
     controller.altitudeControllerB = follower_station_keeping_controller
