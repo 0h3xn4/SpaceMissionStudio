@@ -94,7 +94,11 @@ articulatedFacetDataInMsgs input messages.
  @param tmpMsg hingedRigidBody input message containing facet articulation angle data
 */
 void FacetSRPDynamicEffector::addArticulatedFacet(Message<HingedRigidBodyMsgPayload> *tmpMsg) {
-    this->articulatedFacetDataInMsgs.push_back(tmpMsg->addSubscriber());
+    this->addArticulatedFacet(tmpMsg->addSubscriber());
+}
+
+void FacetSRPDynamicEffector::addArticulatedFacet(ReadFunctor<HingedRigidBodyMsgPayload> reader) {
+    this->articulatedFacetDataInMsgs.push_back(reader);
 }
 
 /*! This is the constructor, marking the effector as attachable to a state effector */
@@ -167,8 +171,8 @@ void FacetSRPDynamicEffector::computeForceTorque(double callTime [[maybe_unused]
     Eigen::MRPd sigma_BN;
     Eigen::Vector3d r_BN_N;
     if (!this->stateNameOfSigma.empty()) {
-        sigma_BN = Eigen::MRPd(this->hubSigma->getState().data());
-        r_BN_N = this->hubPosition->getState();
+        sigma_BN = Eigen::MRPd(this->hubSigma->stateView().data());
+        r_BN_N = this->hubPosition->stateView();
     } else {
         sigma_BN = Eigen::MRPd(this->inertialAttitudeProperty->data());
         r_BN_N = *this->inertialPositionProperty;

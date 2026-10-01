@@ -22,7 +22,15 @@ by using the default value in the variable definition.
 
 Destructor
 ----------
-The module destructor should ensure the module is closed down properly. It might have to close a file handle, or free up the memory of dynamically allocated message objects to a vector of output messages.
+The module destructor should release any resources that need explicit cleanup.
+Output messages held in the private smart-pointer storage described in
+:ref:`bskOutputMessageOwnership` are released automatically. Do not delete the
+borrowed pointers in the public output vector. If no other cleanup is needed,
+the destructor can be defaulted:
+
+.. code:: cpp
+
+    SomeModule::~SomeModule() = default;
 
 Reset Method
 ------------
@@ -86,15 +94,22 @@ The ``UpdateState()`` is the method that is called each time the Basilisk simula
     It is critical that each module zeros the content of the output messages on each update cycle.  This way we are not writing stale or uninitialized data to a message.  When reading a message BSK assumes that each message content has been either zero'd or written to.
 
 
+.. _bskOutputMessageCreation:
+
 Vector of Input/Output Messages
 -------------------------------
-If the module contains a vector of input messages called ``moreInMsgs``, you most likely will need to write a public method for the user to add input reader message objects to this vector variables.  Below a sample ``addMsgToModule()`` method is illustrated that receives a pointer to a message object, stores a copy of the reader object to this message in the standard vector, and expands the vector of read message value buffer with a new message paylod copy.
+Use a public configuration method to add related input readers, payload buffers,
+and output messages together. The following ``addMsgToModule()`` example uses
+the vectors declared in :ref:`cppModules-1`. It subscribes to the supplied input,
+adds an initialized payload buffer, and creates the corresponding output message.
+Include the owned-message helper in the module's C++ implementation file:
 
 .. code:: cpp
 
-    /*! Method description
-     @param tmpMsg The message object pointer
-     @return void
+    #include "architecture/messaging/ownedMessage.h"
+
+    /*! @brief Add an input subscription and its corresponding output message.
+     * @param tmpMsg Input message that must remain alive while the module uses it.
      */
     void SomeModule::addMsgToModule(Message<SomeMsgPayload> *tmpMsg)
     {
@@ -102,27 +117,30 @@ If the module contains a vector of input messages called ``moreInMsgs``, you mos
         this->moreInMsgs.push_back(tmpMsg->addSubscriber());
 
         /* expand vector of message data copies with another element */
-        SomeMsgPayload tmpMsg;
-        this->moreInMsgsBuffer.push_back(tmpMsg);
+        SomeMsgPayload inputBuffer{};
+        this->moreInMsgsBuffer.push_back(inputBuffer);
 
-        /* create output message */
-        Message<SomeMsgPayload> *msg;
-        msg = new Message<SomeMsgPayload>;
-        this->moreOutMsgs.push_back(msg);
+        /* own the output message and expose a borrowed pointer */
+        addOwnedMessage(this->ownedMoreOutMsgs, this->moreOutMsgs);
     }
 
-If the module contains a vector of output messages, then a public module method needs to be written to create these output vector message instances.  The above sample code illustrate a common scenario where the number of input and output messages is the same.  For example, in :ref:`eclipse` for each spacecraft state input message added a corresponding eclipse output message must be created.
+The example gives each input one output. For example, :ref:`eclipse` creates an
+eclipse output message for each spacecraft state input added to the module.
+``addOwnedMessage()`` creates the message in the private owner vector and appends
+its borrowed pointer to the public vector. If construction or either insertion
+throws, the helper releases the new message and preserves both vectors' previous
+sizes and entries; their capacities may change. No manual deletion loop is needed.
 
-Note that with the ``new`` call above the memory associated with this output message object instance is retained after the method is exited.  In this case the module deconstructor needs to free up the associated message memory.  For the above example this could be done using:
+This guarantee covers one message insertion. It does not undo earlier changes
+to input readers, payload buffers, or other module configuration. If setup fails,
+discard the partially configured module as described in
+:ref:`bskOutputMessageLifetime`. Multiple groups of borrowed pointers may share
+one owner vector, as in nested wheel or thruster output collections. Include the
+helper only where the C++ implementation needs it; no SWIG declaration is needed.
 
-.. code:: cpp
-
-    SomeModule::~SomeModule()
-    {
-        for (long unsigned int c=0; c<this->moreOutMsgs.size(); c++) {
-            delete this->moreOutMsgs.at(c);
-        }
-    }
+The SWIG interface also needs the source-retention hook described in
+:ref:`bskModuleInputMessageLifetime` so that standalone Python input messages
+remain alive while these readers use them.
 
 Setters
 -------

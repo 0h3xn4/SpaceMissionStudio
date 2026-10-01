@@ -18,6 +18,7 @@
  */
 
 #include "windBase.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/macroDefinitions.h"
 #include "architecture/utilities/simDefinitions.h"
@@ -38,12 +39,7 @@ WindBase::WindBase()
     this->epochDateTime.tm_isdst = -1;
 }
 
-WindBase::~WindBase()
-{
-    for (auto* msg : this->envOutMsgs) {
-        delete msg;
-    }
-}
+WindBase::~WindBase() = default;
 
 void WindBase::Reset(uint64_t CurrentSimNanos)
 {
@@ -198,9 +194,7 @@ void WindBase::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg)
     this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
 
     //! - create output message
-    Message<WindMsgPayload> *msg;
-    msg = new Message<WindMsgPayload>;
-    this->envOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedEnvOutMsgs, this->envOutMsgs);
 }
 
 void WindBase::UpdateState(uint64_t CurrentSimNanos)

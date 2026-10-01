@@ -19,6 +19,7 @@
 
 
 #include "simulation/environment//groundMapping/groundMapping.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/rigidBodyKinematics.h"
@@ -45,13 +46,7 @@ GroundMapping::GroundMapping()
 }
 
 /*! Module Destructor */
-GroundMapping::~GroundMapping()
-{
-    for (long unsigned int c = 0; c < this->accessOutMsgs.size(); c++) {
-        delete this->accessOutMsgs.at(c);
-        delete this->currentGroundStateOutMsgs.at(c);
-    }
-}
+GroundMapping::~GroundMapping() = default;
 
 /*! This method is used to reset the module and checks that required input messages are connect.
 
@@ -89,18 +84,14 @@ void GroundMapping::addPointToModel(Eigen::Vector3d& r_LP_P_init){
     this->mappingPoints.push_back(r_LP_P_init);
 
     /* Create buffer output messages */
-    Message<AccessMsgPayload> *msg;
-    msg = new Message<AccessMsgPayload>;
-    this->accessOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedAccessOutMsgs, this->accessOutMsgs);
 
     /* Expand the access buffer vectors */
     AccessMsgPayload accMsg;
     this->accessMsgBuffer.push_back(accMsg);
 
     /* Create ground state output message */
-    Message<GroundStateMsgPayload> *msg_2;
-    msg_2 = new Message<GroundStateMsgPayload>;
-    this->currentGroundStateOutMsgs.push_back(msg_2);
+    addOwnedMessage(this->ownedCurrentGroundStateOutMsgs, this->currentGroundStateOutMsgs);
 
     /* Expand the ground state buffer vectors */
     GroundStateMsgPayload groundMsg;

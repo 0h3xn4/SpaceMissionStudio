@@ -18,6 +18,7 @@
  */
 
 #include "linearTranslationNDOFStateEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/rigidBodyKinematics.h"
 #include <string>
@@ -43,13 +44,7 @@ LinearTranslationNDOFStateEffector::LinearTranslationNDOFStateEffector()
 uint64_t LinearTranslationNDOFStateEffector::effectorID = 1;
 
 /*! This is the destructor, releasing the per body output messages */
-LinearTranslationNDOFStateEffector::~LinearTranslationNDOFStateEffector()
-{
-    for (size_t c = 0; c < this->translatingBodyOutMsgs.size(); c++) {
-        delete this->translatingBodyOutMsgs.at(c);
-        delete this->translatingBodyConfigLogOutMsgs.at(c);
-    }
-}
+LinearTranslationNDOFStateEffector::~LinearTranslationNDOFStateEffector() = default;
 
 void TranslatingBody::setMass(double mass) {
     if (std::isfinite(mass) && mass >= 0.0)
@@ -98,13 +93,14 @@ void LinearTranslationNDOFStateEffector::Reset(uint64_t CurrentClock [[maybe_unu
  * @param[in] newBody Translating-body configuration to add.
  */
 void LinearTranslationNDOFStateEffector::addTranslatingBody(const std::shared_ptr<TranslatingBody> newBody) {
+    this->requireMutableTopology("LinearTranslationNDOFStateEffector::addTranslatingBody");
     // Pushback new body
     translatingBodyVec.push_back(newBody);
     this->N++;
 
     // Create the output vectors
-    this->translatingBodyConfigLogOutMsgs.push_back(new Message<SCStatesMsgPayload>);
-    this->translatingBodyOutMsgs.push_back(new Message<LinearTranslationRigidBodyMsgPayload>);
+    addOwnedMessage(this->ownedTranslatingBodyConfigLogOutMsgs, this->translatingBodyConfigLogOutMsgs);
+    addOwnedMessage(this->ownedTranslatingBodyOutMsgs, this->translatingBodyOutMsgs);
     this->translatingBodyRefInMsgs.push_back(ReadFunctor<LinearTranslationRigidBodyMsgPayload>());
 
     // resize A B and C
@@ -201,22 +197,15 @@ void LinearTranslationNDOFStateEffector::writeOutputStateMessages(uint64_t Curre
     }
 }
 
-/*! This method prepends the name of the spacecraft for multi-spacecraft simulations.*/
-void LinearTranslationNDOFStateEffector::prependSpacecraftNameToStates()
-{
-    this->nameOfRhoState = this->nameOfSpacecraftAttachedTo + this->nameOfRhoState;
-    this->nameOfRhoDotState = this->nameOfSpacecraftAttachedTo + this->nameOfRhoDotState;
-}
-
 /*! This method allows the TB state effector to have access to the hub states and gravity
  *
  * @param[in] states Dynamic parameter manager containing the required states.
  */
 void LinearTranslationNDOFStateEffector::linkInStates(DynParamManager& states)
 {
-    this->inertialPositionProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + "r_BN_N");
-    this->inertialVelocityProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + "v_BN_N");
-    this->hubSigmaState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfSigma);
+    this->inertialPositionProperty = states.getPropertyReference("r_BN_N");
+    this->inertialVelocityProperty = states.getPropertyReference("v_BN_N");
+    this->hubSigmaState = states.getStateObject(this->stateNameOfSigma);
 }
 
 /*! This method runs every configuration check. Spacecraft initialization always reaches it through
@@ -392,8 +381,8 @@ void LinearTranslationNDOFStateEffector::updateEffectorMassProps(double integTim
         this->effProps.mEff += translatingBody->mass;
 
         // Grab current states
-        translatingBody->rho = this->rhoState->getStateReference()(i, 0);
-        translatingBody->rhoDot = this->rhoDotState->getStateReference()(i, 0);
+        translatingBody->rho = this->rhoState->stateView()(i, 0);
+        translatingBody->rhoDot = this->rhoDotState->stateView()(i, 0);
 
         // Write the translating axis in B frame
         if (i == 0) {
@@ -669,7 +658,7 @@ void LinearTranslationNDOFStateEffector::computeDerivatives(double integTime [[m
 
     // Compute rho and rhoDot derivatives
     Eigen::VectorXd rhoDDot = this->ARho * rDDotLocal_BN_B + this->BRho * omegaDot_BN_B + this->CRho;
-    this->rhoState->setDerivative(this->rhoDotState->getStateReference());
+    this->rhoState->setDerivative(this->rhoDotState->stateView());
     this->rhoDotState->setDerivative(rhoDDot);
 }
 
@@ -711,7 +700,7 @@ void LinearTranslationNDOFStateEffector::updateEnergyMomContributions(double int
 void LinearTranslationNDOFStateEffector::computeTranslatingBodyInertialStates()
 {
     // - read live: the cached copy lags an integrator substep at write time
-    const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->getStateReference().data());
+    const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->stateView().data());
     this->dcm_BN = sigmaHub_BN.toRotationMatrix().transpose();
 
     const Eigen::Vector3d r_BN_N = (Eigen::Vector3d)*this->inertialPositionProperty;

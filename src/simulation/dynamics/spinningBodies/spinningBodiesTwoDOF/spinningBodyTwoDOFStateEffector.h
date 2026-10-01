@@ -20,7 +20,15 @@
 #ifndef SPINNING_BODY_TWO_DOF_STATE_EFFECTOR_H
 #define SPINNING_BODY_TWO_DOF_STATE_EFFECTOR_H
 
+#include <string>
+#include <cstdint>
+#include <vector>
+#include <memory>
 #include <Eigen/Dense>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include "simulation/dynamics/_GeneralModuleFiles/dynParamManager.h"
 #include "simulation/dynamics/_GeneralModuleFiles/stateEffector.h"
 #include "simulation/dynamics/_GeneralModuleFiles/dynamicEffector.h"
 #include "simulation/dynamics/_GeneralModuleFiles/stateData.h"
@@ -70,10 +78,8 @@ public:
     Eigen::Matrix3d IS2PntSc2_S2;       //!< [kg-m^2] Inertia of upper spinning body about point Sc2 in S2 frame components
     Eigen::Matrix3d dcm_S10B;           //!< DCM from the body frame to the S10 frame (S1 frame for theta1=0)
     Eigen::Matrix3d dcm_S20S1;          //!< DCM from the S1 frame to the S20 frame (S2 frame for theta2=0)
-    std::vector<Message<HingedRigidBodyMsgPayload>*> spinningBodyOutMsgs {new Message<HingedRigidBodyMsgPayload>,
-            new Message<HingedRigidBodyMsgPayload>};       //!< vector of state output messages
-    std::vector<Message<SCStatesMsgPayload>*> spinningBodyConfigLogOutMsgs {new Message<SCStatesMsgPayload>,
-            new Message<SCStatesMsgPayload>};     //!< vector of spinning body state config log messages
+    std::vector<Message<HingedRigidBodyMsgPayload>*> spinningBodyOutMsgs;       //!< vector of state output messages
+    std::vector<Message<SCStatesMsgPayload>*> spinningBodyConfigLogOutMsgs;     //!< vector of spinning body state config log messages
     ReadFunctor<ArrayMotorTorqueMsgPayload> motorTorqueInMsg;                   //!< (optional) motor torque input message name
     ReadFunctor<ArrayEffectorLockMsgPayload> motorLockInMsg;                    //!< (optional) motor lock input message name
     std::vector<ReadFunctor<HingedRigidBodyMsgPayload>> spinningBodyRefInMsgs {ReadFunctor<HingedRigidBodyMsgPayload>(),
@@ -104,7 +110,6 @@ public:
                                       Eigen::Vector3d& rotAngMomPntCContr_B,
                                       double& rotEnergyContr,
                                       Eigen::Vector3d omega_BN_B) override;       //!< Method for computing energy and momentum for SBs
-    void prependSpacecraftNameToStates() override;                   //!< Method used for multiple spacecraft
     void computeSpinningBodyInertialStates();               //!< Method for computing the SB's states
     void addPrescribedMotionCouplingContributions(BackSubMatrices& backSubContr) override;  //!< Method for adding coupling contributions for state effector branching on prescribed motion
 
@@ -214,6 +219,10 @@ private:
 
     // Properties required for prescribed motion branching/attachment
     StateData* hubOmega;       //!< [rad/s] hub inertial angular velocity vector
+
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<HingedRigidBodyMsgPayload>>> ownedSpinningBodyOutMsgs; //!< Storage for spinningBodyOutMsgs.
+    std::vector<std::unique_ptr<Message<SCStatesMsgPayload>>> ownedSpinningBodyConfigLogOutMsgs; //!< Storage for spinningBodyConfigLogOutMsgs.
 };
 
 #endif /* SPINNING_BODY_TWO_DOF_STATE_EFFECTOR_H */

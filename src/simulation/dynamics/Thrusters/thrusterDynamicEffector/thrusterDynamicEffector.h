@@ -57,14 +57,19 @@ public:
     void Reset(uint64_t CurrentSimNanos) override;
     void addThruster(std::shared_ptr<THRSimConfig> newThruster);
     void addThruster(std::shared_ptr<THRSimConfig> newThruster, Message<SCStatesMsgPayload>* bodyStateMsg);
+    /** @brief Add a thruster with an attached-body reader, preserving source retention.
+     * @param newThruster Thruster configuration to add
+     * @param bodyStateReader State reader for the body carrying the thruster
+     */
+    void addThruster(std::shared_ptr<THRSimConfig> newThruster, ReadFunctor<SCStatesMsgPayload> bodyStateReader);
     void UpdateState(uint64_t CurrentSimNanos) override;
     void writeOutputMessages(uint64_t CurrentClock);
     bool ReadInputs();
     void ConfigureThrustRequests(double currentTime);
-    void ComputeThrusterFire(std::shared_ptr<THRSimConfig> CurrentThruster, double currentTime);
-    void ComputeThrusterShut(std::shared_ptr<THRSimConfig> CurrentThruster, double currentTime);
+    void ComputeThrusterFire(const std::shared_ptr<THRSimConfig>& CurrentThruster, double currentTime);
+    void ComputeThrusterShut(const std::shared_ptr<THRSimConfig>& CurrentThruster, double currentTime);
     void UpdateThrusterProperties();
-    void computeBlowDownDecay(std::shared_ptr<THRSimConfig> CurrentThruster);
+    void computeBlowDownDecay(const std::shared_ptr<THRSimConfig>& CurrentThruster);
 
 public:
     ReadFunctor<THRArrayOnTimeCmdMsgPayload> cmdsInMsg;  //!< input message with thruster commands
@@ -76,7 +81,7 @@ public:
     double mDotTotal;                              //!< kg/s Current mass flow rate of thrusters
     double fuelMass;                               //!< kg Current total fuel mass of connected fuel tank
     double prevFireTime;                           //!< s  Previous thruster firing time
-	double thrFactorToTime(std::shared_ptr<THRSimConfig> thrData,
+	double thrFactorToTime(const std::shared_ptr<THRSimConfig>& thrData,
 		std::vector<THRTimePair> *thrRamp);
 	StateData *hubSigma;                           //!< pointer to the hub attitude states
     StateData *hubOmega;                           //!< pointer to the hub angular velocity states
@@ -98,6 +103,8 @@ private:
 
     uint64_t prevCommandTime;                       //!< Time for previous valid thruster firing
 
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<THROutputMsgPayload>>> ownedThrusterOutMsgs; //!< Storage for thrusterOutMsgs.
 };
 
 

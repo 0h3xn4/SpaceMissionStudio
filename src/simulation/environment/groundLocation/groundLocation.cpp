@@ -18,6 +18,7 @@
  */
 
 #include "simulation/environment/groundLocation/groundLocation.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include <iostream>
@@ -49,13 +50,7 @@ GroundLocation::GroundLocation()
 /*! Empty destructor method.
 
  */
-GroundLocation::~GroundLocation()
-{
-    for (long unsigned int c=0; c<this->accessOutMsgs.size(); c++) {
-        delete this->accessOutMsgs.at(c);
-    }
-    return;
-}
+GroundLocation::~GroundLocation() = default;
 
 /*! Resets the internal position to the specified initial position.*/
 void GroundLocation::Reset(uint64_t CurrentSimNanos [[maybe_unused]])
@@ -102,9 +97,7 @@ void GroundLocation::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg)
     this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
 
     /* create output message */
-    Message<AccessMsgPayload> *msg;
-    msg = new Message<AccessMsgPayload>;
-    this->accessOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedAccessOutMsgs, this->accessOutMsgs);
 
     /* expand the buffer vector */
     AccessMsgPayload accMsg;

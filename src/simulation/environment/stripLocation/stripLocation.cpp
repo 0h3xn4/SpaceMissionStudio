@@ -18,6 +18,7 @@
  */
 
 #include "stripLocation.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include <algorithm>
@@ -53,13 +54,7 @@ StripLocation::StripLocation()
 
 /*! empty destructor method.
  */
-StripLocation::~StripLocation()
-{
-    for (long unsigned int c=0; c<this->accessOutMsgs.size(); c++) {
-        delete this->accessOutMsgs.at(c);
-    }
-    return;
-}
+StripLocation::~StripLocation() = default;
 
 /*! reset the module.*/
 void StripLocation::Reset(uint64_t currentSimNanos)
@@ -134,9 +129,7 @@ void StripLocation::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg)
     this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
 
     /* create output message */
-    Message<AccessMsgPayload> *msg;
-    msg = new Message<AccessMsgPayload>;
-    this->accessOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedAccessOutMsgs, this->accessOutMsgs);
 
     /* expand the buffer vector */
     AccessMsgPayload accMsg;

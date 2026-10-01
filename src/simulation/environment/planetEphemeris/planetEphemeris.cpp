@@ -17,6 +17,7 @@
 
  */
 #include "simulation/environment/planetEphemeris/planetEphemeris.h"
+#include "architecture/messaging/ownedMessage.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -47,13 +48,7 @@ PlanetEphemeris::PlanetEphemeris()
 }
 
 /*! Module deconstructor */
-PlanetEphemeris::~PlanetEphemeris()
-{
-    for (long unsigned int c=0; c<this->planetOutMsgs.size(); c++) {
-        delete this->planetOutMsgs.at(c);
-    }
-    return;
-}
+PlanetEphemeris::~PlanetEphemeris() = default;
 
 /*! add list of planet names */
 void PlanetEphemeris::setPlanetNames(std::vector<std::string> names)
@@ -70,9 +65,7 @@ void PlanetEphemeris::setPlanetNames(std::vector<std::string> names)
 
     /* create corresponding output messages */
     for (long unsigned int c=0; c<this->planetNames.size(); c++) {
-        Message<SpicePlanetStateMsgPayload> *spMsg;
-        spMsg = new Message<SpicePlanetStateMsgPayload>;
-        this->planetOutMsgs.push_back(spMsg);
+        addOwnedMessage(this->ownedPlanetOutMsgs, this->planetOutMsgs);
     }
 }
 

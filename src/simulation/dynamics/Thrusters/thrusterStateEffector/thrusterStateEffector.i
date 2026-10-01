@@ -42,9 +42,22 @@ namespace std {
 }
 
 %include "sys_model.i"
-%include "simulation/dynamics/_GeneralModuleFiles/dynParamManager.i"
+%include "simulation/dynamics/_GeneralModuleFiles/dynParamManagerImport.swg"
 %include "simulation/dynamics/_GeneralModuleFiles/stateEffector.h"
 %import "simulation/dynamics/_GeneralModuleFiles/THRSimConfig.i"
+%default_bsk_exception(catch (const std::exception& error) {
+    SWIG_exception(SWIG_RuntimeError, error.what());
+});
+// Retain attached-body sources before C++ stores their private readers.
+%rename(_addThrusterReader) ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig>, ReadFunctor<SCStatesMsgPayload>);
+%pythonprepend ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig>) %{
+    if len(args) == 2:
+        return self._addThrusterReader(args[0], args[1].addSubscriber())
+%}
+%pythonprepend ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig>, Message<SCStatesMsgPayload>*) %{
+    if len(args) == 2:
+        return self._addThrusterReader(args[0], args[1].addSubscriber())
+%}
 %include "thrusterStateEffector.h"
 
 %include "architecture/msgPayloadDefC/THRArrayOnTimeCmdMsgPayload.h"
@@ -58,6 +71,22 @@ from Basilisk.simulation.THRSimConfig import THRSimConfig as THRSimConfig
 %}
 
 %pythoncode %{
+def _thruster_data(self):
+    return GuardedConfigSequence(
+        self,
+        self.getThrusterCount,
+        self.getThrusterAt,
+        self.setThrusterAt,
+        self.addThruster,
+    )
+
+def _set_thruster_data(self, values):
+    _thruster_data(self).replace(values)
+
+ThrusterStateEffector.thrusterData = property(
+    _thruster_data,
+    _set_thruster_data,
+)
 import sys
 protectAllClasses(sys.modules[__name__])
 %}

@@ -19,6 +19,7 @@
 
 
 #include "dualHingedRigidBodyStateEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include <string>
 #include <cmath>
@@ -70,13 +71,9 @@ DualHingedRigidBodyStateEffector::DualHingedRigidBodyStateEffector()
     this->nameOfInertialAngVelocityProperty2 = "DualHingedRigidBodyStateEffectorInertialAngVelocity2" + std::to_string(this->effectorID);
     this->effectorID++;
 
-    Message<HingedRigidBodyMsgPayload> *panelMsg;
-    Message<SCStatesMsgPayload> *scMsg;
     for (int c = 0; c < 2; c++) {
-        panelMsg = new Message<HingedRigidBodyMsgPayload>;
-        this->dualHingedRigidBodyOutMsgs.push_back(panelMsg);
-        scMsg = new Message<SCStatesMsgPayload>;
-        this->dualHingedRigidBodyConfigLogOutMsgs.push_back(scMsg);
+        addOwnedMessage(this->ownedDualHingedRigidBodyOutMsgs, this->dualHingedRigidBodyOutMsgs);
+        addOwnedMessage(this->ownedDualHingedRigidBodyConfigLogOutMsgs, this->dualHingedRigidBodyConfigLogOutMsgs);
     }
 
     this->ModelTag = "";
@@ -86,15 +83,7 @@ DualHingedRigidBodyStateEffector::DualHingedRigidBodyStateEffector()
 
 uint64_t DualHingedRigidBodyStateEffector::effectorID = 1;
 
-DualHingedRigidBodyStateEffector::~DualHingedRigidBodyStateEffector()
-{
-    for (size_t c = 0; c < 2; c++) {
-        delete this->dualHingedRigidBodyOutMsgs.at(c);
-        delete this->dualHingedRigidBodyConfigLogOutMsgs.at(c);
-    }
-
-    return;
-}
+DualHingedRigidBodyStateEffector::~DualHingedRigidBodyStateEffector() = default;
 
 
 /*! @brief Validate configuration without changing integrated states or commands.
@@ -126,16 +115,6 @@ void DualHingedRigidBodyStateEffector::validateConfiguration()
     }
 }
 
-void DualHingedRigidBodyStateEffector::prependSpacecraftNameToStates()
-{
-    this->nameOfTheta1State = this->nameOfSpacecraftAttachedTo + this->nameOfTheta1State;
-    this->nameOfTheta1DotState = this->nameOfSpacecraftAttachedTo + this->nameOfTheta1DotState;
-    this->nameOfTheta2State = this->nameOfSpacecraftAttachedTo + this->nameOfTheta2State;
-    this->nameOfTheta2DotState = this->nameOfSpacecraftAttachedTo + this->nameOfTheta2DotState;
-
-    return;
-}
-
 
 /*! @brief Link the required dynamics states.
  *
@@ -144,12 +123,12 @@ void DualHingedRigidBodyStateEffector::prependSpacecraftNameToStates()
 void DualHingedRigidBodyStateEffector::linkInStates(DynParamManager& states)
 {
     // - Get access to the hubs sigma, omegaBN_B and velocity needed for dynamic coupling
-    this->g_N = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + "g_N");
+    this->g_N = states.getPropertyReference("g_N");
 
-    this->inertialPositionProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + this->propName_inertialPosition);
-    this->inertialVelocityProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + this->propName_inertialVelocity);
-    this->v_BN_NState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfVelocity);
-    this->hubSigmaState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfSigma);
+    this->inertialPositionProperty = states.getPropertyReference(this->propName_inertialPosition);
+    this->inertialVelocityProperty = states.getPropertyReference(this->propName_inertialVelocity);
+    this->v_BN_NState = states.getStateObject(this->stateNameOfVelocity);
+    this->hubSigmaState = states.getStateObject(this->stateNameOfSigma);
 
     return;
 }
@@ -237,23 +216,19 @@ void DualHingedRigidBodyStateEffector::registerProperties(DynParamManager& state
  */
 void DualHingedRigidBodyStateEffector::updateEffectorMassProps(double integTime [[maybe_unused]])
 {
-    // - Convert initial variables to mother craft frame relative information
-    this->r_H1P_P = this->r_BP_P + this->dcm_BP.transpose()*this->r_H1B_B;
-    this->dcm_H1P = this->dcm_H1B*this->dcm_BP;
-
     // - Give the mass of the hinged rigid body to the effProps mass
     this->effProps.mEff = this->mass1 + this->mass2;
 
     // - find hinged rigid bodies' position with respect to point B
     // - First need to grab current states
-    this->theta1 = this->theta1State->getStateReference()(0, 0);
-    this->theta1Dot = this->theta1DotState->getStateReference()(0, 0);
-    this->theta2 = this->theta2State->getStateReference()(0, 0);
-    this->theta2Dot = this->theta2DotState->getStateReference()(0, 0);
+    this->theta1 = this->theta1State->stateView()(0, 0);
+    this->theta1Dot = this->theta1DotState->stateView()(0, 0);
+    this->theta2 = this->theta2State->stateView()(0, 0);
+    this->theta2Dot = this->theta2DotState->stateView()(0, 0);
     // - Next find the sHat unit vectors
     Eigen::Matrix3d dcmS1H1;
     dcmS1H1 = eigenM2(this->theta1);
-    this->dcm_S1P = dcmS1H1*this->dcm_H1P;
+    this->dcm_S1P = dcmS1H1*this->dcm_H1B;
     Eigen::Matrix3d dcmH2S1;
     dcmH2S1 = eigenM2(this->thetaH2S1);
     Eigen::Matrix3d dcmH2P;
@@ -267,9 +242,9 @@ void DualHingedRigidBodyStateEffector::updateEffectorMassProps(double integTime 
     this->sHat21_P = this->dcm_S2P.row(0);
     this->sHat22_P = this->dcm_S2P.row(1);
     this->sHat23_P = this->dcm_S2P.row(2);
-    this->r_H2P_P = this->r_H1P_P - this->l1 * this->sHat11_P;
-    this->r_S1P_P = this->r_H1P_P - this->d1*this->sHat11_P;
-    this->r_S2P_P = this->r_H1P_P - this->l1*this->sHat11_P - this->d2*this->sHat21_P;
+    this->r_H2P_P = this->r_H1B_B - this->l1 * this->sHat11_P;
+    this->r_S1P_P = this->r_H1B_B - this->d1*this->sHat11_P;
+    this->r_S2P_P = this->r_H1B_B - this->l1*this->sHat11_P - this->d2*this->sHat21_P;
     this->effProps.rEff_CB_B = 1.0/this->effProps.mEff*(this->mass1*this->r_S1P_P + this->mass2*this->r_S2P_P);
 
     // - Find the inertia of the hinged rigid body about point B
@@ -429,7 +404,7 @@ void DualHingedRigidBodyStateEffector::updateContributions(double integTime [[ma
                     + rotFactor1_P*this->matrixEDHRB.row(1)*this->vectorVDHRB)
                     + this->dcm_S1P.transpose()*attBodyTorquePntH1_S1
                     + this->dcm_S2P.transpose()*attBodyTorquePntH2_S2
-                    + this->r_H1P_P.cross(externalForcePan1_P)
+                    + this->r_H1B_B.cross(externalForcePan1_P)
                     + this->r_H2P_P.cross(externalForcePan2_P);
 
     return;
@@ -455,7 +430,7 @@ void DualHingedRigidBodyStateEffector::computeDerivatives(double integTime [[may
     Eigen::Vector3d omegaDotBNLoc_B;              /* time derivative of omegaBN in B frame */
 
     // Grab necessary values from manager (these have been previously computed in hubEffector)
-    rDDotBNLoc_N = this->v_BN_NState->getStateDerivReference();
+    rDDotBNLoc_N = this->v_BN_NState->derivativeView();
     this->sigma_BN = sigma_BN;
     sigmaBNLocal = this->sigma_BN;
     omegaDotBNLoc_B = omegaDot_BN_B;
@@ -465,11 +440,11 @@ void DualHingedRigidBodyStateEffector::computeDerivatives(double integTime [[may
 
     // - Compute Derivatives
     // - First is trivial
-    this->theta1State->setDerivative(theta1DotState->getStateReference());
+    this->theta1State->setDerivative(theta1DotState->stateView());
     // - Second, a little more involved - see Allard, Diaz, Schaub flex/slosh paper
     theta1DDot(0,0) = this->matrixEDHRB.row(0).dot(this->matrixFDHRB*rDDotBNLoc_B) + this->matrixEDHRB.row(0)*this->matrixGDHRB*omegaDotBNLoc_B + this->matrixEDHRB.row(0)*this->vectorVDHRB;
     this->theta1DotState->setDerivative(theta1DDot);
-    this->theta2State->setDerivative(theta2DotState->getStateReference());
+    this->theta2State->setDerivative(theta2DotState->stateView());
     theta2DDot(0,0) = this->matrixEDHRB.row(1)*(this->matrixFDHRB*rDDotBNLoc_B) + this->matrixEDHRB.row(1).dot(this->matrixGDHRB*omegaDotBNLoc_B) + this->matrixEDHRB.row(1)*this->vectorVDHRB;
     this->theta2DotState->setDerivative(theta2DDot);
 
@@ -584,7 +559,7 @@ void DualHingedRigidBodyStateEffector::computePanelInertialStates()
 {
     // - read live: the cached copy lags half a step at write time, unless a prescribed body set it
     if (this->prescribedAttitudeProperty == nullptr) {
-        this->sigma_BN = Eigen::MRPd(this->hubSigmaState->getStateReference().data());
+        this->sigma_BN = Eigen::MRPd(this->hubSigmaState->stateView().data());
     }
     Eigen::MRPd sigmaPN = this->sigma_BN;
     Eigen::Matrix3d dcm_NP = sigmaPN.toRotationMatrix();
@@ -605,14 +580,14 @@ void DualHingedRigidBodyStateEffector::computePanelInertialStates()
     this->r_SN_N[0] = Eigen::Vector3d(dcm_NP * this->r_S1P_P) + r_PN_N;
     this->r_SN_N[1] = Eigen::Vector3d(dcm_NP * this->r_S2P_P) + r_PN_N;
 
-    *this->r_HN_N[0] = Eigen::Vector3d(dcm_NP * this->r_H1P_P) + r_PN_N;
+    *this->r_HN_N[0] = Eigen::Vector3d(dcm_NP * this->r_H1B_B) + r_PN_N;
     *this->r_HN_N[1] = Eigen::Vector3d(dcm_NP * this->r_H2P_P) + r_PN_N;
 
     // inertial velocity vectors
     Eigen::Vector3d v_PN_N = (Eigen::Vector3d)(*this->inertialVelocityProperty);
     Eigen::Vector3d omega_S1N_P = this->theta1Dot * this->sHat12_P + omega_PN_P;
     Eigen::Vector3d omega_S2N_P = this->theta2Dot * this->sHat22_P + omega_S1N_P;
-    Eigen::Vector3d rDot_H1P_P = omega_PN_P.cross(this->r_H1P_P);
+    Eigen::Vector3d rDot_H1P_P = omega_PN_P.cross(this->r_H1B_B);
     Eigen::Vector3d rDot_H2P_P = rDot_H1P_P + omega_S1N_P.cross( -this->l1 * this->sHat11_P);
 
     this->v_SN_N[0] = v_PN_N + Eigen::Vector3d(dcm_NP * (rDot_H1P_P

@@ -20,6 +20,7 @@
 #include <iostream>
 
 #include "thrusterStateEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include <cmath>
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/astroConstants.h"
@@ -59,15 +60,7 @@ ThrusterStateEffector::ThrusterStateEffector()
 uint64_t ThrusterStateEffector::effectorID = 1;
 
 /*! The destructor. */
-ThrusterStateEffector::~ThrusterStateEffector()
-{
-    // Free memory to avoid errors
-    for (long unsigned int c=0; c<this->thrusterOutMsgs.size(); c++) {
-        delete this->thrusterOutMsgs.at(c);
-    }
-
-    return;
-}
+ThrusterStateEffector::~ThrusterStateEffector() = default;
 
 /*! This method is used to reset the module.
  *
@@ -235,8 +228,8 @@ void ThrusterStateEffector::UpdateThrusterProperties()
     this->validateRegisteredCount();
     // Save hub variables
     Eigen::Vector3d r_BN_N = (Eigen::Vector3d)*this->inertialPositionProperty;
-    Eigen::Vector3d omega_BN_B = this->hubOmega->getState();
-    Eigen::MRPd sigma_BN(this->hubSigma->getState().data());
+    Eigen::Vector3d omega_BN_B = this->hubOmega->stateView();
+    Eigen::MRPd sigma_BN(this->hubSigma->stateView().data());
     Eigen::Matrix3d dcm_BN = (sigma_BN.toRotationMatrix()).transpose();
 
     // Define the variables related to which body the thruster is attached to. The F frame represents the platform body where the thruster attaches to
@@ -283,16 +276,11 @@ void ThrusterStateEffector::UpdateThrusterProperties()
  */
 void ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig> newThruster)
 {
-    if (this->registeredThrusterCount) {
-        this->bskLogger.bskError("ThrusterStateEffector: cannot add thrusters after state registration. "
-                                "Configure all thrusters before InitializeSimulation().");
-    }
+    this->requireMutableTopology("ThrusterStateEffector::addThruster");
     this->thrusterData.push_back(newThruster);
 
     // Create corresponding output message
-    Message<THROutputMsgPayload>* msg;
-    msg = new Message<THROutputMsgPayload>;
-    this->thrusterOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedThrusterOutMsgs, this->thrusterOutMsgs);
 
     // Set the initial condition
     double state = 0.0;
@@ -318,23 +306,23 @@ void ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig> newThruste
  */
 void ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig> newThruster, Message<SCStatesMsgPayload>* bodyStateMsg)
 {
-    if (this->registeredThrusterCount) {
-        this->bskLogger.bskError("ThrusterStateEffector: cannot add thrusters after state registration. "
-                                "Configure all thrusters before InitializeSimulation().");
-    }
+    this->addThruster(newThruster, bodyStateMsg->addSubscriber());
+}
+
+void ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig> newThruster, ReadFunctor<SCStatesMsgPayload> bodyStateReader)
+{
+    this->requireMutableTopology("ThrusterStateEffector::addThruster");
     this->thrusterData.push_back(newThruster);
 
     // Create corresponding output message
-    Message<THROutputMsgPayload>* msg;
-    msg = new Message<THROutputMsgPayload>;
-    this->thrusterOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedThrusterOutMsgs, this->thrusterOutMsgs);
 
     // Set the initial condition
     double state = 0.0;
     this->kappaInit.push_back(state);
 
     // Save the incoming body message
-    this->attachedBodyInMsgs.push_back(bodyStateMsg->addSubscriber());
+    this->attachedBodyInMsgs.push_back(bodyStateReader);
 
     // Add space for the conversion from body to hub and populate it with default values
     BodyToHubInfo attachedBodyToHub;
@@ -353,7 +341,7 @@ void ThrusterStateEffector::addThruster(std::shared_ptr<THRSimConfig> newThruste
 void ThrusterStateEffector::linkInStates(DynParamManager& states){
     this->hubSigma = states.getStateObject(this->stateNameOfSigma);
     this->hubOmega = states.getStateObject(this->stateNameOfOmega);
-    this->inertialPositionProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + this->propName_inertialPosition);
+    this->inertialPositionProperty = states.getPropertyReference(this->propName_inertialPosition);
 }
 
 /*! This method allows the thruster state effector to register its state kappa with the dyn param manager
@@ -364,6 +352,10 @@ void ThrusterStateEffector::registerStates(DynParamManager& states)
 {
     this->validateConfiguration();
     this->NewThrustCmds.resize(this->thrusterData.size(), 0.0);  // [s]
+    if (this->thrusterData.empty()) {
+        this->registeredThrusterCount = 0;
+        return;
+    }
     // - Register the states associated with thruster - kappa
     this->kappaState = states.registerState((uint32_t) this->thrusterData.size(), 1, this->nameOfKappaState);
     Eigen::MatrixXd kappaInitMatrix(this->thrusterData.size(), 1);
@@ -388,6 +380,9 @@ void ThrusterStateEffector::registerStates(DynParamManager& states)
 void ThrusterStateEffector::computeDerivatives(double integTime, Eigen::Vector3d rDDot_BN_N [[maybe_unused]], Eigen::Vector3d omegaDot_BN_B [[maybe_unused]], Eigen::MRPd sigma_BN [[maybe_unused]])
 {
     this->validateRegisteredCount();
+    if (this->thrusterData.empty()) {
+        return;
+    }
     std::vector<std::shared_ptr<THRSimConfig>>::iterator itp;
     std::shared_ptr<THRSimConfig> it;
     THROperation* ops;
@@ -395,6 +390,7 @@ void ThrusterStateEffector::computeDerivatives(double integTime, Eigen::Vector3d
 
     // - Compute Derivatives
     Eigen::MatrixXd kappaDot(this->thrusterData.size(), 1);
+    const auto kappa = this->kappaState->stateView();
 
     // Loop through all thrusters to initialize each state variable
     for (itp = this->thrusterData.begin(), i = 0; itp != this->thrusterData.end(); itp++, i++)
@@ -405,14 +401,14 @@ void ThrusterStateEffector::computeDerivatives(double integTime, Eigen::Vector3d
 
         //! - For each thruster check if the end time is greater than the current time, and if so thrust
         if ((ops->ThrusterEndTime - integTime) >= 0.0 && ops->ThrustOnCmd > 0.0) {
-            kappaDot(i, 0) = (1.0 - this->kappaState->state(i, 0)) * it->cutoffFrequency;
+            kappaDot(i, 0) = (1.0 - kappa(i, 0)) * it->cutoffFrequency;
         }
         else {
-            kappaDot(i, 0) = -this->kappaState->state(i, 0) * it->cutoffFrequency;
+            kappaDot(i, 0) = -kappa(i, 0) * it->cutoffFrequency;
         }
 
         // Save the state to thruster ops
-        ops->ThrustFactor = this->kappaState->state(i, 0);
+        ops->ThrustFactor = kappa(i, 0);
     }
     this->kappaState->setDerivative(kappaDot);
 

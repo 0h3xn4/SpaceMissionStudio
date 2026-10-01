@@ -153,13 +153,6 @@ void SpinningBodyOneDOFStateEffector::writeOutputStateMessages(uint64_t CurrentC
     }
 }
 
-/*! This method prepends the name of the spacecraft for multi-spacecraft simulations.*/
-void SpinningBodyOneDOFStateEffector::prependSpacecraftNameToStates()
-{
-    this->nameOfThetaState = this->nameOfSpacecraftAttachedTo + this->nameOfThetaState;
-    this->nameOfThetaDotState = this->nameOfSpacecraftAttachedTo + this->nameOfThetaDotState;
-}
-
 /*! This method allows the SB state effector to have access to the hub states and gravity
  *
  * @param[in] states Dynamic parameter manager containing the required states.
@@ -172,7 +165,10 @@ void SpinningBodyOneDOFStateEffector::linkInStates(DynParamManager& states)
     // Get access to properties needed for dynamic coupling (Hub or prescribed)
     this->inertialPositionProperty = states.getPropertyReference(this->propName_inertialPosition);
     this->inertialVelocityProperty = states.getPropertyReference(this->propName_inertialVelocity);
-    this->hubSigmaState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfSigma);
+    // Prescribed attachments use the linked attitude property instead of a hub attitude state.
+    if (this->prescribedAttitudeProperty == nullptr) {
+        this->hubSigmaState = states.getStateObject(this->stateNameOfSigma);
+    }
 }
 
 /*! This method is used to link prescribed motion properties
@@ -264,8 +260,8 @@ void SpinningBodyOneDOFStateEffector::updateEffectorMassProps(double integTime [
     }
 
     // Grab current states
-    this->theta = this->thetaState->getStateReference()(0, 0);
-    this->thetaDot = this->thetaDotState->getStateReference()(0, 0);
+    this->theta = this->thetaState->stateView()(0, 0);
+    this->thetaDot = this->thetaDotState->stateView()(0, 0);
 
     // Compute the DCM from S frame to B frame and write sHat in B frame
     double dcm_S0S[3][3];
@@ -415,7 +411,7 @@ void SpinningBodyOneDOFStateEffector::addPrescribedMotionCouplingContributions(B
     Eigen::Matrix3d dcm_PB = sigma_PB.toRotationMatrix().transpose();
 
     // Collect hub states
-    Eigen::Vector3d omega_BN_B = this->hubOmega->getStateReference();
+    Eigen::Vector3d omega_BN_B = this->hubOmega->stateView();
     Eigen::Vector3d omega_BN_P = dcm_PB * omega_BN_B;
 
     // Prescribed motion translation coupling contributions
@@ -506,7 +502,7 @@ void SpinningBodyOneDOFStateEffector::computeDerivatives(double integTime [[mayb
     rDDotLocal_BN_B = this->dcm_BN * rDDotLocal_BN_N;
 
     // Compute Derivatives
-    this->thetaState->setDerivative(this->thetaDotState->getStateReference());
+    this->thetaState->setDerivative(this->thetaDotState->stateView());
     Eigen::MatrixXd thetaDDot(1, 1);
     thetaDDot(0, 0) = this->aTheta.dot(rDDotLocal_BN_B)
             + this->bTheta.dot(omegaDotLocal_BN_B) + this->cTheta;
@@ -546,7 +542,7 @@ void SpinningBodyOneDOFStateEffector::computeSpinningBodyInertialStates()
 {
     // - read live: the cached copy lags half a step at write time, unless a prescribed body set it
     if (this->prescribedAttitudeProperty == nullptr) {
-        const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->getStateReference().data());
+        const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->stateView().data());
         this->dcm_BN = sigmaHub_BN.toRotationMatrix().transpose();
     }
 

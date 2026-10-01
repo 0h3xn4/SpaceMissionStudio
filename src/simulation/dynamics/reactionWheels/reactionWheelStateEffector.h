@@ -31,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include "simulation/dynamics/_GeneralModuleFiles/stateData.h"
 #include "architecture/utilities/macroDefinitions.h"
@@ -69,6 +70,42 @@ public:
 	void WriteOutputMessages(uint64_t CurrentClock);
 	void ReadInputs();
 	void ConfigureRWRequests(double CurrentTime);
+    /**
+     * @brief Copy the reaction-wheel configuration collection.
+     * @return A vector of shared pointers to the effector's live wheel configurations.
+     * @note Changing the returned vector does not change the effector's collection;
+     * the pointed-to configuration objects remain shared with the effector.
+     */
+    std::vector<std::shared_ptr<RWConfigPayload>> getReactionWheelData() const { return this->ReactionWheelData; }
+
+    /**
+     * @brief Get the number of configured reaction wheels.
+     * @return Number of entries in the reaction-wheel collection.
+     */
+    size_t getReactionWheelCount() const { return this->ReactionWheelData.size(); }
+
+    /**
+     * @brief Access a reaction-wheel configuration by index.
+     * @param index Zero-based index of the reaction wheel.
+     * @return Shared pointer to the effector's live wheel configuration.
+     * @throws std::out_of_range If the index is outside the collection.
+     */
+    std::shared_ptr<RWConfigPayload> getReactionWheelAt(size_t index) const
+    {
+        return this->ReactionWheelData.at(index);
+    }
+    /**
+     * @brief Replace a reaction-wheel configuration before topology is frozen.
+     * @param index Zero-based index of the reaction wheel to replace.
+     * @param reactionWheel Shared configuration stored in the existing entry.
+     * @throws std::logic_error If the effector topology is frozen.
+     * @throws std::out_of_range If the index is outside the collection.
+     */
+    void setReactionWheelAt(size_t index, std::shared_ptr<RWConfigPayload> reactionWheel)
+    {
+        this->requireMutableTopology("ReactionWheelStateEffector::setReactionWheelAt");
+        this->ReactionWheelData.at(index) = std::move(reactionWheel);
+    }
 
 public:
 
@@ -80,7 +117,6 @@ public:
      */
     bool includeWheelMassProperties = false;
 
-	std::vector<std::shared_ptr<RWConfigPayload>> ReactionWheelData;          //!< RW information
 
 	ReadFunctor<ArrayMotorTorqueMsgPayload> rwMotorCmdInMsg;    //!< RW motor torque array cmd input message
 	Message<RWSpeedMsgPayload> rwSpeedOutMsg;                   //!< RW speed array output message
@@ -95,19 +131,23 @@ public:
     BSKLogger bskLogger;                                        //!< BSK Logging
 
 private:
+  Eigen::MatrixXd omegasDotBuffer; //!< [rad/s^2] Wheel acceleration scratch, sized during registration.
+  Eigen::MatrixXd thetasDotBuffer; //!< [rad/s] Wheel angle-rate scratch, sized during registration.
+  std::vector<std::shared_ptr<RWConfigPayload>> ReactionWheelData; //!< RW information
     void validateDimensions();  //!< Validate the wheel count against command and speed message capacities
     void validateRegisteredLayout();  //!< Reject changes to the registered speed and angle state layout
-    std::optional<std::vector<bool>> registeredWheelLayout;  //!< Per-wheel jitter-state allocation after registration
+  std::optional<std::vector<RWModels>> registeredWheelModels; //!< Immutable wheel models after registration
     void initializeWheelConfiguration(RWConfigPayload& rw);
 
     ArrayMotorTorqueMsgPayload incomingCmdBuffer = {};          //!< One-time allocation for savings
 	uint64_t prevCommandTime;                                   //!< Time for previous valid thruster firing
 
-	StateData *OmegasState;                                     //!< class variable
-	StateData *thetasState;                                     //!< class variable
+  StateData* OmegasState = nullptr; //!< class variable
+  StateData* thetasState = nullptr; //!< class variable
     Eigen::MatrixXd *g_N;           //!< [m/s^2] Gravitational acceleration in N frame components
 
-    double maxWheelAcceleration = 1.0e6;    //!< [rad/s^2] Maximum allowed wheel acceleration to prevent numerical instability
+  double maxWheelAcceleration =
+    1.0e6;                            //!< [rad/s^2] Maximum allowed wheel acceleration to prevent numerical instability
     double largeTorqueThreshold = 10.0;     //!< [Nm] Threshold for warning about large torque with unlimited torque setting
 
 public:
@@ -131,6 +171,9 @@ public:
      */
     void setLargeTorqueThreshold(double val) { largeTorqueThreshold = val; }
 
+private:
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<RWConfigLogMsgPayload>>> ownedRwOutMsgs; //!< Storage for rwOutMsgs.
 };
 
 

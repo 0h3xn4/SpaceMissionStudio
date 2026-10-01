@@ -20,6 +20,7 @@
 #include <iostream>
 
 #include "thrusterDynamicEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include <cmath>
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/astroConstants.h"
@@ -47,13 +48,7 @@ ThrusterDynamicEffector::ThrusterDynamicEffector()
 }
 
 /*! The destructor. */
-ThrusterDynamicEffector::~ThrusterDynamicEffector()
-{
-    for (long unsigned int c=0; c<this->thrusterOutMsgs.size(); c++) {
-        delete this->thrusterOutMsgs.at(c);
-    }
-    return;
-}
+ThrusterDynamicEffector::~ThrusterDynamicEffector() = default;
 
 
 /*! This method is used to reset the module.
@@ -79,13 +74,10 @@ void ThrusterDynamicEffector::Reset(uint64_t CurrentSimNanos [[maybe_unused]])
 void ThrusterDynamicEffector::writeOutputMessages(uint64_t CurrentClock)
 {
     size_t idx = 0;
-    std::vector<std::shared_ptr<THRSimConfig>>::iterator itp;
-    std::shared_ptr<THRSimConfig> it;
 
     THROutputMsgPayload tmpThruster;
-    for (itp = this->thrusterData.begin(); itp != this->thrusterData.end(); ++itp)
+    for (const auto& it : this->thrusterData)
     {
-        it = *itp;
         tmpThruster = this->thrusterOutMsgs[idx]->zeroMsgPayload;
         eigenVector3d2CArray(it->thrLoc_B, tmpThruster.thrusterLocation);
         eigenVector3d2CArray(it->thrDir_B, tmpThruster.thrusterDirection);
@@ -205,8 +197,8 @@ void ThrusterDynamicEffector::UpdateThrusterProperties()
     Eigen::MRPd sigma_BN;
     Eigen::Vector3d omega_BN_B;
     if (!this->stateNameOfSigma.empty()) {
-        omega_BN_B = this->hubOmega->getState();
-        sigma_BN = Eigen::MRPd(this->hubSigma->getState().data());
+        omega_BN_B = this->hubOmega->stateView();
+        sigma_BN = Eigen::MRPd(this->hubSigma->stateView().data());
     }
     else {
         omega_BN_B = *this->inertialAngVelocityProperty;
@@ -295,7 +287,7 @@ void ThrusterDynamicEffector::computeForceTorque(double integTime, double timeSt
     // Save omega_BN_B
     Eigen::Vector3d omegaLocal_BN_B;
     if (!this->stateNameOfSigma.empty()) {
-        omegaLocal_BN_B = this->hubOmega->getState();
+        omegaLocal_BN_B = this->hubOmega->stateView();
     }
     else {
         omegaLocal_BN_B = *this->inertialAngVelocityProperty;
@@ -325,14 +317,13 @@ void ThrusterDynamicEffector::computeForceTorque(double integTime, double timeSt
 	axesWeightMatrix << 2, 0, 0, 0, 1, 0, 0, 0, 1;
 
     // Loop variables
-    std::shared_ptr<THRSimConfig> it;
     THROperation* ops;
 
     // Iterate through all of the thrusters to aggregate the force/torque in the system
     size_t index;
     for(index = 0; index < this->thrusterData.size(); ++index)
     {
-        it = this->thrusterData[index];
+        const auto& it = this->thrusterData[index];
         ops = &it->ThrustOps;
 
         // Compute the thruster properties wrt the hub (note that B refers to the F frame when extracting from the thruster info)
@@ -409,9 +400,7 @@ void ThrusterDynamicEffector::addThruster(std::shared_ptr<THRSimConfig> newThrus
     this->thrusterData.push_back(newThruster);
 
     // Create corresponding output message
-    Message<THROutputMsgPayload>* msg;
-    msg = new Message<THROutputMsgPayload>;
-    this->thrusterOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedThrusterOutMsgs, this->thrusterOutMsgs);
 
     // Push back an empty message
     ReadFunctor<SCStatesMsgPayload> emptyReadFunctor;
@@ -432,15 +421,18 @@ void ThrusterDynamicEffector::addThruster(std::shared_ptr<THRSimConfig> newThrus
  */
 void ThrusterDynamicEffector::addThruster(std::shared_ptr<THRSimConfig> newThruster, Message<SCStatesMsgPayload>* bodyStateMsg)
 {
+    this->addThruster(newThruster, bodyStateMsg->addSubscriber());
+}
+
+void ThrusterDynamicEffector::addThruster(std::shared_ptr<THRSimConfig> newThruster, ReadFunctor<SCStatesMsgPayload> bodyStateReader)
+{
     this->thrusterData.push_back(newThruster);
 
     // Create corresponding output message
-    Message<THROutputMsgPayload>* msg;
-    msg = new Message<THROutputMsgPayload>;
-    this->thrusterOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedThrusterOutMsgs, this->thrusterOutMsgs);
 
     // Save the incoming body message
-    this->attachedBodyInMsgs.push_back(bodyStateMsg->addSubscriber());
+    this->attachedBodyInMsgs.push_back(bodyStateReader);
 
     // Add space for the conversion from body to hub and populate it with default values
     BodyToHubInfo attachedBodyToHub;
@@ -459,7 +451,7 @@ void ThrusterDynamicEffector::addThruster(std::shared_ptr<THRSimConfig> newThrus
  *
  * @param[in,out] CurrentThruster Thruster configuration whose blow-down properties are updated.
  */
-void ThrusterDynamicEffector::computeBlowDownDecay(std::shared_ptr<THRSimConfig> CurrentThruster)
+void ThrusterDynamicEffector::computeBlowDownDecay(const std::shared_ptr<THRSimConfig>& CurrentThruster)
 {
     THROperation *ops = &(CurrentThruster->ThrustOps);
 
@@ -492,16 +484,13 @@ void ThrusterDynamicEffector::computeBlowDownDecay(std::shared_ptr<THRSimConfig>
  */
 void ThrusterDynamicEffector::computeStateContribution(double integTime [[maybe_unused]]){
 
-    std::vector<std::shared_ptr<THRSimConfig>>::iterator itp;
-    std::shared_ptr<THRSimConfig> it;
     THROperation *ops;
     double mDotSingle=0.0;
     this->mDotTotal = 0.0;
 	this->stateDerivContribution.setZero();
     // Iterate through all of the thrusters to aggregate the force/torque in the system
-    for(itp = this->thrusterData.begin(); itp != this->thrusterData.end(); itp++)
+    for(const auto& it : this->thrusterData)
     {
-        it = *itp;
         ops = &it->ThrustOps;
         mDotSingle = 0.0;
         if(it->steadyIsp * ops->IspFactor * ops->ispBlowDownFactor > 0.0)
@@ -523,7 +512,7 @@ void ThrusterDynamicEffector::computeStateContribution(double integTime [[maybe_
  @param CurrentThruster Pointer to the configuration data for a given thruster
  @param currentTime The current simulation clock time converted to a double
  */
-void ThrusterDynamicEffector::ComputeThrusterFire(std::shared_ptr<THRSimConfig> CurrentThruster,
+void ThrusterDynamicEffector::ComputeThrusterFire(const std::shared_ptr<THRSimConfig>& CurrentThruster,
                                                   double currentTime)
 {
     std::vector<THRTimePair>::iterator it;
@@ -582,7 +571,7 @@ void ThrusterDynamicEffector::ComputeThrusterFire(std::shared_ptr<THRSimConfig> 
  @param CurrentThruster Pointer to the configuration data for a given thruster
  @param currentTime The current simulation clock time converted to a double
  */
-void ThrusterDynamicEffector::ComputeThrusterShut(std::shared_ptr<THRSimConfig> CurrentThruster,
+void ThrusterDynamicEffector::ComputeThrusterShut(const std::shared_ptr<THRSimConfig>& CurrentThruster,
                                                   double currentTime)
 {
     std::vector<THRTimePair>::iterator it;
@@ -635,7 +624,7 @@ void ThrusterDynamicEffector::ComputeThrusterShut(std::shared_ptr<THRSimConfig> 
  @param thrData The data for the thruster that we are currently firing
  @param thrRamp This just allows us to avoid switching to figure out which ramp
  */
-double ThrusterDynamicEffector::thrFactorToTime(std::shared_ptr<THRSimConfig> thrData,
+double ThrusterDynamicEffector::thrFactorToTime(const std::shared_ptr<THRSimConfig>& thrData,
                                                 std::vector<THRTimePair> *thrRamp)
 {
     std::vector<THRTimePair>::iterator it;

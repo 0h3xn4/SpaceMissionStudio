@@ -21,6 +21,8 @@
 #ifndef VSCMGSTATEEFFECTOR_H
 #define VSCMGSTATEEFFECTOR_H
 
+#include <cstddef>
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -65,8 +67,42 @@ public:
                                               double & rotEnergyContr, Eigen::Vector3d omega_BN_B);  //!< [-] Energy and momentum calculations
     void computeDerivatives(double integTime, Eigen::Vector3d rDDot_BN_N, Eigen::Vector3d omegaDot_BN_B, Eigen::MRPd sigma_BN);  //!< [-] Method for each stateEffector to calculate derivatives
 
+    /**
+     * @brief Copy the current VSCMG configuration data.
+     * @return Independent copies of all stored VSCMG configurations.
+     */
+    std::vector<VSCMGConfigMsgPayload> getVSCMGData() const { return this->VSCMGData; }
+
+    /**
+     * @brief Get the number of configured VSCMGs.
+     * @return Number of entries in the VSCMG collection.
+     */
+    size_t getVSCMGCount() const { return this->VSCMGData.size(); }
+
+    /**
+     * @brief Access a VSCMG configuration in the effector's live storage.
+     * @param index Zero-based index of the VSCMG.
+     * @return Non-owning pointer to the stored configuration.
+     * @throws std::out_of_range If the index is outside the collection.
+     * @note The effector owns the returned object. Adding VSCMGs can invalidate
+     * the pointer, and the pointer must not outlive the effector.
+     */
+    VSCMGConfigMsgPayload* getVSCMGAt(size_t index) { return &this->VSCMGData.at(index); }
+
+    /**
+     * @brief Replace a VSCMG configuration before topology is frozen.
+     * @param index Zero-based index of the VSCMG to replace.
+     * @param vscmg Configuration copied into the existing entry.
+     * @throws std::logic_error If the effector topology is frozen.
+     * @throws std::out_of_range If the index is outside the collection.
+     */
+    void setVSCMGAt(size_t index, const VSCMGConfigMsgPayload& vscmg)
+    {
+        this->requireMutableTopology("VSCMGStateEffector::setVSCMGAt");
+        this->VSCMGData.at(index) = vscmg;
+    }
+
 public:
-	std::vector<VSCMGConfigMsgPayload> VSCMGData; //!< [-] VSCMG data structure
     Eigen::MatrixXd *g_N; 						//!< [m/s^2] Gravitational acceleration in N frame components
 
     ReadFunctor<VSCMGArrayTorqueMsgPayload> cmdsInMsg;  //!< [-] motor torque command input message
@@ -84,6 +120,7 @@ public:
   BSKLogger bskLogger;                      //!< [-] BSK Logging
 
 private:
+  std::vector<VSCMGConfigMsgPayload> VSCMGData; //!< [-] VSCMG data structure
     /** @brief Validate and derive configuration without requiring linked states or clearing commands. */
     void initializeConfiguration();
     VSCMGArrayTorqueMsgPayload incomingCmdBuffer{}; //!< [-] One-time allocation for savings
@@ -95,6 +132,8 @@ private:
 	StateData *gammasState;                     //!< [rad] CMG gimbal angle
 	StateData *gammaDotsState;                  //!< [rad/s] CMG gimbal angle rate
 
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<VSCMGConfigMsgPayload>>> ownedVscmgOutMsgs; //!< Storage for vscmgOutMsgs.
 };
 
 

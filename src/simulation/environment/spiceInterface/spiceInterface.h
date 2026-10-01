@@ -20,6 +20,8 @@
 #ifndef SpiceInterface_H
 #define SpiceInterface_H
 
+#include <array>
+#include <cstdint>
 #include <vector>
 #include <map>
 #include <filesystem>
@@ -221,8 +223,6 @@ public:
     std::string zeroBase;                //!< -- Base zero point to use for states
 	std::string timeOutPicture;          //!< -- Optional parameter used to extract time strings
     bool SPICELoaded;                    //!< -- Boolean indicating to reload spice
-    int charBufferSize;         //!< -- avert your eyes we're getting SPICE
-    uint8_t *spiceBuffer;       //!< -- General buffer to pass down to spice
     std::string UTCCalInit;     //!< -- UTC time string for init time
 
     std::vector<std::string>planetFrames; //!< -- Optional vector of planet frame names.  Default values are IAU_ + planet name
@@ -238,6 +238,9 @@ public:
     BSKLogger bskLogger;                      //!< -- BSK Logging
 
 private:
+    static constexpr int charBufferSize = 512; //!< Capacity of SPICE scratch buffers, including the null terminator.
+    std::array<char, charBufferSize> spiceBuffer{}; //!< Scratch storage for Julian date conversion.
+
     std::string GPSEpochTime;   //!< -- String for the GPS epoch
     double JDGPSEpoch;          //!< s Epoch for GPS time.  Saved for efficiency
 
@@ -278,6 +281,12 @@ private:
 
     //! Increment this planet's position (isPosition=true) or orientation SPICE-query tally.
     void countSpiceQuery(const std::string& planetName, bool isPosition);
+
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<SpicePlanetStateMsgPayload>>> ownedPlanetStateOutMsgs; //!< Storage for planetStateOutMsgs.
+    std::vector<std::unique_ptr<Message<SCStatesMsgPayload>>> ownedScStateOutMsgs; //!< Storage for scStateOutMsgs.
+    std::vector<std::unique_ptr<Message<AttRefMsgPayload>>> ownedAttRefStateOutMsgs; //!< Storage for attRefStateOutMsgs.
+    std::vector<std::unique_ptr<Message<TransRefMsgPayload>>> ownedTransRefStateOutMsgs; //!< Storage for transRefStateOutMsgs.
 };
 
 

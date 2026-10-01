@@ -18,6 +18,7 @@
  */
 
 #include "simulation/environment/spacecraftLocation/spacecraftLocation.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/linearAlgebra.h"
 
@@ -48,13 +49,7 @@ SpacecraftLocation::SpacecraftLocation()
 /*! Empty destructor method.
 
  */
-SpacecraftLocation::~SpacecraftLocation()
-{
-    for (long unsigned int c = 0; c < this->accessOutMsgs.size(); c++) {
-        delete this->accessOutMsgs.at(c);
-    }
-    return;
-}
+SpacecraftLocation::~SpacecraftLocation() = default;
 
 /*! Resets the internal position to the specified initial position.*/
 void
@@ -106,9 +101,7 @@ SpacecraftLocation::addSpacecraftToModel(Message<SCStatesMsgPayload>* tmpScMsg)
     this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
 
     /* create output message */
-    Message<AccessMsgPayload>* msg;
-    msg = new Message<AccessMsgPayload>;
-    this->accessOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedAccessOutMsgs, this->accessOutMsgs);
 
     /* expand the buffer vector */
     AccessMsgPayload accMsg;

@@ -115,29 +115,48 @@ void FuelTank::setTankModel(std::shared_ptr<FuelTankModel> model) {
     this->fuelTankModel = model;
 }
 
-/*! Attach a fuel slosh particle to the tank
+/*! @brief Attach a fuel slosh particle to the tank.
  *
  * @param[in] particle Fuel-slosh particle to attach.
+ * @note The particle must be non-null. Python retains the supplied object for
+ * the tank's lifetime; C++ callers must keep the borrowed particle alive.
  */
 void FuelTank::pushFuelSloshParticle(FuelSlosh *particle) {
+    if (!particle) {
+        this->bskLogger.bskError("FuelTank: fuel-slosh connections require a non-null particle");
+    }
     // Add a fuel slosh particle to the vector of fuel slosh particles
     this->fuelSloshParticles.push_back(particle);
 }
 
-/*! Attach a thruster dynamic effector to the tank
+/*! @brief Attach a thruster dynamic effector to the tank.
  *
  * @param[in] dynEff Thruster dynamic effector to attach.
+ * @note The effector must be non-null and setTankModel() must be called first.
+ * Python retains the supplied object for the tank's lifetime; C++ callers
+ * must keep the borrowed effector alive.
  */
 void FuelTank::addThrusterSet(ThrusterDynamicEffector *dynEff) {
+    if (!dynEff) {
+        this->bskLogger.bskError("FuelTank: thruster connections require a non-null effector");
+    }
+    if (!this->fuelTankModel) {
+        this->bskLogger.bskError("FuelTank: call setTankModel() before attaching a dynamic thruster effector");
+    }
     thrDynEffectors.push_back(dynEff);
     dynEff->fuelMass = this->fuelTankModel->propMassInit;
 }
 
-/*! Attach a thruster state effector to the tank
+/*! @brief Attach a thruster state effector to the tank.
  *
  * @param[in] stateEff Thruster state effector to attach.
+ * @note The effector must be non-null. Python retains the supplied object for
+ * the tank's lifetime; C++ callers must keep the borrowed effector alive.
  */
 void FuelTank::addThrusterSet(ThrusterStateEffector *stateEff) {
+    if (!stateEff) {
+        this->bskLogger.bskError("FuelTank: thruster connections require a non-null effector");
+    }
     thrStateEffectors.push_back(stateEff);
 }
 
@@ -210,7 +229,7 @@ void FuelTank::updateRetainedMassPropertyDerivatives(double mass,
  */
 void FuelTank::updateEffectorMassProps(double integTime) {
     // Add contributions of the mass of the tank
-    double massLocal = this->massState->getState()(0, 0);
+    double massLocal = this->massState->stateView()(0, 0);
     if (massLocal < 0.0) {
         // Clamp integration overshoot at empty before tank models compute mass properties.
         massLocal = 0.0;  // [kg]
@@ -325,12 +344,12 @@ void FuelTank::updateContributions(double integTime [[maybe_unused]],
     backSubContr.matrixA = backSubContr.matrixB = backSubContr.matrixC = backSubContr.matrixD = Eigen::Matrix3d::Zero();
     backSubContr.vecTrans = backSubContr.vecRot = Eigen::Vector3d::Zero();
 
-    double massLocal = this->massState->getState()(0, 0);
+    double massLocal = this->massState->stateView()(0, 0);
     if (massLocal < 0.0) {
         massLocal = 0.0;  // [kg]
     }
     const double mDotTank = -this->tankFuelConsumption; // [kg/s] tank mass rate this substep
-    omega_BN_BLocal = this->omegaState->getState();
+    omega_BN_BLocal = this->omegaState->stateView();
     if (!this->getUpdateOnly()) {
         const Eigen::Matrix3d dcm_TBLocal = this->getDcm_TB();
         Eigen::Vector3d rPrime_TcB_B = dcm_TBLocal.transpose() * this->fuelTankModel->rPrime_TcT_T;
@@ -361,7 +380,7 @@ void FuelTank::computeDerivatives(double integTime [[maybe_unused]],
                                   Eigen::Vector3d omegaDot_BN_B [[maybe_unused]],
                                   Eigen::MRPd sigma_BN [[maybe_unused]]) {
     Eigen::MatrixXd conv(1, 1);
-    double massLocal = this->massState->getState()(0, 0);
+    double massLocal = this->massState->stateView()(0, 0);
     double tankFuelConsumptionLocal = this->tankFuelConsumption;
     if (massLocal <= 0.0 && tankFuelConsumptionLocal > 0.0) {
         tankFuelConsumptionLocal = 0.0;  // [kg/s]
@@ -383,11 +402,11 @@ void FuelTank::updateEnergyMomContributions(double integTime [[maybe_unused]],
                                             Eigen::Vector3d omega_BN_B [[maybe_unused]]) {
     // Get variables needed for energy momentum calcs
     Eigen::Vector3d omegaLocal_BN_B;
-    omegaLocal_BN_B = this->omegaState->getState();
+    omegaLocal_BN_B = this->omegaState->stateView();
     Eigen::Vector3d rDot_TcB_B;
 
     // Find rotational angular momentum contribution from hub
-    double massLocal = this->massState->getState()(0, 0);
+    double massLocal = this->massState->stateView()(0, 0);
     rDot_TcB_B = omegaLocal_BN_B.cross(this->r_TcB_B);
     rotAngMomPntCContr_B += this->ITankPntT_B * omegaLocal_BN_B + massLocal * this->r_TcB_B.cross(rDot_TcB_B);
 

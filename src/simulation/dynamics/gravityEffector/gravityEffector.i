@@ -19,6 +19,8 @@
 
 %module(package="Basilisk.simulation") gravityEffector
 
+// BSK_SWIG_RUNTIME_DEPENDS: pointMassGravityModel polyhedralGravityModel sphericalHarmonicsGravityModel
+
 %include "architecture/utilities/bskException.swg"
 %default_bsk_exception();
 
@@ -57,12 +59,10 @@ from typing import Optional, Union
 %immutable GravityEffector::systemTimeCorrPropName;
 %immutable GravityEffector::inertialPositionPropName;
 %immutable GravityEffector::inertialVelocityPropName;
-%immutable GravityEffector::nameOfSpacecraftAttachedTo;
 
 // Methods that users do not need / should not be calling
 %ignore GravityEffector::updateInertialPosAndVel;
 %ignore GravityEffector::updateEnergyContributions;
-%ignore GravityEffector::prependSpacecraftNameToStates;
 
 %pythonappend GravBodyData::GravBodyData() %{
     object.__setattr__(self, "_pyGravityModel", None) # Enable setting _pyGravityModel
@@ -70,7 +70,7 @@ from typing import Optional, Union
 
 %import "simulation/dynamics/_GeneralModuleFiles/gravityModel.i"
 
-%include "simulation/dynamics/_GeneralModuleFiles/dynParamManager.i"
+%include "simulation/dynamics/_GeneralModuleFiles/dynParamManagerImport.swg"
 %include "simulation/dynamics/_GeneralModuleFiles/dynamicEffector.h"
 
 %include "sys_model.i"

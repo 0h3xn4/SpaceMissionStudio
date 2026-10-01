@@ -36,7 +36,7 @@ from Basilisk.architecture.swig_common_model import *
 %include "swig_deprecated.i"
 
 %include "sys_model.i"
-%include "simulation/dynamics/_GeneralModuleFiles/dynParamManager.i"
+%include "simulation/dynamics/_GeneralModuleFiles/dynParamManagerImport.swg"
 %include "simulation/dynamics/_GeneralModuleFiles/stateEffector.h"
 %deprecated_variable(
     FuelTank,
@@ -80,6 +80,26 @@ from Basilisk.architecture.swig_common_model import *
 %shared_ptr(FuelTankModelEmptying)
 %shared_ptr(FuelTankModelUniformBurn)
 %shared_ptr(FuelTankModelCentrifugalBurn)
+
+// Retain Python owners of the borrowed native connections. Keep these references
+// visible to garbage collection, including cycles introduced by user code.
+// SWIG exposes the overloaded addThrusterSet method through *args.
+%pythonappend FuelTank::addThrusterSet %{
+    connections = getattr(self, "_bsk_fuel_connections", None)
+    if connections is None:
+        connections = []
+        object.__setattr__(self, "_bsk_fuel_connections", connections)
+    if not any(connection is args[0] for connection in connections):
+        connections.append(args[0])
+%}
+%pythonappend FuelTank::pushFuelSloshParticle %{
+    connections = getattr(self, "_bsk_fuel_connections", None)
+    if connections is None:
+        connections = []
+        object.__setattr__(self, "_bsk_fuel_connections", connections)
+    if not any(connection is particle for connection in connections):
+        connections.append(particle)
+%}
 
 %include "fuelTank.h"
 

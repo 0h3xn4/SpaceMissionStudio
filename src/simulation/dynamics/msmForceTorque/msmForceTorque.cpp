@@ -19,6 +19,7 @@
 
 
 #include "simulation/dynamics/msmForceTorque/msmForceTorque.h"
+#include "architecture/messaging/ownedMessage.h"
 #include <iostream>
 
 /*! This is the constructor for the module class.  It sets default variable
@@ -28,19 +29,7 @@ MsmForceTorque::MsmForceTorque()
 }
 
 /*! Module Destructor */
-MsmForceTorque::~MsmForceTorque()
-{
-    /* free up output message objects */
-    for (long unsigned int c=0; c<this->eTorqueOutMsgs.size(); c++) {
-        delete this->eTorqueOutMsgs.at(c);
-    }
-    for (long unsigned int c=0; c<this->eForceOutMsgs.size(); c++) {
-        delete this->eForceOutMsgs.at(c);
-    }
-    for (long unsigned int c=0; c<this->chargeMsmOutMsgs.size(); c++) {
-        delete this->chargeMsmOutMsgs.at(c);
-    }
-}
+MsmForceTorque::~MsmForceTorque() = default;
 
 /*! This method is used to reset the module and checks that required input messages are connect.
 
@@ -106,17 +95,11 @@ void MsmForceTorque::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScMsg
     this->sigma_BNList.push_back(zeroMRP);
 
     /* create output message objects */
-    Message<CmdTorqueBodyMsgPayload> *msgTorque;
-    msgTorque = new Message<CmdTorqueBodyMsgPayload>;
-    this->eTorqueOutMsgs.push_back(msgTorque);
+    addOwnedMessage(this->ownedETorqueOutMsgs, this->eTorqueOutMsgs);
 
-    Message<CmdForceInertialMsgPayload> *msgForce;
-    msgForce = new Message<CmdForceInertialMsgPayload>;
-    this->eForceOutMsgs.push_back(msgForce);
+    addOwnedMessage(this->ownedEForceOutMsgs, this->eForceOutMsgs);
 
-    Message<ChargeMsmMsgPayload> *msmCharge;
-    msmCharge = new Message<ChargeMsmMsgPayload>;
-    this->chargeMsmOutMsgs.push_back(msmCharge);
+    addOwnedMessage(this->ownedChargeMsmOutMsgs, this->chargeMsmOutMsgs);
 
 }
 

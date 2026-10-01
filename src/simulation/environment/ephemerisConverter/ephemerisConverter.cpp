@@ -17,6 +17,7 @@
 
  */
 #include "simulation/environment/ephemerisConverter/ephemerisConverter.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/macroDefinitions.h"
@@ -25,12 +26,7 @@ EphemerisConverter::EphemerisConverter()
 {
 }
 
-EphemerisConverter::~EphemerisConverter()
-{
-    for (long unsigned int c=0; c<this->ephemOutMsgs.size(); c++) {
-        delete this->ephemOutMsgs.at(c);
-    }
-}
+EphemerisConverter::~EphemerisConverter() = default;
 
 /*! Reset the module to origina configuration values.
 
@@ -51,9 +47,7 @@ void EphemerisConverter::addSpiceInputMsg(Message<SpicePlanetStateMsgPayload> *t
     this->spiceInMsgs.push_back(tmpMsg->addSubscriber());
 
     /* setup output corresponding message */
-    Message<EphemerisMsgPayload> *msg;
-    msg = new Message<EphemerisMsgPayload>;
-    this->ephemOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedEphemOutMsgs, this->ephemOutMsgs);
 
 
     /* update input and output buffers*/

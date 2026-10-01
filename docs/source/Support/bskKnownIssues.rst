@@ -11,6 +11,21 @@ Version |release|
   failed during initialization with two or more components because of left-handed gimbal frames.
   The affected axes now form right-handed frames, fixing the benchmark in the current version.
 
+- Two-axis spinning-body default names could collide with single-axis state
+  and property names once instance counters reached multiple digits. The
+  two-axis names now separate the axis and instance numbers with ``_``.
+  Access these records through each effector's public name fields.
+
+- Empty reaction-wheel and thruster effectors remain usable with flat-state
+  registration. They do not create zero-sized state records, and their device
+  counts still become immutable after successful registration.
+
+- Dynamics-manager references and callback-created state handles are borrowed.
+  Keep the owning dynamics object or MuJoCo scene alive while using them.
+  Replacing an integrator destroys the old method; reacquire the integrator
+  property afterward. Python rejects reinstalling a previously transferred or
+  borrowed integrator after replacement or owner destruction.
+
 - GitHub issue 1581: The C ``debyeLength()`` utility could read beyond its lookup
   arrays for altitudes from 2,000 km through 30,000 km, producing undefined
   results such as NaN. The interval search now includes the final table endpoint
@@ -18,10 +33,85 @@ Version |release|
   NaN altitudes could also trigger an out-of-bounds read; they now produce an
   error diagnostic and return NaN before interpolation.
 
+- The deprecated ``Basilisk.simulation.spacecraftSystem`` module and its
+  supporting effector APIs have been removed. Use :ref:`spacecraft` with
+  :ref:`constraintDynamicEffector` for connected spacecraft; see
+  :ref:`scenarioConstrainedDynamics` for a working example. API migration details
+  are listed in the :ref:`release notes <bsk-release-current>`. The supported
+  prescribed-motion branches also no longer emit a missing-state warning when
+  looking up an unused hub-attitude state during initialization.
+
 - GitHub issue 1563: ``BSpline.approximate()`` could ignore the second and third
   components of the final-acceleration constraint by reading uninitialized
   constraint-vector entries. All three components now use the correct constraint
   row. This is fixed in the current version.
+
+- GitHub issue 282: Passing the active integrator back to ``setIntegrator()``
+  could delete it and leave the dynamics object with a dangling pointer. The
+  operation is now a no-op, and persistent integrator ownership uses
+  ``std::unique_ptr``. Python ``integrator`` attribute assignment now transfers
+  ownership through the same setter. Explicitly disowning a newly constructed
+  Python integrator before installation remains supported. Custom C++ dynamics
+  classes should replace direct raw-pointer assignments to the owning member
+  with ``setIntegrator(std::make_unique<IntegratorType>(this))`` or transfer an
+  existing ``unique_ptr`` with ``std::move``; see :ref:`creatingDynObject`.
+
+- GitHub issue 282: Synchronized dynamics could retain a dangling pointer after a
+  secondary was destroyed, or leave a surviving secondary marked as synchronized
+  after its primary was destroyed. Python connections now retain their supplied
+  secondary objects, and native destruction removes synchronization links in
+  either order. Repeated connections are harmless; invalid self, nested, or
+  competing-primary connections now raise ``BasiliskError``. Python calls through
+  borrowed primary proxies are rejected before changing connections; use the
+  owning primary object so retention survives temporary aliases. See
+  :ref:`bskSynchronizedDynamicsLifetime`.
+
+- GitHub issue 282: Resetting simulation threads could clear process assignments
+  while a worker was still using them, and shutdown requests used an unsynchronized
+  flag. Worker ownership now guarantees stop and join before releasing thread state
+  or changing assignments. ``requestStop()`` and the compatible ``killThread()``
+  now wake idle workers on the first stop request; repeated calls are harmless.
+  Pool shutdown signals all workers before joining. See :ref:`bskThreadOwnership`
+  for configuration and C++ migration details.
+
+- GitHub issue 282: Dynamically allocated output messages now use private
+  ``std::unique_ptr`` storage, preserving the public message-vector interfaces.
+  This fixes missing cleanup in the two-axis spinning-body effector, joint
+  controllers, thruster on-time converter, and the nested wheel/thruster outputs
+  of ``DataFileToViz``. Partially constructed output collections are also cleaned
+  up when allocation fails. The shared ``addOwnedMessage()`` helper rolls back
+  each owner/view insertion if either append fails; earlier module configuration
+  changes are not rolled back. See :ref:`bskOutputMessageOwnership` for the
+  ownership and reconfiguration contract.
+
+- GitHub issue 282: Spacecraft-input configuration methods in the atmosphere,
+  magnetic-field, wind, eclipse, location, charging, MSM, and formation-barycenter
+  models could retain pointers to standalone Python messages after those messages
+  were collected. These methods, along with ``Eclipse.addPlanetToModel()`` and
+  ``EphemerisConverter.addSpiceInputMsg()``, now retain each source through its
+  native reader and release it on unsubscribe, replacement, or reader destruction.
+  The same protection now covers power and data storage, transmitters, downlink
+  handling, mapping instruments, simple-antenna and albedo planet inputs,
+  articulated facets, thruster attached-body inputs, small-body navigation
+  thruster inputs, and Vizard camera configuration messages. Pending and copied
+  readers retain their sources until the last connected copy is released.
+  Module-owned outputs still require their producing module to remain alive.
+  See :ref:`bskModuleInputMessageLifetime`.
+
+- GitHub issue 282: SPICE scratch buffers could leak when spacecraft-name
+  validation or allocation raised an exception. Fixed-size arrays and an
+  automatically managed time-output buffer now guarantee cleanup. The internal
+  ``SpiceInterface.spiceBuffer`` and ``charBufferSize`` fields are now private;
+  custom code must remove direct access to them. Standard simulation configuration
+  is unchanged. Time-output formats that leave insufficient buffer capacity now
+  raise ``BasiliskError`` before calling SPICE.
+
+- GitHub issue 282: Fuel tanks could keep dangling pointers to thruster effectors
+  and fuel-slosh particles created in a local Python scope. ``addThrusterSet()``
+  and ``pushFuelSloshParticle()`` now retain their supplied Python objects until
+  the tank is destroyed. Null connections, and dynamic-thruster connections made
+  before ``setTankModel()``, now raise ``BasiliskError``. C++ callers must still
+  keep borrowed effectors alive. See :ref:`fuelTank`.
 
 - GitHub issue 281: The C and C++ template documentation now explains the implemented
   calculation, optional inputs, reset behavior, and runnable usage. General RST authoring
@@ -340,7 +430,7 @@ Version 2.11.0 (July 7, 2026)
   Configurations that set these members explicitly (all shipped examples and tests do) were unaffected.
 - BSK-469: The spacecraft hub properties were not validated, so a zero hub mass or a singular hub
   inertia tensor silently produced ``NaN`` states, and a negative hub mass silently reversed the
-  translational response to applied forces. :ref:`spacecraft` and :ref:`spacecraftSystem` now verify
+  translational response to applied forces. :ref:`spacecraft` and ``spacecraftSystem`` now verify
   on reset that ``mHub`` is strictly positive and ``IHubPntBc_B`` is symmetric positive definite.
   This is fixed in the current version.
 - Extension-generated custom messages using ``bsk_generate_messages(GENERATE_C_INTERFACE)`` could fail to subscribe

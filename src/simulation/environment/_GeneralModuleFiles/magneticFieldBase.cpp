@@ -18,6 +18,7 @@
  */
 
 #include "magneticFieldBase.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/linearAlgebra.h"
 #include "architecture/utilities/macroDefinitions.h"
 #include "architecture/utilities/simDefinitions.h"
@@ -57,13 +58,7 @@ MagneticFieldBase::MagneticFieldBase()
 /*! Destructor.
 
  */
-MagneticFieldBase::~MagneticFieldBase()
-{
-    for (long unsigned int c=0; c<this->envOutMsgs.size(); c++) {
-        delete this->envOutMsgs.at(c);
-    }
-    return;
-}
+MagneticFieldBase::~MagneticFieldBase() = default;
 
 /*! Adds the spacecraft message name to a vector of sc message names and automatically creates an output message name.
 
@@ -75,9 +70,7 @@ void MagneticFieldBase::addSpacecraftToModel(Message<SCStatesMsgPayload> *tmpScM
     this->scStateInMsgs.push_back(tmpScMsg->addSubscriber());
 
     /* create output message */
-    Message<MagneticFieldMsgPayload> *msg;
-    msg = new Message<MagneticFieldMsgPayload>;
-    this->envOutMsgs.push_back(msg);
+    addOwnedMessage(this->ownedEnvOutMsgs, this->envOutMsgs);
 
     /* create buffer message copies*/
     MagneticFieldMsgPayload msgMagBuffer;

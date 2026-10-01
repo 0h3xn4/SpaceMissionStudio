@@ -18,6 +18,7 @@
  */
 
 #include "spinningBodyNDOFStateEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/macroDefinitions.h"
 #include "architecture/utilities/rigidBodyKinematics.h"
@@ -41,13 +42,7 @@ SpinningBodyNDOFStateEffector::SpinningBodyNDOFStateEffector()
 
 uint64_t SpinningBodyNDOFStateEffector::effectorID = 1;
 
-SpinningBodyNDOFStateEffector::~SpinningBodyNDOFStateEffector()
-{
-    for (size_t c = 0; c < this->spinningBodyOutMsgs.size(); c++) {
-        delete this->spinningBodyOutMsgs.at(c);
-        delete this->spinningBodyConfigLogOutMsgs.at(c);
-    }
-}
+SpinningBodyNDOFStateEffector::~SpinningBodyNDOFStateEffector() = default;
 
 /*! Validate the module configuration when the scheduler resets the model.
 
@@ -160,11 +155,12 @@ void SpinningBody::setC(double c) {
  * @param[in] newBody Spinning-body configuration to add.
  */
 void SpinningBodyNDOFStateEffector::addSpinningBody(const std::shared_ptr<SpinningBody> newBody) {
+    this->requireMutableTopology("SpinningBodyNDOFStateEffector::addSpinningBody");
     spinningBodyVec.push_back(newBody);
     this->numberOfDegreesOfFreedom++;
 
-    this->spinningBodyConfigLogOutMsgs.push_back(new Message<SCStatesMsgPayload>);
-    this->spinningBodyOutMsgs.push_back(new Message<HingedRigidBodyMsgPayload>);
+    addOwnedMessage(this->ownedSpinningBodyConfigLogOutMsgs, this->spinningBodyConfigLogOutMsgs);
+    addOwnedMessage(this->ownedSpinningBodyOutMsgs, this->spinningBodyOutMsgs);
     this->spinningBodyRefInMsgs.push_back(ReadFunctor<HingedRigidBodyMsgPayload>());
 
     this->ATheta.conservativeResize(this->ATheta.rows()+1, 3);
@@ -258,21 +254,15 @@ void SpinningBodyNDOFStateEffector::writeOutputStateMessages(uint64_t CurrentClo
     }
 }
 
-void SpinningBodyNDOFStateEffector::prependSpacecraftNameToStates()
-{
-    this->nameOfThetaState = this->nameOfSpacecraftAttachedTo + this->nameOfThetaState;
-    this->nameOfThetaDotState = this->nameOfSpacecraftAttachedTo + this->nameOfThetaDotState;
-}
-
 /*! @brief Link the required dynamics states.
  *
  * @param[in] states Dynamic parameter manager containing the required states.
  */
 void SpinningBodyNDOFStateEffector::linkInStates(DynParamManager& states)
 {
-    this->inertialPositionProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + "r_BN_N");
-    this->inertialVelocityProperty = states.getPropertyReference(this->nameOfSpacecraftAttachedTo + "v_BN_N");
-    this->hubSigmaState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfSigma);
+    this->inertialPositionProperty = states.getPropertyReference("r_BN_N");
+    this->inertialVelocityProperty = states.getPropertyReference("v_BN_N");
+    this->hubSigmaState = states.getStateObject(this->stateNameOfSigma);
 }
 
 /*! @brief Register the effector dynamics states.
@@ -379,13 +369,13 @@ void SpinningBodyNDOFStateEffector::computeAttitudeProperties(std::shared_ptr<Sp
     const Eigen::Index stateIndex = static_cast<Eigen::Index>(spinningBodyIndex);
     if (spinningBody->isAxisLocked)
     {
-        auto thetaDotVector = this->thetaDotState->getState();
+        auto thetaDotVector = this->thetaDotState->stateView();
         thetaDotVector(stateIndex) = 0.0;
         this->thetaDotState->setState(thetaDotVector);
     }
 
-    spinningBody->theta = this->thetaState->getStateReference()(stateIndex);
-    spinningBody->thetaDot = this->thetaDotState->getStateReference()(stateIndex);
+    spinningBody->theta = this->thetaState->stateView()(stateIndex);
+    spinningBody->thetaDot = this->thetaDotState->stateView()(stateIndex);
 
     double dcm_S0S[3][3];
     double prv_S0S_array[3];
@@ -775,7 +765,7 @@ void SpinningBodyNDOFStateEffector::computeDerivatives(double integTime [[maybe_
     Eigen::Vector3d rDDotLocal_BN_B = this->dcm_BN * rDDot_BN_N;
 
     Eigen::VectorXd thetaDDot = this->ATheta * rDDotLocal_BN_B + this->BTheta * omegaDot_BN_B + this->CTheta;
-    this->thetaState->setDerivative(this->thetaDotState->getStateReference());
+    this->thetaState->setDerivative(this->thetaDotState->stateView());
     this->thetaDotState->setDerivative(thetaDDot);
 }
 
@@ -808,7 +798,7 @@ void SpinningBodyNDOFStateEffector::computeSpinningBodyInertialStates()
 {
     // - read live: the cached copy lags half a step at write time, unless a prescribed body set it
     if (this->prescribedAttitudeProperty == nullptr) {
-        const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->getStateReference().data());
+        const Eigen::MRPd sigmaHub_BN(this->hubSigmaState->stateView().data());
         this->dcm_BN = sigmaHub_BN.toRotationMatrix().transpose();
     }
 

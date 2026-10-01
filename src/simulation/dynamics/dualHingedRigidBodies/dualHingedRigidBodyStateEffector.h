@@ -20,6 +20,7 @@
 #ifndef DUAL_HINGED_RIGID_BODY_STATE_EFFECTOR_H
 #define DUAL_HINGED_RIGID_BODY_STATE_EFFECTOR_H
 
+#include <memory>
 #include "simulation/dynamics/_GeneralModuleFiles/stateEffector.h"
 #include "simulation/dynamics/_GeneralModuleFiles/dynamicEffector.h"
 #include "simulation/dynamics/_GeneralModuleFiles/stateData.h"
@@ -58,7 +59,6 @@ public:
 
 private:
     void computePanelInertialStates();
-    void prependSpacecraftNameToStates() override; //!< class method used for multiple spacecraft
 
 public:
     double mass1;                     //!< [kg] mass of 1st hinged rigid body
@@ -100,9 +100,7 @@ public:
 
 private:
     static uint64_t effectorID;        //!< [] ID number of this panel
-    Eigen::Vector3d r_H1P_P;          //!< [m] vector pointing from primary body frame P origin to Hinge 1 location.  If a single spacecraft body is modeled than P is the same as B
     Eigen::Vector3d r_H2P_P;          //!< [m] vector pointing from primary body frame P origin to Hinge 2 location
-    Eigen::Matrix3d dcm_H1P;          //!< DCM from primary body frame to hinge 1 frame
     double u1;                        //!< [N-m] motor torques on panel 1
     double u2;                        //!< [N-m] motor torques on panel 2
     Eigen::Matrix3d rTildeH1B_B;      //!< [-] Tilde matrix of rHB_B
@@ -173,6 +171,10 @@ private:
     };
 
     void validateConfiguration(); //!< Validate panel masses and the configured hinge-frame DCM
+
+    // Public output-message vectors are borrowed views; only these smart pointers own the messages.
+    std::vector<std::unique_ptr<Message<HingedRigidBodyMsgPayload>>> ownedDualHingedRigidBodyOutMsgs; //!< Storage for dualHingedRigidBodyOutMsgs.
+    std::vector<std::unique_ptr<Message<SCStatesMsgPayload>>> ownedDualHingedRigidBodyConfigLogOutMsgs; //!< Storage for dualHingedRigidBodyConfigLogOutMsgs.
 };
 
 

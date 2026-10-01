@@ -20,6 +20,10 @@
 #ifndef STATE_EFFECTOR_H
 #define STATE_EFFECTOR_H
 
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+
 #include <Eigen/Dense>
 #include "architecture/utilities/avsEigenMRP.h"
 #include "dynParamManager.h"
@@ -55,15 +59,11 @@ typedef struct {
 /*! @brief state effector class */
 class StateEffector {
 public:
-    std::string nameOfSpacecraftAttachedTo="";//!< class variable
-    std::string parentSpacecraftName="";   //!< name of the spacecraft the state effector is attached to
     EffectorMassProps effProps;            //!< stateEffectors instantiation of effector mass props
     Eigen::VectorXd stateDerivContribution; //!< stateEffector contribution to another stateEffector to prevent double-counting
     Eigen::Vector3d forceOnBody_B;         //!< [N] Force that the state effector applies to the s/c
     Eigen::Vector3d torqueOnBodyPntB_B;    //!< [N] Torque that the state effector applies to the body about point B
     Eigen::Vector3d torqueOnBodyPntC_B;    //!< [N] Torque that the state effector applies to the body about point B
-    Eigen::Vector3d r_BP_P;                //!< position vector of the spacecraft mody frame origin B relative to the primary spacecraft body frame P.  This is used in the SpacecraftSystem module where multiple spacecraft hubs can be a single spacecraft
-    Eigen::Matrix3d dcm_BP;                //!< DCM of the spacecraft body frame B relative to primary spacecraft body frame P
 
     /** setter for `stateNameOfPosition` property */
     void setStateNameOfPosition(std::string value);
@@ -165,10 +165,20 @@ public:
     virtual void linkInStates(DynParamManager& states) = 0;  //!< Method for stateEffectors to get other states
     virtual void linkInPrescribedMotionProperties(DynParamManager& properties);  //!< Method for stateEffectors to access prescribed motion properties
     virtual void computeDerivatives(double integTime, Eigen::Vector3d rDDot_BN_N, Eigen::Vector3d omegaDot_BN_B, Eigen::MRPd sigma_BN)=0;  //!< Method for each stateEffector to calculate derivatives
-    virtual void prependSpacecraftNameToStates();
-    virtual void receiveMotherSpacecraftData(Eigen::Vector3d rSC_BP_P, Eigen::Matrix3d dcmSC_BP); //!< class method
 
-protected:
+    /** Commit dimension-defining collections after successful registration. */
+    virtual void freezeTopology() noexcept { this->topologyFrozen = true; }
+
+  protected:
+    /** Reject collection mutations after this effector has registered states. */
+    void requireMutableTopology(const char* operation) const
+    {
+        if (this->topologyFrozen) {
+            throw std::logic_error(std::string(operation) + " cannot change a state effector after state registration");
+        }
+    }
+
+    bool topologyFrozen = false;                                    //!< whether state dimensions are frozen
     std::string stateNameOfPosition = "";                           //!< state engine name of the parent rigid body inertial position vector
     std::string stateNameOfVelocity = "";                           //!< state engine name of the parent rigid body inertial velocity vector
     std::string stateNameOfSigma = "";                              //!< state engine name of the parent rigid body inertial attitude

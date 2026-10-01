@@ -18,6 +18,7 @@
  */
 
 #include "nHingedRigidBodyStateEffector.h"
+#include "architecture/messaging/ownedMessage.h"
 #include "architecture/utilities/avsEigenSupport.h"
 #include <cmath>
 
@@ -43,15 +44,7 @@ NHingedRigidBodyStateEffector::NHingedRigidBodyStateEffector()
 uint64_t NHingedRigidBodyStateEffector::effectorID = 1;
 
 /*! This is the destructor, releasing the per panel output messages */
-NHingedRigidBodyStateEffector::~NHingedRigidBodyStateEffector()
-{
-    for (size_t c = 0; c < this->nHingedRigidBodyOutMsgs.size(); c++) {
-        delete this->nHingedRigidBodyOutMsgs.at(c);
-        delete this->nHingedRigidBodyConfigLogOutMsgs.at(c);
-    }
-
-    return;
-}
+NHingedRigidBodyStateEffector::~NHingedRigidBodyStateEffector() = default;
 
 /*! This method appends a panel to the chain along with its output messages
 
@@ -60,9 +53,10 @@ NHingedRigidBodyStateEffector::~NHingedRigidBodyStateEffector()
 void
 NHingedRigidBodyStateEffector::addHingedPanel(HingedPanel NewPanel)
 {
+    this->requireMutableTopology("NHingedRigidBodyStateEffector::addHingedPanel");
     this->PanelVec.push_back(NewPanel);
-    this->nHingedRigidBodyOutMsgs.push_back(new Message<HingedRigidBodyMsgPayload>);
-    this->nHingedRigidBodyConfigLogOutMsgs.push_back(new Message<SCStatesMsgPayload>);
+    addOwnedMessage(this->ownedNHingedRigidBodyOutMsgs, this->nHingedRigidBodyOutMsgs);
+    addOwnedMessage(this->ownedNHingedRigidBodyConfigLogOutMsgs, this->nHingedRigidBodyConfigLogOutMsgs);
 
     const std::string panelSuffix = this->propertyNameIndex + "_" + std::to_string(this->PanelVec.size());
     HingedPanel& panel = this->PanelVec.back();
@@ -114,7 +108,7 @@ NHingedRigidBodyStateEffector::computePanelInertialStates()
 {
     // - read live: the cached copy lags half a step at write time, unless a prescribed body set it
     if (this->prescribedAttitudeProperty == nullptr) {
-        this->sigma_BN = Eigen::MRPd(this->hubSigmaState->getStateReference().data());
+        this->sigma_BN = Eigen::MRPd(this->hubSigmaState->stateView().data());
     }
     Eigen::MRPd sigmaLocal_BN = this->sigma_BN;
     Eigen::Matrix3d dcm_NB = sigmaLocal_BN.toRotationMatrix();
@@ -147,10 +141,10 @@ void NHingedRigidBodyStateEffector::linkInStates(DynParamManager& states)
     this->g_N = states.getPropertyReference(this->propName_vehicleGravity);
 
     this->inertialPositionProperty =
-      states.getPropertyReference(this->nameOfSpacecraftAttachedTo + this->propName_inertialPosition);
+      states.getPropertyReference(this->propName_inertialPosition);
     this->inertialVelocityProperty =
-      states.getPropertyReference(this->nameOfSpacecraftAttachedTo + this->propName_inertialVelocity);
-    this->hubSigmaState = states.getStateObject(this->nameOfSpacecraftAttachedTo + this->stateNameOfSigma);
+      states.getPropertyReference(this->propName_inertialVelocity);
+    this->hubSigmaState = states.getStateObject(this->stateNameOfSigma);
 
     return;
 }
@@ -300,8 +294,8 @@ void NHingedRigidBodyStateEffector::updateEffectorMassProps(double integTime [[m
     Eigen::Vector3d sum_rPrimeH;
     sum_rPrimeH.setZero();
 
-    const Eigen::MatrixXd& thetaVector = this->thetaState->getStateReference();
-    const Eigen::MatrixXd& thetaDotVector = this->thetaDotState->getStateReference();
+    const auto thetaVector = this->thetaState->stateView();
+    const auto thetaDotVector = this->thetaDotState->stateView();
     std::vector<HingedPanel>::iterator PanelIt;
     int it = 0;
     for(PanelIt=this->PanelVec.begin(); PanelIt!=this->PanelVec.end(); PanelIt++){
@@ -694,7 +688,7 @@ void NHingedRigidBodyStateEffector::computeDerivatives(double integTime [[maybe_
         i += 1;
     }
     // - First is trivial
-    this->thetaState->setDerivative(this->thetaDotState->getStateReference());
+    this->thetaState->setDerivative(this->thetaDotState->stateView());
     // - Second, a little more involved
     this->thetaDotState->setDerivative(thetaDDot);
 
