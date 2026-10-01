@@ -314,7 +314,7 @@ it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
-thirteen complete example scenarios covering every major concept in
+seventeen complete example scenarios covering every major concept in
 isolation (see "Template missions" below).
 
 **Safe cancellation** -- **Abort Simulation** cooperatively cancels an
@@ -461,14 +461,14 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 774 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 838 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 107 whose premise is
+full PySide6 GUI, run headless) and skips 126 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
 With Basilisk installed (`pip install "bsk[all]"` -- see "Getting
-started" above), the 99 skips above run for real instead of skipping.
+started" above), the 126 skips above run for real instead of skipping.
 See "Verification status" above for how thoroughly that's actually been
 exercised -- short version: yes, including a real full multi-day run.
 
@@ -645,7 +645,7 @@ and hasn't been run for real.
 
 **Built into the GUI itself** (not just files you'd have to know the path
 to): the GUI's **Load Scenario** tab (`gui/load_scenario_widget.py`,
-see "Running the GUI" above) lists all thirteen by name with their
+see "Running the GUI" above) lists all seventeen by name with their
 description shown on selection, no file-browsing needed -- "Open
 Template" or a double-click loads one and switches straight to the
 Scenario Editor tab. The same tab's "Browse for a file..." button covers
@@ -851,9 +851,8 @@ Scoped but not yet built, from real GUI usage feedback (full detail in
   protobuf message/panel type, not a reused shape.
 
 Beyond that, the "Known limitations" section above is the rest of the
-honest map: a handful of schema-valid-but-not-wired-up options
-(celestial-body `locationPointing` targets, thrusters, magnetic torque
-rods, non-Earth spherical harmonics/magnetometer), navigation error
-modeling, and richer Monte Carlo retention. None of the remaining items
-is blocked on a design decision; each is scoped and documented at its
-own call site (or in `HISTORY.md`) for whoever picks it up next.
+honest map: non-Earth spherical harmonics/magnetometer, navigation
+error modeling, and richer Monte Carlo retention. None of the
+remaining items is blocked on a design decision; each is scoped and
+documented at its own call site (or in `HISTORY.md`) for whoever picks
+it up next.

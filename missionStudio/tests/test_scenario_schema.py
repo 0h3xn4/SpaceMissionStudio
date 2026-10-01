@@ -672,6 +672,32 @@ def test_mixing_reaction_wheel_and_magnetic_torque_rod_without_config_rejected()
         sc.validate()
 
 
+def test_momentum_dumping_and_magnetic_momentum_management_are_mutually_exclusive():
+    """Both independently require 'reaction_wheel' actuators and both get
+    built as SEPARATE, independent desaturation control paths in
+    engine.service (confirmed by audit: two independent `if` blocks, not
+    elif) -- setting both on one spacecraft would silently have two
+    controllers fighting over the same wheels. A spacecraft can be pushed
+    into exactly this combination: momentum_dumping is REQUIRED whenever
+    'reaction_wheel'+'thruster' are mixed (e.g. for a fuel_tank, which
+    needs 'thruster'), while a 'magnetic_torque_rod' actuator independently
+    REQUIRES magnetic_momentum_management.
+    """
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[0.0])
+    with pytest.raises(ScenarioValidationError, match="mutually exclusive"):
+        sc.validate()
+
+
 def test_magnetic_momentum_management_round_trips():
     sc = _minimal_scenario()
     sc.spacecraft[0].actuators = [
@@ -688,6 +714,20 @@ def test_magnetic_momentum_management_round_trips():
     loaded.validate()
     assert loaded.spacecraft[0].magnetic_momentum_management.wheel_speed_biases_rad_s == [12.5]
     assert loaded.spacecraft[0].magnetic_momentum_management.c_gain == 0.01
+
+
+@pytest.mark.parametrize("field_name", ["drag_coeff", "drag_area_m2", "srp_coeff", "srp_area_m2"])
+@pytest.mark.parametrize("bad_value", [0.0, -1.0])
+def test_non_positive_drag_or_srp_coefficient_or_area_rejected(field_name, bad_value):
+    """engine.service feeds these straight into Basilisk's drag/SRP
+    effectors as a physical projected area/coefficient -- neither effector
+    itself rejects a non-positive value, so this would otherwise silently
+    produce a reversed or zero-magnitude force instead of a clear error.
+    """
+    sc = _minimal_scenario()
+    setattr(sc.spacecraft[0], field_name, bad_value)
+    with pytest.raises(ScenarioValidationError, match=field_name):
+        sc.validate()
 
 
 def test_unsupported_fsw_mode_rejected():

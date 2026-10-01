@@ -117,7 +117,7 @@ against the verified call sequences cited above.
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -159,6 +159,39 @@ from Basilisk.utilities import simIncludeRW, simIncludeThruster
 from ..schema.scenario import SUPPORTED_FSW_MODES
 
 DEFAULT_MRP_GAINS: Dict[str, float] = {"K": 3.5, "P": 30.0}
+
+# DEFAULT_MRP_GAINS is lifted directly from Basilisk's own examples/BskSim
+# reference (BSK_Fsw.py's mrpFeedbackRWs), tuned for THAT example's
+# 900 kg*m^2 spacecraft (BSK_Dynamics.py's I_sc) at its fswRate=0.1.
+# Applied unscaled to a much smaller spacecraft (this app's own schema
+# default inertia is 10 kg*m^2 -- 90x smaller), the resulting discrete-time
+# control update is wildly over-aggressive for the body's actual rotational
+# inertia and reliably reaches NaN within seconds (root-caused and fixed,
+# by hand, per-template, in HISTORY.md's "attitude determination pipeline"
+# entry -- this constant generalizes that same fix to every spacecraft by
+# default, not just the templates it was manually applied to).
+_MRP_GAIN_REFERENCE_INERTIA_KG_M2 = 900.0
+
+
+def _default_mrp_gains_for_inertia(inertia_kg_m2: Optional[List[float]]) -> Dict[str, float]:
+    """``DEFAULT_MRP_GAINS`` scaled by a spacecraft's own (isotropic-
+    equivalent) inertia relative to the 900 kg*m^2 reference it was tuned
+    for -- confirmed in HISTORY.md to converge cleanly where the unscaled
+    gains diverge to NaN, for both RW- and thruster-actuated spacecraft.
+    ``inertia_kg_m2`` is the row-major 3x3 hub inertia
+    (``SpacecraftConfig.inertia_kg_m2``); its trace/3 is used as the
+    scaling quantity so an anisotropic inertia still gets a sensible
+    scalar gain pair (``mrpFeedback``'s K/P are themselves scalars, not
+    per-axis). Falls back to the unscaled reference gains if no inertia is
+    given (callers that have no spacecraft inertia in scope).
+    """
+    if not inertia_kg_m2:
+        return dict(DEFAULT_MRP_GAINS)
+    mean_inertia = (inertia_kg_m2[0] + inertia_kg_m2[4] + inertia_kg_m2[8]) / 3.0
+    if mean_inertia <= 0.0:  # unreachable if Scenario.validate() passed
+        return dict(DEFAULT_MRP_GAINS)
+    scale = mean_inertia / _MRP_GAIN_REFERENCE_INERTIA_KG_M2
+    return {"K": DEFAULT_MRP_GAINS["K"] * scale, "P": DEFAULT_MRP_GAINS["P"] * scale}
 
 # RW factory create() kwargs that must be Python float (rwFactory.create()
 # calls exit(1) directly -- not a raised exception -- on a type mismatch;
@@ -435,17 +468,26 @@ def build_vehicle_config_msg(inertia_kg_m2: List[float]):
 
 
 def build_mrp_feedback(scSim, task_name: str, tag: str, guid_out_msg, veh_config_msg, control_params: dict,
-                        rw_config_msg=None, rw_speed_out_msg=None):
+                        rw_config_msg=None, rw_speed_out_msg=None, inertia_kg_m2: Optional[List[float]] = None):
     """``mrpFeedback``'s "simple mode" control law (Ki < 0 disables the
     integral feedback term, matching every example's default). RW
     gyroscopic compensation is enabled automatically whenever
     ``rw_config_msg``/``rw_speed_out_msg`` are given (reaction-wheel
     actuation path); left ``None`` for the idealized-torque path.
+
+    K/P default to ``DEFAULT_MRP_GAINS`` scaled by ``inertia_kg_m2`` (see
+    ``_default_mrp_gains_for_inertia``) rather than the raw reference
+    values whenever ``control_params`` doesn't explicitly set them --
+    the unscaled reference gains are tuned for a 900 kg*m^2 spacecraft and
+    reliably diverge to NaN on this app's much smaller schema-default
+    inertia (confirmed in HISTORY.md). Passing ``control_params={"K":
+    ..., "P": ...}`` always overrides this, same as before.
     """
+    default_gains = _default_mrp_gains_for_inertia(inertia_kg_m2)
     mrp = mrpFeedback.mrpFeedback()
     mrp.ModelTag = f"{tag}_mrpFeedback"
-    mrp.K = float(control_params.get("K", DEFAULT_MRP_GAINS["K"]))
-    mrp.P = float(control_params.get("P", DEFAULT_MRP_GAINS["P"]))
+    mrp.K = float(control_params.get("K", default_gains["K"]))
+    mrp.P = float(control_params.get("P", default_gains["P"]))
     mrp.Ki = float(control_params.get("Ki", -1.0))
     mrp.integralLimit = float(control_params.get("integral_limit", 0.0))
     mrp.guidInMsg.subscribeTo(guid_out_msg)

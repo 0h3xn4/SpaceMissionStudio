@@ -96,11 +96,30 @@ subtract only the propellant mass it ITSELF burns that tick. This
 composes correctly no matter how many other controllers or an external
 dispersion are also adjusting the same ``hub.mHub`` -- each one's edit is
 a self-contained delta, order-independent by construction, rather than a
-snapshot that can stomp on someone else's. It also makes each
-controller's OWN delta-V bookkeeping marginally more physically accurate
-as a side effect: ``currentMass`` is now the spacecraft's real total mass
-(dry + every tank currently aboard), not just this one controller's own
-belief about it.
+snapshot that can stomp on someone else's.
+
+A second, related audit finding fixed alongside the above: the
+acceleration/delta-V math (``thrustMag / currentMass``) used to read that
+same ``hub.mHub`` value too -- which is NOT the spacecraft's true total
+mass whenever a ``schema.scenario.FuelTankConfig`` "fuel_tank" state
+effector is also configured on the same spacecraft. Basilisk's
+``fuelTank`` effector tracks its own mass via ``effProps.mEff``, which
+contributes to the vehicle's real dynamics but is NEVER added into
+``hub.mHub`` (confirmed directly in ``fuelTank.cpp``) -- so a
+station-keeping/phasing/constant-thrust burn running alongside a
+fuel-tank-equipped thruster would silently undercount the true mass,
+inflating the estimated acceleration and ending the burn early (an
+achieved-delta-V undershoot), while the actual simulated dynamics (driven
+by Basilisk's own integrator, which DOES sum every state effector's mass
+correctly) stayed physically correct throughout. Each controller's
+acceleration/delta-V estimate now reads ``scObject.scMassOutMsg.read()
+.massSC`` instead -- Basilisk's own hub+state-effector mass aggregate,
+confirmed by direct experimentation to be fresh every tick regardless of
+this controller's ``AddModelToTask`` priority relative to the
+spacecraft's. The propellant-burn WRITE-BACK above still reads/writes
+``hub.mHub`` specifically, never ``scMassOutMsg`` -- using the aggregate
+there would double-count a coexisting fuel tank's mass (once in the
+tank's own state, once baked into ``hub.mHub``).
 
 Verification status: the burn/bookkeeping logic is copied from
 ``../missionAnalysis``'s already-reviewed controller, not written from
@@ -333,15 +352,37 @@ class StationKeepingController(sysModel.SysModel):
             thrustMag = 0.0
             self.bskLogger.warning(f"{self.ModelTag}: propellant depleted, reboost inhibited")
 
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + this controller's own propellant -- see
-        # this module's "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
+        # Achieved acceleration/delta-v depends on the spacecraft's TRUE
+        # total mass -- hub.mHub ALONE undercounts it whenever a
+        # schema.scenario.FuelTankConfig "fuel_tank" state effector is
+        # also configured (Basilisk's fuelTank tracks its own mass via
+        # effProps.mEff, never touching hub.mHub -- confirmed directly in
+        # fuelTank.cpp), which silently shrinks this controller's
+        # estimated/accumulated delta-V and can end a burn early. See
+        # this module's "Shared mass bookkeeping" docstring note:
+        # scMassOutMsg.massSC is Basilisk's own aggregate (hub + every
+        # state effector's mass contribution), fresh every tick regardless
+        # of this controller's own AddModelToTask priority relative to the
+        # spacecraft's (confirmed by direct experimentation).
+        trueTotalMass = (
+            self.scObject.scMassOutMsg.read().massSC if self.scObject is not None
+            else (self.dryMass + self.propellant)
+        )
         if thrustMag > 0.0:
-            self._cumulativeDv += (thrustMag / currentMass) * dt  # [m/s]
+            self._cumulativeDv += (thrustMag / trueTotalMass) * dt  # [m/s]
 
+        # The burn bookkeeping write-back, in contrast, must stay a
+        # self-contained delta against hub.mHub specifically (NOT
+        # trueTotalMass) -- apply_propellant_burn's returned
+        # new_total_mass_kg is written straight back to hub.mHub below, so
+        # feeding it trueTotalMass would double-count a coexisting
+        # fuel_tank's own mass (once in the tank's own state, once baked
+        # into hub.mHub). See this module's "Shared mass bookkeeping"
+        # docstring note for why hub.mHub (not an absolute recomputed
+        # value) is the correct base for this part.
+        hubMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
         newMass, self.propellant, _burnedKg, mDot = apply_propellant_burn(
-            currentMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObject is not None:
             self.scObject.hub.mHub = newMass
 
@@ -813,18 +854,29 @@ class PhasingKeepingController(sysModel.SysModel):
                 thrustMag = 0.0
 
         tracker = self._propellant_tracker()
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + tracker.propellant -- see this module's
-        # "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObjectB.hub.mHub if self.scObjectB is not None else (self.dryMass + tracker.propellant)
+        # Achieved acceleration/delta-v needs the spacecraft's TRUE total
+        # mass (scMassOutMsg.massSC, Basilisk's own hub+state-effector
+        # aggregate), not just hub.mHub -- see
+        # StationKeepingController.UpdateState's identical comment for why
+        # (a coexisting fuel_tank state effector's mass would otherwise be
+        # silently missed, ending a burn early).
+        trueTotalMass = (
+            self.scObjectB.scMassOutMsg.read().massSC if self.scObjectB is not None
+            else (self.dryMass + tracker.propellant)
+        )
 
         if thrustMag > 0.0:
-            accel = thrustMag / currentMass  # [m/s^2]
+            accel = thrustMag / trueTotalMass  # [m/s^2]
             self._accumDv += accel * dt
             self._cumulativeDv += accel * dt
 
+        # The burn bookkeeping write-back stays against hub.mHub
+        # specifically, NOT trueTotalMass -- see
+        # StationKeepingController.UpdateState's identical comment (would
+        # otherwise double-count a coexisting fuel_tank's own mass).
+        hubMass = self.scObjectB.hub.mHub if self.scObjectB is not None else (self.dryMass + tracker.propellant)
         newMass, tracker.propellant, _burnedKg, _mDot = apply_propellant_burn(
-            currentMass, tracker.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, tracker.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObjectB is not None:
             self.scObjectB.hub.mHub = newMass
 
@@ -1031,16 +1083,27 @@ class ConstantFrameThrustController(sysModel.SysModel):
         dirHat_N = self.direction[0] * axis1 + self.direction[1] * axis2 + self.direction[2] * axis3
 
         thrustMag = self.thrustN if self.propellant > 1e-9 else 0.0  # [N]
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + this controller's own propellant -- see
-        # this module's "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
+        # Achieved acceleration/delta-v needs the spacecraft's TRUE total
+        # mass (scMassOutMsg.massSC, Basilisk's own hub+state-effector
+        # aggregate), not just hub.mHub -- see
+        # StationKeepingController.UpdateState's identical comment for why
+        # (a coexisting fuel_tank state effector's mass would otherwise be
+        # silently missed, ending a burn early).
+        trueTotalMass = (
+            self.scObject.scMassOutMsg.read().massSC if self.scObject is not None
+            else (self.dryMass + self.propellant)
+        )
 
         if thrustMag > 0.0:
-            self._cumulativeDv += (thrustMag / currentMass) * dt  # [m/s]
+            self._cumulativeDv += (thrustMag / trueTotalMass) * dt  # [m/s]
 
+        # The burn bookkeeping write-back stays against hub.mHub
+        # specifically, NOT trueTotalMass -- see
+        # StationKeepingController.UpdateState's identical comment (would
+        # otherwise double-count a coexisting fuel_tank's own mass).
+        hubMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
         newMass, self.propellant, _burnedKg, mDot = apply_propellant_burn(
-            currentMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObject is not None:
             self.scObject.hub.mHub = newMass
 

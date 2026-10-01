@@ -412,11 +412,13 @@ class SpacecraftEditorDialog(QDialog):
         self.panel_normal_y = _spin(-1.0, 1.0, decimals=4, step=0.1, value=panel_normal0[1])
         self.panel_normal_z = _spin(-1.0, 1.0, decimals=4, step=0.1, value=panel_normal0[2])
         self.bus_idle_power_w = _spin(0.0, 1.0e5, decimals=2, step=1.0,
-                                       value=power0.bus_idle_power_w if power0 else 25.0)
+                                       value=power0.bus_idle_power_w if power0 else PowerConfig.bus_idle_power_w)
         self.battery_capacity_wh = _spin(0.001, 1.0e6, decimals=2, step=10.0,
-                                          value=power0.battery_capacity_wh if power0 else 120.0)
+                                          value=power0.battery_capacity_wh if power0
+                                          else PowerConfig.battery_capacity_wh)
         self.battery_initial_soc = _spin(0.0, 1.0, decimals=4, step=0.05,
-                                          value=power0.battery_initial_soc if power0 else 0.9)
+                                          value=power0.battery_initial_soc if power0
+                                          else PowerConfig.battery_initial_soc)
         power_form.addRow("Panel area [m^2]", self.panel_area_m2)
         power_form.addRow("Panel efficiency [-]", self.panel_efficiency)
         power_form.addRow("Panel normal (body frame, 3 components)",
@@ -634,7 +636,8 @@ class SpacecraftEditorDialog(QDialog):
         self.data_rate_mbps = _spin(1.0e-6, 1.0e6, decimals=6, step=1.0,
                                      value=(rf_link0.data_rate_bps / 1.0e6) if rf_link0 else 1.0)
         self.tx_antenna_gain_dbi = _spin(-50.0, 100.0, decimals=2, step=1.0,
-                                          value=rf_link0.tx_antenna_gain_dbi if rf_link0 else 6.0)
+                                          value=rf_link0.tx_antenna_gain_dbi if rf_link0
+                                          else RFLinkConfig.tx_antenna_gain_dbi)
         self.rf_implementation_loss_db = _spin(0.0, 50.0, decimals=2, step=0.5,
                                                  value=rf_link0.implementation_loss_db if rf_link0 else 2.0)
         self.required_ebno_db = _spin(-50.0, 50.0, decimals=2, step=0.5,
@@ -713,6 +716,19 @@ class SpacecraftEditorDialog(QDialog):
             tabs.setTabVisible(self._fsw_tab_index, False)
             self.power_group.setChecked(False)
             self.power_group.setVisible(False)
+            # momentum_dumping/magnetic_momentum_management/fuel_tank all
+            # require specific actuator kinds (SpacecraftConfig.validate())
+            # that can only be added on the now-hidden Sensors/actuators
+            # tab -- leaving these checkable would be a dead end (checking
+            # one and clicking OK always fails validation with no way back
+            # to fix it from this dialog), same reasoning as power_group
+            # just above.
+            self.momentum_dumping_group.setChecked(False)
+            self.momentum_dumping_group.setVisible(False)
+            self.magnetic_momentum_management_group.setChecked(False)
+            self.magnetic_momentum_management_group.setVisible(False)
+            self.fuel_tank_group.setChecked(False)
+            self.fuel_tank_group.setVisible(False)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)

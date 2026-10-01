@@ -127,6 +127,19 @@ analytical estimate -- see each source module's own docstring):
   docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
   the propellant and delta-V panels are never racing to overwrite the
   same message.
+* **Fuel tank remaining** -- a ``GenericStorage`` panel per spacecraft with
+  a real ``schema.scenario.FuelTankConfig`` "fuel_tank" state effector
+  configured (``engine.fsw.build_fuel_tank``), labeled "Fuel Tank" and
+  wired to that effector's own ``fuelTankOutMsg`` -- a codebase-audit
+  completeness fix: every other actuator-management feature
+  (``station_keeping``, ``phasing_keeping``) already got a matching
+  live-Vizard panel the moment it shipped, but a real ``fuelTank`` state
+  effector (as opposed to ``StationKeepingController``'s own hand-rolled
+  propellant scalar) had none until now. Deliberately a DIFFERENT label
+  from station-keeping's own "Propellant" panel above -- the two track
+  physically different, independent propellant pools (this one backs a
+  "thruster" actuator's attitude-control/momentum-dumping hardware, not
+  a reboost burn) and can both be present on the same spacecraft at once.
 * **RTN separation from chief** -- THREE more ``GenericStorage`` panels,
   labeled by :func:`_rtn_panel_label` (e.g. "R vs chief-1"/"T vs
   chief-1"/"N vs chief-1" -- naming WHICH chief, not just the axis; see
@@ -545,6 +558,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
                    battery_by_spacecraft: Optional[Dict[str, object]] = None,
                    station_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
                    phasing_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
+                   fuel_tank_by_spacecraft: Optional[Dict[str, object]] = None,
                    access_out_msgs: Optional[Dict[tuple, object]] = None,
                    custom_models_by_spacecraft: Optional[Dict[str, dict]] = None):
     """Call once, after every spacecraft/sensor/actuator/FSW module for
@@ -588,6 +602,14 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         phasing_keeping_by_spacecraft: ``{spacecraft_name: engine.orbit_maintenance.PhasingKeepingController}``
             for every spacecraft with ``PhasingKeepingConfig`` set -- same
             section.
+        fuel_tank_by_spacecraft: ``{spacecraft_name: fuelTank.FuelTank()}``
+            for every spacecraft with ``schema.scenario.FuelTankConfig``
+            set -- same section. A real Basilisk state effector (see
+            ``engine.fsw.build_fuel_tank``), distinct from
+            ``station_keeping_by_spacecraft``'s own hand-rolled
+            "Propellant" panel above (that one's propellant is a plain
+            Python scalar belonging to a DIFFERENT, unrelated thruster --
+            see ``engine.orbit_maintenance``'s module docstring).
         access_out_msgs: ``{(ground_station_name, spacecraft_name): groundLocation.accessOutMsgs[i]}``
             for every station/spacecraft pair Phase 3's access analysis
             tracks (``engine.service``'s own ``_access_out_msgs``) -- same
@@ -615,6 +637,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     battery_by_spacecraft = battery_by_spacecraft or {}
     station_keeping_by_spacecraft = station_keeping_by_spacecraft or {}
     phasing_keeping_by_spacecraft = phasing_keeping_by_spacecraft or {}
+    fuel_tank_by_spacecraft = fuel_tank_by_spacecraft or {}
     access_out_msgs = access_out_msgs or {}
 
     class _AccessIndicatorBridge(sysModel.SysModel):
@@ -764,6 +787,26 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             normal_reader.subscribeTo(phasing_controller.separationNormalOutMsg)
             normal_panel.dataStorageStateInMsg = normal_reader
             storages.append(normal_panel)
+
+        fuel_tank_effector = fuel_tank_by_spacecraft.get(sc_name)
+        if fuel_tank_effector is not None:
+            # "Fuel Tank" (not "Propellant", which station_keeping's own
+            # hand-rolled bookkeeping panel above already uses) -- the two
+            # features are independent and can coexist on one spacecraft
+            # (station_keeping's own reboost propellant vs. a real
+            # fuelTank.FuelTank() state effector backing a "thruster"
+            # actuator's attitude-control/momentum-dumping propellant),
+            # so the labels and colors must stay visually distinct even
+            # though both show a kg quantity depleting over time.
+            tank_panel = vizInterface.GenericStorage()
+            tank_panel.label = "Fuel Tank"
+            tank_panel.type = "Propellant Tank"
+            tank_panel.units = "kg"
+            tank_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
+            fuel_tank_reader = messaging.FuelTankMsgReader()
+            fuel_tank_reader.subscribeTo(fuel_tank_effector.fuelTankOutMsg)
+            tank_panel.fuelTankStateInMsg = fuel_tank_reader
+            storages.append(tank_panel)
 
         generic_storage_list.append(storages or None)
         if storages:

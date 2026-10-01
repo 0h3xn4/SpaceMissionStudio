@@ -4444,3 +4444,289 @@ during that active correction burn, after which
 converged) -- a clean, real before/during/after depletion curve, not a
 hand-picked-to-look-plausible number.
 
+## Full-codebase audit: a comprehensive review and fix pass across every subsystem
+
+A direct request ("do a complete and comprehensive audit and review of
+entire code and fix any problems you may encounter"), separate from and
+interrupting the 19-item feature backlog above (resumed after this).
+Five parallel read-only review passes, one per subsystem
+(`schema/`, `engine/service.py`+`engine/fsw.py`, the remaining
+`engine/` support modules, `gui/`, and tests+templates+docs), each
+briefed on this project's own known bug patterns (Basilisk object
+-lifetime hazards, factory `exit(1)` crash risks, task-priority/message
+-ordering bugs, control-loop gain/rate instability, a feature wired up
+in one place but not another) so the search was productive rather than
+generic style nitpicking. Every finding below was independently
+re-confirmed by reading the actual flagged source before being fixed --
+nothing here was taken on a review pass's word alone -- and, where a
+Basilisk build could verify the fix, against a real one (this sandbox
+happened to have a working `pip install "bsk[all]"` virtualenv available
+from the review pass's own verification work).
+
+### The most severe finding: unscaled default MRP gains are still the out-of-the-box behavior for ANY new scenario
+
+This project already found and fixed (task 5 of 19, above) that
+`engine.fsw.DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`) is lifted directly
+from Basilisk's own `examples/BskSim` reference, tuned for a
+900 kg*m^2 spacecraft at a 0.1s FSW rate -- applied unscaled to a much
+smaller spacecraft, the resulting discrete-time control update is wildly
+over-aggressive and reliably diverges to NaN within seconds. That fix
+was applied BY HAND to specific templates (07/14's explicit scaled
+`control_params`; 06/15's finer `dynamics_task_rate_s`) -- but never
+built into `engine.fsw` itself. Concretely: this schema's own defaults
+(`inertia_kg_m2` = 10 kg*m^2 diag, `control_params={}`,
+`dynamics_task_rate_s` = 10.0s) are a MORE extreme combination than the
+one already confirmed to diverge, so a brand-new spacecraft created in
+the GUI with any `fsw_mode` and no actuators (or reaction wheels) and
+left on every default reproduces the exact same documented crash, with
+zero code-level protection.
+
+**Fixed at the root, not per-template**: `engine.fsw.build_mrp_feedback`
+now takes an `inertia_kg_m2` parameter and defaults `K`/`P` to
+`_default_mrp_gains_for_inertia(inertia_kg_m2)` -- `DEFAULT_MRP_GAINS`
+scaled by the spacecraft's own mean (trace/3) inertia relative to the
+900 kg*m^2 reference -- whenever `control_params` doesn't explicitly
+override them (an explicit `control_params={"K": ..., "P": ...}` still
+wins unchanged, confirmed by `tests/test_location_pointing_target_body
+.py`'s own deliberate unscaled-gains case, which continues to omit
+`inertia_kg_m2` and so is untouched by this change). All three
+`engine.service` call sites (reaction-wheel, thruster, and idealized
+-actuation control paths) now pass `sc_config.inertia_kg_m2` through.
+This is the exact same `K/P x I_new/900` scaling formula task 5 already
+verified by hand for 07/14 (`0.0194`/`0.167` at `I=5` reproduces exactly) --
+generalized to every spacecraft automatically rather than needing a
+template author to discover and apply it manually.
+
+**Verification, against a real Basilisk build**: direct experimentation
+confirmed the UNSCALED reference gains at schema-default inertia (10
+kg*m^2) reach NaN within 120 ticks at a 1.0s rate, matching the already
+-documented failure mode exactly. The SAME setup with the new scaled
+default converges cleanly -- and, more than just "no NaN", converges
+cleanly even at the schema's own coarse 10.0s `dynamics_task_rate_s`
+default (final attitude error on the order of 1e-9 degrees over a 1200s
+run), closing both halves of the original finding (the gain/inertia
+mismatch AND the rate-coarseness risk) with one change. Also confirmed
+this doesn't regress the two already-shipped thruster-actuated templates
+(11/17, `control_params={}`, previously running on unscaled gains) that
+a separate review pass flagged as "only verified for ~7% of their own
+run duration": re-run over each template's FULL `dynamics_task_rate_s`
+=0.5s/864s duration with the new scaled gains, the 8-thruster Schmitt
+-trigger chain still fires (61/1729 ticks) and attitude error still
+converges (0.374 -> 0.0477), no NaN -- so this fix also closes that
+separate, previously-unverified-duration finding as a side effect. New
+`tests/test_default_mrp_gain_scaling.py` (3 `requires_basilisk` tests):
+confirms the unscaled-gain divergence still reproduces (a sanity check
+that the regression test is actually testing something real), confirms
+every-schema-default now converges, and confirms an explicit
+`control_params` override still reaches the old unscaled behavior
+unchanged (by design -- a user who deliberately sets `K`/`P` is opting
+out of the automatic scaling).
+
+### `engine.orbit_maintenance`'s delta-V bookkeeping undercounts true mass when a `fuel_tank` coexists
+
+A second, related finding: `StationKeepingController`/
+`PhasingKeepingController`/`ConstantFrameThrustController`'s
+acceleration/delta-V estimate (`thrustMag / currentMass`) read
+`scObject.hub.mHub` for `currentMass` -- which is NOT the spacecraft's
+true total mass whenever a `schema.scenario.FuelTankConfig` "fuel_tank"
+state effector is ALSO configured on the same spacecraft (e.g. backing
+an unrelated "thruster" actuator's attitude-control/momentum-dumping
+propellant). Confirmed directly in Basilisk's `fuelTank.cpp`: that
+effector tracks its own mass via `effProps.mEff`, which correctly
+contributes to the spacecraft's REAL simulated dynamics (Basilisk's own
+integrator sums every state effector's mass), but is NEVER added into
+`hub.mHub`. So this controller's own acceleration estimate silently
+undercounted the true mass, inflating the estimate and ending a burn
+early (an achieved-delta-V undershoot) in the controller's OWN
+bookkeeping -- while the actual simulated physics stayed correct
+throughout, since it never depended on this controller's estimate.
+
+**Fixed** by reading `scObject.scMassOutMsg.read().massSC` -- Basilisk's
+own hub+state-effector mass aggregate -- for the acceleration/delta-V
+estimate specifically, while the propellant-burn WRITE-BACK (the part
+that depletes this controller's OWN tracked propellant) deliberately
+keeps reading/writing `hub.mHub` alone: feeding the aggregate into that
+write-back would double-count a coexisting fuel tank's mass (once in the
+tank's own state, once baked into `hub.mHub`). Confirmed by direct
+experimentation that `scMassOutMsg` is fresh and correctly aggregated
+every tick regardless of this controller's `AddModelToTask` priority
+relative to the spacecraft's (a `SysModel` probe at the controller's own
+default priority read `massSC` = 120 = 100 kg hub + 20 kg tank correctly
+at every tick, including t=0). New `tests/test_orbit_maintenance_true_mass
+.py` (3 `requires_basilisk` tests, built on a real `StationKeepingController`
+via `build_station_keeping` with a real `fuelTank.FuelTank()` alongside
+it) confirms: the controller's `_cumulativeDv` now matches
+`thrust / (hub_mass + tank_mass)` (smaller than, and no longer equal to,
+the old buggy hub-only computation); is unchanged for the common
+no-fuel-tank case; and that the `hub.mHub` write-back itself does NOT
+double-count the tank's mass.
+
+### Three completeness gaps: every other actuator-management feature got matching telemetry/Vizard wiring except two newer ones
+
+- **`engine.vizard` had no live propellant gauge for a real `fuelTank`
+  state effector.** `station_keeping_by_spacecraft`'s own hand-rolled
+  propellant tracking already got a "Propellant" `GenericStorage` panel
+  the moment it shipped, but `schema.scenario.FuelTankConfig` (task 8 of
+  19, above) never got an equivalent -- a spacecraft using the newer,
+  more physical fuel-tank feature had zero live propellant visibility in
+  Vizard. Fixed: new `fuel_tank_by_spacecraft` parameter on
+  `engine.vizard.enable_vizard`, wired to a distinctly-labeled "Fuel
+  Tank" panel (deliberately different from station-keeping's own
+  "Propellant" label -- the two track independent propellant pools and
+  can coexist on one spacecraft). `engine.service` now retains the
+  `fuelTank.FuelTank()` effector itself on `_SpacecraftHandle` (it
+  previously only kept the recorder, not the effector object Vizard
+  wiring needs) at both call sites that build one. New
+  `tests/test_vizard_fuel_tank_panel.py` (3 `requires_basilisk` tests,
+  calling `enable_vizard` directly against a bare `SimulationBaseClass`
+  to sidestep this sandbox's SPICE-kernel network block, the same
+  bypass pattern `tests/test_thruster_control.py` already uses).
+- **`magnetic_momentum_management`'s commanded dipole was invisible to
+  the results UI.** `engine.service` built
+  `mtb_effector, _ = fsw.build_mtb_desaturation(...)`, discarding the
+  second return value (`mtbMomentumManagement` itself) entirely -- so,
+  unlike `rw_speeds`/`thruster_on_time`/`fuel_mass_remaining`, there was
+  no `{name}.mtb_dipole_commanded` series at all. Fixed: the second
+  return value is now kept, its `mtbCmdOutMsg` recorded, and a new
+  `{name}.mtb_dipole_commanded` result series (one column per torque
+  rod, `A*m^2`) added, with a matching `gui/results_widget.py` display
+  spec. New `tests/test_mtb_dipole_result_series.py` confirms
+  `mtbCmdOutMsg.mtbDipoleCmds` is real and nonzero over a running
+  desaturation loop (not a placeholder that would silently plot as all
+  -zero).
+- **`load_scenario_widget.py`'s bundled-template loader swallowed every
+  exception with zero logging** (`except Exception: continue`, no
+  `_logger` at all) -- unlike every sibling `noqa: BLE001` catch
+  elsewhere in the GUI (`kernel_status_widget.py`, `run_worker.py`),
+  which all log the full traceback before reporting failure. A corrupted
+  or future-incompatible bundled template would silently vanish from the
+  "Load Scenario" list with no trace anywhere. Fixed: added a module
+  logger and a `_logger.exception(...)` call naming the skipped path
+  before the `continue`.
+
+### GUI: a reachable dead-end, and three stale default values
+
+- **`orbit_only` mode left three actuator-requiring group boxes
+  checkable with no way to satisfy their requirements.** The
+  Sensors/Actuators tab (where `reaction_wheel`/`thruster`/
+  `magnetic_torque_rod` actuators are added) is already hidden in
+  `orbit_only` mode, and `power_group` was already correctly disabled
+  for the same reason -- but `momentum_dumping_group`/
+  `magnetic_momentum_management_group`/`fuel_tank_group` were not: a
+  user could check one, click OK, and hit `Scenario.validate()`'s
+  actuator-requirement error with no way to get back into the dialog to
+  un-check it (the Sensors/Actuators tab that would let them add the
+  required actuator stays hidden). Fixed by applying the exact same
+  `setChecked(False)`/`setVisible(False)` pattern `power_group` already
+  used, to all three.
+- **Three GUI spin-box defaults were hardcoded literals that could
+  silently drift from the schema's own defaults**: `bus_idle_power_w`,
+  `battery_capacity_wh`, `battery_initial_soc` (power) and
+  `tx_antenna_gain_dbi` (RF link) used a bare numeric literal as their
+  "nothing configured yet" fallback instead of referencing
+  `PowerConfig`/`RFLinkConfig`'s own dataclass default -- meaning a
+  spacecraft created via the GUI with that field left unset could
+  physically differ from one created by hand-editing JSON with the same
+  field omitted, despite both claiming to use "the default". Fixed by
+  switching all four to the same `value=config.field if config else
+  SchemaClass.field` pattern already used elsewhere in this file (e.g.
+  `drag_coeff`).
+
+### Four smaller schema/validation fixes
+
+- **`momentum_dumping` and `magnetic_momentum_management` were never
+  actually validated as mutually exclusive**, despite `engine.service`
+  building them as two independent `if` blocks (not `elif`) that would
+  both try to command the same reaction wheels if both were set --
+  confirmed directly in `engine.service`'s source. Fixed with a new
+  `Scenario.validate()` check and `tests/test_scenario_schema.py::
+  test_momentum_dumping_and_magnetic_momentum_management_are_mutually_exclusive`.
+- **No positivity validation on `drag_coeff`/`drag_area_m2`/
+  `srp_coeff`/`srp_area_m2`.** These feed straight into Basilisk's
+  drag/SRP effectors as a physical coefficient/projected area; neither
+  effector rejects a non-positive value itself, so a `<= 0` entry
+  (a plausible typo) would silently produce a reversed or zero-magnitude
+  force instead of a clear error. Fixed with four new `_require` checks
+  (validated unconditionally, not just when `enable_drag`/`enable_srp`
+  is set, so toggling either on later can't resurface an
+  already-invalid value unnoticed) and 8 new parametrized tests.
+- **`validate_all()` could report the same mission-sequence problem
+  twice.** `Scenario.validate()` itself validates mission-sequence
+  commands/references too (raise-fast, stopping at the first bad one)
+  -- so when every resource was already valid, `validate_all()`'s own
+  `try`/`except` around `scenario.validate()` caught and appended that
+  SAME first-bad-command/dangling-reference message a SECOND time, on
+  top of the dedicated collecting loop below it that already reports
+  every mission-sequence problem (including that same first one). Fixed
+  by recognizing both error-message formats always start with
+  `"mission_sequence["` and skipping the `scenario.validate()` exception
+  in that case, leaving the dedicated loop as the sole source of
+  mission-sequence errors. Two new regression tests in
+  `tests/test_validation.py` confirm a bad first command/dangling
+  reference is now reported exactly once.
+- Stale `README.md` claims corrected to match the app's actual current
+  state: "thirteen" -> "seventeen" template scenarios (two places, after
+  tasks 6/7/8 of the 19-item backlog each added one since that count was
+  last written), test counts updated to the currently-passing 827/116
+  (verified by actually running `pytest tests/ -q`), and a stale "not
+  yet wired up" parenthetical removed for celestial-body `locationPointing`
+  targets/thrusters/magnetic torque rods, all three of which are now
+  fully implemented.
+
+### Findings investigated and deliberately NOT changed
+
+Documented here rather than silently dropped, per this project's own
+"never sweep a finding under the rug" standard:
+
+- `_run_lambert_transfer` rebuilds a full throwaway mini-sim on every
+  call with no caching -- a real perf/scale concern inside a `while`
+  loop (up to 10,000 iterations supported), but not a correctness bug,
+  and no existing scenario exercises it at a scale where it matters.
+- `_run_lambert_transfer`'s `last_failures` dict comprehension could
+  raise a bare `IndexError` instead of a clear `MissionEngineError` if
+  the mini-sim recorded zero ticks -- unreachable given the fixed
+  60s/2-tick mini-sim configuration, so left as a latent inconsistency
+  rather than a real risk.
+- `kernels.py:build_spice_interface`'s `kernel_dir = statuses[0].path
+  .parent` assumes a non-empty `kernels` list -- a bare `IndexError` if
+  ever called with an empty one; every actual call site always passes a
+  non-empty, schema-validated list, so this is an edge-case-only latent
+  risk, not a reachable bug.
+- `references.py`'s spacecraft-reference scanning does not look inside
+  `if`/`while` `condition` strings or `script_block.code` -- a
+  spacecraft referenced ONLY from inside one of those (as opposed to a
+  structured `params["spacecraft"]` field) could be renamed or deleted
+  without `validate_all()`/the GUI's dangling-reference check catching
+  it. Real, but would need a small expression-language decision (how
+  much of an arbitrary Python-ish condition string to parse) that is out
+  of scope for an audit pass to make unilaterally -- flagged for a
+  future, deliberately-scoped task rather than guessed at here.
+- `fsw_mode="velocityPoint"` has shipped since early in this project but
+  has never been exercised by a template or a `requires_basilisk` test,
+  and so never got its own verified gain/rate combination the way every
+  other mode did. The new inertia-scaled default gains above (which
+  apply to every mode uniformly, not per-mode) substantially reduce the
+  risk this represented, but a dedicated template + test is still the
+  right way to close this gap fully -- left for a future task rather
+  than rushed here.
+
+**Full verification**: `pytest tests/ -q` (no Basilisk) --
+8 new passing tests (drag/SRP positivity) and 1 (momentum_dumping/
+magnetic_momentum_management mutual exclusion) plus 2 (validate_all
+double-report) = 11 new non-Basilisk tests, all passing, zero
+regressions. Every new `requires_basilisk` test file above
+(`test_default_mrp_gain_scaling.py`, `test_orbit_maintenance_true_mass.py`,
+`test_vizard_fuel_tank_panel.py`, `test_mtb_dipole_result_series.py`)
+run individually against a real Basilisk build, all passing. Pre
+-existing `requires_basilisk` suites re-run to confirm no regressions
+from the `build_mrp_feedback`/`orbit_maintenance`/`vizard.enable_vizard`
+signature changes: `test_orbit_maintenance.py`, `test_mtb_desaturation.py`,
+`test_momentum_dumping.py`, `test_thruster_control.py`,
+`test_location_pointing_target_body.py`, `test_css_estimation.py`,
+`test_fuel_tank.py` all pass unchanged; `test_vizard.py`'s and
+`test_gravity_gradient.py`'s SimulationService-level tests fail in this
+sandbox for the same PRE-EXISTING reason documented throughout this
+project (the SPICE-kernel network block), confirmed unrelated to this
+audit's changes by reproducing the identical failure on `test_vizard.py`
+before any of this pass's edits were made.
+

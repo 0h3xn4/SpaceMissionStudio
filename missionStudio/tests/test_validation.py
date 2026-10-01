@@ -85,6 +85,39 @@ def test_dangling_reference_nested_in_if_is_collected():
     assert any("ghost" in e for e in errors)
 
 
+def test_bad_first_command_is_not_reported_twice():
+    """Regression test for a real audit finding: Scenario.validate() ALSO
+    validates mission_sequence commands (raise-fast, stopping at the
+    first bad one) in addition to the resource-level checks that run
+    before it -- so when every resource is valid, validate_all()'s own
+    try/except around scenario.validate() used to catch and append that
+    SAME first-bad-command message a second time, on top of the dedicated
+    command-by-command loop below it (which independently reports every
+    command's problems, including that same first one). The first command
+    below is bad in exactly one way (missing delta_v_m_s only, not also
+    missing spacecraft) so its error message is reported exactly once.
+    """
+    scenario = _scenario(mission_sequence=[
+        Command(kind="maneuver", params={"spacecraft": "sat-1"}),  # missing delta_v_m_s only
+    ])
+
+    errors = validate_all(scenario)
+
+    matching = [e for e in errors if "delta_v_m_s" in e]
+    assert len(matching) == 1, f"expected exactly one delta_v_m_s error, got {matching}"
+
+
+def test_dangling_reference_in_first_command_is_not_reported_twice():
+    scenario = _scenario(mission_sequence=[
+        Command(kind="maneuver", params={"spacecraft": "ghost-only", "delta_v_m_s": [1.0, 0.0, 0.0]}),
+    ])
+
+    errors = validate_all(scenario)
+
+    matching = [e for e in errors if "ghost-only" in e]
+    assert len(matching) == 1, f"expected exactly one dangling-reference error, got {matching}"
+
+
 def test_valid_mission_sequence_referencing_real_spacecraft_has_no_errors():
     scenario = _scenario(mission_sequence=[
         Command(kind="propagate", params={"stop_condition": "duration", "duration_days": 1.0}),

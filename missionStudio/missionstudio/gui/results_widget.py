@@ -226,6 +226,8 @@ def _vector_display(name: str) -> Optional[_SeriesDisplay]:
     if name.endswith(".fuel_mass_remaining"):
         return _SeriesDisplay("Fuel Tank Remaining Mass", "Propellant mass", "kg", 1.0,
                                {"fuel_mass_remaining": "Remaining"})
+    if name.endswith(".mtb_dipole_commanded"):
+        return _SeriesDisplay("Magnetic Torque Rod Commanded Dipole", "Dipole moment", "A*m^2")
     if name.endswith(".battery_charge"):
         return _SeriesDisplay("Battery State of Charge", "Charge", "W*hr", 1.0, {"charge": "Charge"})
     if name.endswith(".battery_net_power"):

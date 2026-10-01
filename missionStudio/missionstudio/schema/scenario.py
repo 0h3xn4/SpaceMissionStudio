@@ -694,6 +694,21 @@ class SpacecraftConfig:
         _require(len(self.inertia_kg_m2) == 9, f"{self.name}: inertia_kg_m2 must have 9 elements (3x3, row-major)")
         _require(len(self.sigma_bn_init) == 3, f"{self.name}: sigma_bn_init must have 3 elements")
         _require(len(self.omega_bn_b_init_rad_s) == 3, f"{self.name}: omega_bn_b_init_rad_s must have 3 elements")
+        # drag_coeff/drag_area_m2/srp_coeff/srp_area_m2 feed straight into
+        # Basilisk's exponentialAtmosphere drag effector/SRP effector as a
+        # physical coefficient/projected area (engine.service) -- neither
+        # effector itself rejects a non-positive value (no crash, no
+        # exception), so a <= 0 area/coefficient here would otherwise
+        # silently produce a reversed or zero drag/SRP force instead of a
+        # clear error, including when the other three are left at their
+        # schema defaults and only one was mistyped. Validated
+        # unconditionally (not just when enable_drag/enable_srp is True)
+        # so toggling either flag on later can't resurface an
+        # already-invalid value unnoticed.
+        _require(self.drag_coeff > 0, f"{self.name}: drag_coeff must be > 0")
+        _require(self.drag_area_m2 > 0, f"{self.name}: drag_area_m2 must be > 0")
+        _require(self.srp_coeff > 0, f"{self.name}: srp_coeff must be > 0")
+        _require(self.srp_area_m2 > 0, f"{self.name}: srp_area_m2 must be > 0")
         self.orbit.validate()
 
         _require(self.fsw_mode is None or self.fsw_mode in SUPPORTED_FSW_MODES,
@@ -849,6 +864,18 @@ class SpacecraftConfig:
             _require("thruster" in actuator_kinds_present,
                       f"{self.name}: momentum_dumping needs at least one 'thruster' actuator (desaturation "
                       "hardware) on this spacecraft")
+            # engine.service builds BOTH desaturation control paths with no
+            # runtime guard against this -- two independent controllers would
+            # silently fight over the same reaction wheels (confirmed by
+            # direct audit: momentum_dumping and magnetic_momentum_management
+            # are each handled in their own independent `if` block, not
+            # elif). This schema check is what engine.service's own comment
+            # ("Scenario.validate() guarantees these are mutually exclusive")
+            # already assumed existed; it didn't until now.
+            _require(self.magnetic_momentum_management is None,
+                      f"{self.name}: momentum_dumping and magnetic_momentum_management are mutually exclusive "
+                      "RW-desaturation strategies -- set at most one (both would independently command the "
+                      "same reaction wheels)")
             self.momentum_dumping.validate(self.name)
         if self.magnetic_momentum_management is not None:
             _require("reaction_wheel" in actuator_kinds_present,

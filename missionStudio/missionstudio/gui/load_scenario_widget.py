@@ -36,6 +36,7 @@ own class docstring).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -54,6 +55,8 @@ from PySide6.QtWidgets import (
 import missionstudio
 
 from ..schema import load_scenario
+
+_logger = logging.getLogger(__name__)
 
 # Where scripts/_generate_templates.py writes the built-in templates, and
 # where setuptools package-data (see pyproject.toml's own comment on
@@ -140,6 +143,7 @@ class LoadScenarioWidget(QWidget):
             try:
                 scenario = load_scenario(path)
             except Exception:  # noqa: BLE001 -- a malformed bundled template must never crash the GUI on open
+                _logger.exception("Skipping malformed bundled template %s", path)
                 continue
             self._template_paths[scenario.name] = path
             item = QListWidgetItem(scenario.name)

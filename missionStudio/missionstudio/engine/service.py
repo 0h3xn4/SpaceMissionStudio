@@ -452,6 +452,9 @@ class _SpacecraftHandle:
     num_thrusters: int = 0
     css_sun_estimate_recorder: Optional[object] = None
     fuel_tank_recorder: Optional[object] = None
+    fuel_tank_effector: Optional[object] = None  # Phase 2: the fuelTank.FuelTank() itself, for engine.vizard's propellant panel
+    mtb_dipole_recorder: Optional[object] = None  # Phase 2: only set if sc_config.magnetic_momentum_management was configured
+    num_mtb: int = 0
     sensor_recorders: Dict[str, object] = field(default_factory=dict)  # sensor.name -> (kind, recorder)
     battery_recorder: Optional[object] = None  # Phase 4: only set if sc_config.power was configured
     battery_module: Optional[object] = None  # Phase 4: the simpleBattery.SimpleBattery itself, for engine.vizard
@@ -1116,6 +1119,7 @@ class SimulationService:
                     mrp = fsw.build_mrp_feedback(
                         self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg, sc_config.control_params,
                         rw_config_msg=rw_config_msg, rw_speed_out_msg=rw_state_effector.rwSpeedOutMsg,
+                        inertia_kg_m2=sc_config.inertia_kg_m2,
                     )
                     rw_motor_torque_mod = fsw.build_rw_motor_torque(
                         self.scSim, dyn_task_name, sc_config.name, mrp, rw_config_msg, rw_state_effector
@@ -1152,6 +1156,7 @@ class SimulationService:
                                 self.scSim, dyn_task_name, sc_config.name, sc_object, desat_thruster_effector,
                                 sc_config.fuel_tank,
                             )
+                            handle.fuel_tank_effector = fuel_tank_effector
                             handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
                             self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
 
@@ -1164,17 +1169,20 @@ class SimulationService:
                     # this is set.
                     if sc_config.magnetic_momentum_management is not None:
                         mtb_actuators = [a for a in sc_config.actuators if a.kind == "magnetic_torque_rod"]
-                        mtb_effector, _ = fsw.build_mtb_desaturation(
+                        mtb_effector, mtb_management = fsw.build_mtb_desaturation(
                             self.scSim, dyn_task_name, sc_config.name, sc_object, mtb_actuators,
                             rw_motor_torque_mod, rw_config_msg, rw_state_effector, self._mag_field_model,
                             sc_config.magnetic_momentum_management,
                         )
+                        handle.num_mtb = len(mtb_actuators)
+                        handle.mtb_dipole_recorder = mtb_management.mtbCmdOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.mtb_dipole_recorder)
                 else:
                     thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
                     if thruster_actuators:
                         mrp = fsw.build_mrp_feedback(
                             self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
-                            sc_config.control_params,
+                            sc_config.control_params, inertia_kg_m2=sc_config.inertia_kg_m2,
                         )
                         _, thruster_effector, thr_config_msg = fsw.build_thrusters(
                             self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_actuators
@@ -1192,12 +1200,13 @@ class SimulationService:
                                 self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_effector,
                                 sc_config.fuel_tank,
                             )
+                            handle.fuel_tank_effector = fuel_tank_effector
                             handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
                             self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
                     else:
                         mrp = fsw.build_mrp_feedback(
                             self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
-                            sc_config.control_params,
+                            sc_config.control_params, inertia_kg_m2=sc_config.inertia_kg_m2,
                         )
                         fsw.build_idealized_actuation(self.scSim, dyn_task_name, sc_config.name, sc_object, mrp)
 
@@ -1267,6 +1276,10 @@ class SimulationService:
                 name: handle.phasing_keeping_controller for name, handle in self._handles.items()
                 if handle.phasing_keeping_controller is not None
             }
+            fuel_tank_by_spacecraft = {
+                name: handle.fuel_tank_effector for name, handle in self._handles.items()
+                if handle.fuel_tank_effector is not None
+            }
             custom_models_by_spacecraft = {
                 sc_config.name: {
                     "path": sc_config.vizard_model_path,
@@ -1290,6 +1303,7 @@ class SimulationService:
                     battery_by_spacecraft=battery_by_spacecraft,
                     station_keeping_by_spacecraft=station_keeping_by_spacecraft,
                     phasing_keeping_by_spacecraft=phasing_keeping_by_spacecraft,
+                    fuel_tank_by_spacecraft=fuel_tank_by_spacecraft,
                     access_out_msgs=self._access_out_msgs,
                     custom_models_by_spacecraft=custom_models_by_spacecraft,
                 )
@@ -1538,6 +1552,11 @@ class SimulationService:
                 fuel_t_s = handle.fuel_tank_recorder.times() * macros.NANO2SEC
                 result.add(TimeSeries(f"{name}.fuel_mass_remaining", fuel_t_s, ("fuel_mass_remaining",),
                                        handle.fuel_tank_recorder.fuelMass, units="kg"))
+            if handle.mtb_dipole_recorder is not None:
+                mtb_t_s = handle.mtb_dipole_recorder.times() * macros.NANO2SEC
+                dipoles = np.asarray(handle.mtb_dipole_recorder.mtbDipoleCmds)[:, :handle.num_mtb]
+                columns = tuple(f"mtb_{i}" for i in range(handle.num_mtb))
+                result.add(TimeSeries(f"{name}.mtb_dipole_commanded", mtb_t_s, columns, dipoles, units="A*m^2"))
 
             for sensor_name, (kind, recorder) in handle.sensor_recorders.items():
                 sensor_t_s = recorder.times() * macros.NANO2SEC
