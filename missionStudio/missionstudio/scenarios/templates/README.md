@@ -30,6 +30,16 @@ missionstudio validate missionstudio/scenarios/templates/01_two_body_circular_or
 Once opened in the GUI, **Save As...** under a new name/location before
 editing if you want to keep the original template intact for next time.
 
+For '03', '07', and '18' (so far -- see `gui/template_wizard.py` for how
+to add more), the GUI's Load Scenario tab also offers **Customize...**
+next to **Open Template**: a short, guided multi-step wizard over just
+that template's own key tunable parameters (the ones already called out
+below and in each file's own `description`, under "Try changing:"),
+pre-filled with its current values, ending in the Scenario Editor with
+those changes applied -- a faster path than the full editor form, and
+still just as safe (the original template file is never touched by
+either button).
+
 ## Catalog
 
 Roughly progressive order -- each one builds on ideas from the ones

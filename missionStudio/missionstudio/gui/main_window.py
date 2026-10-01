@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
 
         self.load_scenario_widget = LoadScenarioWidget()
         self.load_scenario_widget.path_chosen.connect(self._on_load_scenario_path_chosen)
+        self.load_scenario_widget.scenario_customized.connect(self._on_load_scenario_customized)
 
         self.results_widget = ResultsWidget()
         self.mission_output_widget = MissionOutputWidget()
@@ -443,21 +444,54 @@ class MainWindow(QMainWindow):
             return
         self.open_path(Path(path))
 
+    def _on_load_scenario_customized(self, scenario: Scenario) -> None:
+        """Handles LoadScenarioWidget.scenario_customized -- a template
+        run through gui.template_wizard.TemplateCustomizeWizard, with its
+        curated fields already applied to an in-memory Scenario copy (see
+        that module's own docstring). Same unsaved-changes gate as
+        _on_load_scenario_path_chosen; unlike that path there is no file
+        yet, so this validates the wizard's result here (the one thing
+        load_scenario() would otherwise have done for a file-backed open)
+        before handing off to _open_scenario with no path -- the user
+        must File > Save As before this can overwrite anything, so the
+        original template file on disk is never at risk.
+        """
+        if not self._confirm_discard_unsaved():
+            return
+        try:
+            scenario.validate()
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Could not open customized scenario", str(exc))
+            return
+        self._open_scenario(scenario, current_path=None, verb="Customized")
+
     def open_path(self, path: Path) -> bool:
         try:
             scenario = load_scenario(path)
         except ScenarioValidationError as exc:
             QMessageBox.critical(self, "Could not open scenario", str(exc))
             return False
+        self._open_scenario(scenario, current_path=path, verb="Opened")
+        return True
+
+    def _open_scenario(self, scenario: Scenario, current_path: Optional[Path], verb: str) -> None:
+        """Shared tail end of open_path()/_on_load_scenario_customized():
+        loads ``scenario`` into the editor and resets every piece of
+        per-scenario state (results, mission output, dirty flag, current
+        -path) the same way regardless of where the Scenario came from.
+        ``current_path=None`` (the wizard path) leaves on_save() routing
+        through on_save_as() -- see that method -- rather than silently
+        picking a path to write to.
+        """
         self.scenario_editor.from_scenario(scenario)
-        self._current_path = path
+        self._current_path = current_path
         self.results_widget.set_result(None)
         self.mission_output_widget.clear()
         self._mark_clean()
-        self.statusBar().showMessage(f"Opened {path}")
-        show_toast(self, f"Opened {path.name}")
+        label = str(current_path) if current_path is not None else scenario.name
+        self.statusBar().showMessage(f"{verb} {label}")
+        show_toast(self, f"{verb} {current_path.name if current_path is not None else scenario.name}")
         self.left_tabs.setCurrentWidget(self.scenario_editor)
-        return True
 
     def on_save(self) -> None:
         if self._current_path is None:

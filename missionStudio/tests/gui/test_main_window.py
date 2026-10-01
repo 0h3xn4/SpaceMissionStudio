@@ -170,6 +170,64 @@ def test_choosing_a_template_with_unsaved_changes_prompts_first(window, monkeypa
     assert window.left_tabs.currentWidget() is window.load_scenario_widget
 
 
+def test_choosing_a_customized_scenario_opens_it_with_no_current_path(window):
+    """gui.template_wizard.TemplateCustomizeWizard emits an in-memory
+    Scenario, not a file path -- _on_load_scenario_customized must leave
+    _current_path at None (so on_save() routes through on_save_as()
+    rather than silently writing over the original template file this
+    scenario was built from).
+    """
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+
+    template_path = TEMPLATES_DIR / "03_geo_station_keeping.json"
+    scenario = load_scenario(template_path)
+    scenario.spacecraft[0].station_keeping.deadband_km = 2.5
+
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert window._current_path is None
+    assert window.left_tabs.currentWidget() is window.scenario_editor
+    loaded = window.scenario_editor.to_scenario()
+    assert loaded.spacecraft[0].station_keeping.deadband_km == 2.5
+    # The original template file itself must be untouched.
+    assert load_scenario(template_path).spacecraft[0].station_keeping.deadband_km != 2.5
+
+
+def test_choosing_a_customized_scenario_with_unsaved_changes_prompts_first(window, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+    from PySide6.QtWidgets import QMessageBox
+
+    _add_valid_spacecraft(window)
+    question_calls = []
+    monkeypatch.setattr(QMessageBox, "question",
+                         staticmethod(lambda *a, **k: question_calls.append(1) or QMessageBox.StandardButton.Cancel))
+
+    scenario = load_scenario(TEMPLATES_DIR / "03_geo_station_keeping.json")
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert len(question_calls) == 1
+    assert window.left_tabs.currentWidget() is window.load_scenario_widget
+
+
+def test_customized_scenario_that_fails_validation_shows_error_not_crash(window, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+    from PySide6.QtWidgets import QMessageBox
+
+    critical_calls = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: critical_calls.append(a)))
+
+    scenario = load_scenario(TEMPLATES_DIR / "03_geo_station_keeping.json")
+    scenario.spacecraft[0].station_keeping.deadband_km = -1.0  # invalid: must be > 0
+
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert len(critical_calls) == 1
+    assert window.left_tabs.currentWidget() is window.load_scenario_widget
+
+
 def test_on_new_switches_to_editor_tab(window):
     window.left_tabs.setCurrentWidget(window.load_scenario_widget)
     window.on_new()

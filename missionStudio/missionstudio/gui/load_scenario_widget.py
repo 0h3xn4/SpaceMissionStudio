@@ -32,6 +32,16 @@ unsaved-changes/error-message handling), so there is exactly one place
 that knows how to open a scenario file, matching how every other
 GUI-vs-``schema``/``engine`` split in this app works (see this module's
 own class docstring).
+
+Also offers a "Customize..." button, for a template with a registered
+``gui.template_wizard.TemplateWizardSpec`` -- runs a guided, multi-step
+wizard over just that template's own curated "Try changing:" parameters
+(see ``gui.template_wizard``'s own docstring) and emits the resulting
+in-memory ``Scenario`` via :attr:`scenario_customized`, instead of a
+path (there is no file yet -- see ``MainWindow._on_load_scenario_customized``
+for how that's opened without ever touching the original template file
+on disk). Disabled for a template with no registered spec, same
+"nothing to do" reasoning as `open_template_button` with no selection.
 """
 
 from __future__ import annotations
@@ -47,6 +57,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -55,6 +66,7 @@ from PySide6.QtWidgets import (
 import missionstudio
 
 from ..schema import load_scenario
+from .template_wizard import TemplateCustomizeWizard, get_wizard_spec
 
 _logger = logging.getLogger(__name__)
 
@@ -70,6 +82,7 @@ _FILE_FILTER = "missionStudio scenario (*.json)"
 
 class LoadScenarioWidget(QWidget):
     path_chosen = Signal(object)  # pathlib.Path
+    scenario_customized = Signal(object)  # schema.scenario.Scenario, built by TemplateCustomizeWizard
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -105,6 +118,14 @@ class LoadScenarioWidget(QWidget):
         self.open_template_button.setEnabled(False)
         self.open_template_button.clicked.connect(self._on_open_template_clicked)
         button_row.addWidget(self.open_template_button)
+        self.customize_button = QPushButton("Customize...")
+        self.customize_button.setEnabled(False)
+        self.customize_button.setToolTip(
+            "Run a guided wizard over this template's own key parameters, instead of opening the full "
+            "scenario editor directly."
+        )
+        self.customize_button.clicked.connect(self._on_customize_clicked)
+        button_row.addWidget(self.customize_button)
         self.browse_button = QPushButton("Browse for a file...")
         self.browse_button.clicked.connect(self._on_browse_clicked)
         button_row.addWidget(self.browse_button)
@@ -153,6 +174,8 @@ class LoadScenarioWidget(QWidget):
     def _on_selection_changed(self, current: Optional[QListWidgetItem], _previous) -> None:
         self.open_template_button.setEnabled(current is not None)
         self.description_label.setText(current.data(Qt.ItemDataRole.UserRole) if current is not None else "")
+        path = self._template_paths.get(current.text()) if current is not None else None
+        self.customize_button.setEnabled(path is not None and get_wizard_spec(path.name) is not None)
 
     def _on_open_template_clicked(self) -> None:
         item = self.list_widget.currentItem()
@@ -161,6 +184,26 @@ class LoadScenarioWidget(QWidget):
         path = self._template_paths.get(item.text())
         if path is not None:
             self.path_chosen.emit(path)
+
+    def _on_customize_clicked(self) -> None:
+        item = self.list_widget.currentItem()
+        if item is None:
+            return
+        path = self._template_paths.get(item.text())
+        if path is None:
+            return
+        spec = get_wizard_spec(path.name)
+        if spec is None:  # unreachable: customize_button is disabled whenever this would be None
+            return
+        try:
+            scenario = load_scenario(path)
+        except Exception as exc:  # noqa: BLE001 -- surface ANY failure in a dialog, never crash the GUI
+            _logger.exception("Could not load template %s for the customize wizard", path)
+            QMessageBox.critical(self, "Could not open template", str(exc))
+            return
+        wizard = TemplateCustomizeWizard(scenario, spec, self)
+        if wizard.exec() == TemplateCustomizeWizard.DialogCode.Accepted:
+            self.scenario_customized.emit(wizard.result_scenario())
 
     def _on_browse_clicked(self) -> None:
         path_str, _selected_filter = QFileDialog.getOpenFileName(self, "Open scenario", "", _FILE_FILTER)

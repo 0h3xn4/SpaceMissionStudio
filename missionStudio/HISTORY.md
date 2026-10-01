@@ -4795,3 +4795,92 @@ zero regressions (up from 838/126 -- the new template's own 4 parametrized
 schema tests + 1 dedicated structural test + its 1 new GUI round-trip
 parametrization).
 
+## A guided "Customize..." wizard over three templates' own key parameters
+
+A direct request: let a user "recreate the desired scenario themselves
+or even tweak some parameters a little bit" starting from a template,
+without first learning the full `ScenarioEditorWidget` form (every field
+on every spacecraft/sensor/actuator). The full editor already supported
+"open a template, then edit anything, then Save As" -- what was missing
+was a FASTER, more approachable path for the common case of wanting to
+change a handful of obviously-interesting knobs (the ones each
+template's own `description` already calls out under "Try changing:")
+without hunting for them across several tabs.
+
+Three explicit design choices, asked of and made by the user rather than
+guessed: a TRUE multi-step `QWizard` (one page per decision, not a
+single dense form); the wizard hands off an in-memory `Scenario` to the
+existing Scenario Editor on Finish (reusing all of its validation/save
+machinery, rather than writing a file directly); and a PILOT rollout on
+three representative templates first (`'03'` GEO station-keeping --
+simple orbit-only; `'18'` LEO station-keeping -- same controller shape
+plus a field that touches two dataclass locations at once; `'07'`
+attitude+hardware+power -- the most structurally complex single
+-spacecraft template) rather than all eighteen at once, to validate the
+spec format and the UX before a larger rollout.
+
+New `gui/template_wizard.py`: a declarative `TemplateWizardSpec` (list of
+`WizardPageSpec`, each a list of `WizardField` -- label, help text, a
+`get(scenario)`/`set(scenario, value)` closure pair, and spin-box
+range/decimals/step/suffix), one entry in a `_SPECS` registry per
+template filename, and a generic `TemplateCustomizeWizard(QWizard)` that
+builds one `QWizardPage` per page spec from whichever template's spec it
+was given -- adding a fourth template later is just another registry
+entry, no change to the wizard machinery itself. Each spec's fields were
+chosen directly from that template's own already-published "Try
+changing:" text (`scripts/_generate_templates.py`), not invented fresh:
+
+* `'03'` (2 pages): station-keeping deadband/thrust/isp/propellant
+  budget, then simulation duration.
+* `'18'` (4 pages): target altitude (the one field that updates BOTH
+  `station_keeping.target_altitude_km` and `orbit.semi_major_axis_km`
+  together, since the latter is measured from the central body's center
+  and the former from its surface -- a wrong value in only one would
+  leave the Scenario internally inconsistent), drag area/coefficient,
+  the same station-keeping controller knobs as '03', then duration.
+* `'07'` (3 pages): reaction-wheel max momentum (applied identically to
+  all three wheels, keeping their already-symmetric layout symmetric
+  rather than letting the wizard silently create an asymmetric set),
+  solar panel area / battery capacity, then duration.
+
+**A real design subtlety, caught before it became a bug**: the wizard
+must operate on a COPY of the template's `Scenario`, never the one
+`LoadScenarioWidget` loaded from disk, or accepting the wizard would
+mutate (and `MainWindow` could then accidentally save over) the original
+bundled template file. `TemplateCustomizeWizard.__init__` makes that copy
+via `Scenario.from_dict(base_scenario.to_dict())` -- the same round-trip
+`tests/test_scenario_templates.py` already trusts -- and `MainWindow
+._on_load_scenario_customized` additionally opens the result with
+`current_path=None` (refactored out of the existing `open_path()` into a
+shared `_open_scenario()` helper), so `on_save()` always routes through
+`on_save_as()` for a customized scenario, exactly like File > New
+already does, never silently overwriting anything. Confirmed directly:
+editing every field across all three templates' wizards, finishing, and
+re-loading the original template file afterward shows it completely
+unchanged.
+
+New `LoadScenarioWidget.scenario_customized` signal (parallel to the
+existing `path_chosen`, but carrying a `Scenario` object instead of a
+path, since there is no file yet) and a "Customize..." button next to
+"Open Template", enabled only when `template_wizard.get_wizard_spec()`
+returns non-`None` for the selected template -- disabled (not hidden,
+matching how `open_template_button` already handles "no selection") for
+every other template, which still only offers the existing "Open
+Template" flow unchanged.
+
+**Verification**: `tests/gui/test_template_wizard.py` (10 new tests)
+confirms, for all three registered specs: pages/fields are pre-filled
+with the template's own current values; finishing with no edits
+reproduces the original scenario byte-for-byte (`to_dict()` equality);
+edited values apply correctly and the ORIGINAL `Scenario` object (and
+the bundled template file on disk) stay untouched; '18's altitude field
+updates both dataclass locations correctly; '07's reaction-wheel field
+applies to all three wheels identically. Plus new tests in
+`tests/gui/test_load_scenario_widget.py` (button enable/disable per
+-template, signal emission on accept/cancel/no-selection) and
+`tests/gui/test_main_window.py` (the full hand-off: `_current_path`
+stays `None`, unsaved-changes confirmation gates it the same as the
+existing template-open path, an invalid customized scenario shows a
+clear error instead of crashing). Full suite: 860 passed, 126 skipped,
+zero regressions (up from 844/126).
+
