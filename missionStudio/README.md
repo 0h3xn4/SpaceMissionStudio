@@ -314,7 +314,7 @@ it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
-seventeen complete example scenarios covering every major concept in
+eighteen complete example scenarios covering every major concept in
 isolation (see "Template missions" below).
 
 **Safe cancellation** -- **Abort Simulation** cooperatively cancels an
@@ -593,7 +593,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-seventeen built-in template missions (see "Template missions" below) or
+eighteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -610,7 +610,7 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has seventeen ready-to-run scenario
+`missionstudio/scenarios/templates/` has eighteen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
@@ -620,7 +620,9 @@ analysis, uncontrolled gravity-gradient torque, thruster-only attitude
 control, reaction-wheel momentum management via thrusters or via
 magnetic torque rods, real sun-heading estimation from coarse sun
 sensor hardware, direct celestial-body pointing, a Lambert-solver
-point-to-point transfer, and real propellant depletion via a fuel tank.
+point-to-point transfer, real propellant depletion via a fuel tank,
+and drag-driven LEO station-keeping (the direct LEO counterpart to
+GEO station-keeping above).
 See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
@@ -645,7 +647,7 @@ and hasn't been run for real.
 
 **Built into the GUI itself** (not just files you'd have to know the path
 to): the GUI's **Load Scenario** tab (`gui/load_scenario_widget.py`,
-see "Running the GUI" above) lists all seventeen by name with their
+see "Running the GUI" above) lists all eighteen by name with their
 description shown on selection, no file-browsing needed -- "Open
 Template" or a double-click loads one and switches straight to the
 Scenario Editor tab. The same tab's "Browse for a file..." button covers

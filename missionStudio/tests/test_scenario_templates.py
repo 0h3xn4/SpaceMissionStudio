@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 17
+    assert len(_TEMPLATE_PATHS) >= 18
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -171,3 +171,19 @@ def test_phasing_template_pairs_phasing_keeping_with_station_keeping():
     scenario = load_scenario(_TEMPLATES_DIR / "05_formation_flying_phasing.json")
     follower = next(sc for sc in scenario.spacecraft if sc.phasing_keeping is not None)
     assert follower.station_keeping is not None
+
+
+def test_leo_station_keeping_template_is_drag_driven_not_srp_driven():
+    """The direct LEO counterpart to '03' (GEO, SRP/third-body-driven,
+    drag off): this one isolates drag as the one dominant perturbation
+    instead, with a materially tighter deadband than '03's GEO case --
+    see the file's own description for why (continuous drag needs more
+    frequent, smaller corrections than GEO's occasional ones).
+    """
+    leo = load_scenario(_TEMPLATES_DIR / "18_leo_station_keeping.json").spacecraft[0]
+    geo = load_scenario(_TEMPLATES_DIR / "03_geo_station_keeping.json").spacecraft[0]
+    assert leo.station_keeping is not None
+    assert leo.enable_drag is True
+    assert leo.enable_srp is False
+    assert leo.station_keeping.target_altitude_km < 1000.0  # genuinely LEO, not GEO-scale
+    assert leo.station_keeping.deadband_km < geo.station_keeping.deadband_km

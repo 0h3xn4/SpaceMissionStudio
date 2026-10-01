@@ -4730,3 +4730,68 @@ project (the SPICE-kernel network block), confirmed unrelated to this
 audit's changes by reproducing the identical failure on `test_vizard.py`
 before any of this pass's edits were made.
 
+## Template 18: LEO station-keeping, the direct counterpart to '03's GEO case
+
+A real gap, found by a direct question: '03' demonstrates GEO station
+-keeping (Sun/Moon third-body gravity + SRP as the drift driver, a wide
+5 km deadband, occasional corrections), but nothing demonstrated the
+other, arguably more common real-world case -- a LEO spacecraft actively
+compensating CONTINUOUS atmospheric drag decay, which needs a materially
+different control regime (tighter deadband, more frequent/smaller
+burns). `StationKeepingConfig`/`engine.orbit_maintenance` were always
+altitude-agnostic (nothing drag-specific needed adding), so this was a
+missing template, not a missing feature.
+
+**Finding the right parameters took real investigation, not guessing**:
+Basilisk's `ExponentialAtmosphere` module's own `simSetPlanetEnvironment
+.exponentialAtmosphere()` Earth preset (`baseDensity=1.217 kg/m^3`,
+`scaleHeight=8500.0 m`) is a single exponential fit tuned near the
+surface -- applied unmodified at LEO altitudes (300-450 km) it predicts
+a density around 15 orders of magnitude too low (`exp(-400000/8500)`),
+producing no meaningful orbital decay at all over weeks. Confirmed
+directly: an initial sweep using the stock preset showed exactly zero
+station-keeping burns over a 14-30 day run at 300-450 km, regardless of
+drag area/mass/deadband. Re-parameterized for verification purposes only
+(NOT shipped -- see below) with a realistic ~400 km reference density
+(~2.8e-12 kg/m^3, moderate solar activity) and an altitude-appropriate
+~60 km scale height, the SAME `engine.orbit_maintenance.
+build_station_keeping` + a real `dragDynamicEffector` (built the exact
+way `engine.service` wires one, bypassing SPICE the same way
+`tests/test_mtb_desaturation.py` already does) produced 2-3 real reboost
+burns over 14 days at 400 km with a 1 km deadband and a small (1.5 m^2 /
+120 kg) satellite -- a believable, demonstrable multi-burn LEO profile,
+confirmed directly against a real Basilisk build before committing to
+these numbers.
+
+**What's shipped vs. what's verification-only**: the template itself
+uses the SAME `nrlmsise00` conservative-margin atmosphere model '04'/
+'05'/'07'/'08' already use (not the reparameterized `ExponentialAtmosphere`
+stand-in above, which was a verification tool only) -- consistent with
+every other drag-enabled template in this project, and more physically
+correct (real density varies with latitude/season/solar activity; a
+single exponential fit never will). Like '05', this template's EXACT
+decay rate under the real `nrlmsise00` model has not been re-verified
+end-to-end in this sandbox (no route to CelesTrak or the NAIF SPICE
+kernel host here) -- stated plainly in the template's own `description`,
+matching this project's established honesty convention for this exact
+situation, rather than silently shipping unverified numbers as if they
+were confirmed.
+
+**Template**: `18_leo_station_keeping.json` -- a single 120 kg satellite
+at 400 km/51.6 deg, `enable_drag=True`/`enable_srp=False` (isolating
+drag as the one dominant perturbation, the same "isolate the lesson"
+approach '03' already uses for GEO's SRP/third-body case), `station_keeping`
+with a 1 km deadband (vs. '03's 5 km) over the same 14-day window as
+'03', for a direct propellant-budget comparison. New
+`tests/test_scenario_templates.py::test_leo_station_keeping_template_is_drag_driven_not_srp_driven`
+confirms the structural contrast against '03' (drag on/SRP off, a
+genuinely-LEO target altitude, a tighter deadband than GEO's). Catalog
+entry added to `missionstudio/scenarios/templates/README.md` (which also
+had its own stale "Nine ready-to-run scenario files" intro corrected to
+eighteen -- it was never updated as templates were added over time), and
+every "seventeen"/template-count reference in the top-level `README.md`
+updated to eighteen. Full non-Basilisk suite: 844 passed, 126 skipped,
+zero regressions (up from 838/126 -- the new template's own 4 parametrized
+schema tests + 1 dedicated structural test + its 1 new GUI round-trip
+parametrization).
+

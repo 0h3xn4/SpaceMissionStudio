@@ -1114,6 +1114,84 @@ def build_17_fuel_tank_depletion() -> Scenario:
     )
 
 
+def build_18_leo_station_keeping() -> Scenario:
+    # Verification note (see this function's own description string
+    # below for the user-facing version): this sandbox has no route to
+    # CelesTrak, so the shipped nrlmsise00 atmosphere model's exact decay
+    # rate couldn't be re-verified end-to-end here (same gap as '04'/'05'
+    # already document). The station_keeping/drag parameters below WERE
+    # tuned and confirmed against a real Basilisk build, bypassing SPICE
+    # the same way tests/test_mtb_desaturation.py does, using
+    # engine.orbit_maintenance.build_station_keeping() directly against a
+    # bare SimulationBaseClass with a real dragDynamicEffector fed by
+    # ExponentialAtmosphere -- NOT the shipped nrlmsise00 model, but
+    # re-parameterized with a realistic ~400 km reference density
+    # (~2.8e-12 kg/m^3, moderate solar activity) and a LEO-appropriate
+    # ~60 km scale height (ExponentialAtmosphere's own built-in Earth
+    # preset uses an 8.5 km scale height -- correct near the surface, but
+    # it underestimates LEO density by roughly 15 orders of magnitude and
+    # produces no meaningful decay at all over weeks). With that
+    # realistic density, these parameters produced 2-3 real reboost burns
+    # over the same 14-day window as '03' and used well under the
+    # propellant_kg budget below -- the dragDynamicEffector/
+    # StationKeepingController code paths themselves are the SAME
+    # already-shipped, already-verified code every other enable_drag
+    # template uses, only the verification harness differs.
+    return Scenario(
+        name="18 - LEO station-keeping",
+        description=(
+            "The direct LEO counterpart to '03' (GEO station-keeping): a 400 km small satellite "
+            "actively maintaining its altitude against atmospheric drag -- the actual dominant driver "
+            "of LEO altitude decay, the same way Sun/Moon/SRP drive GEO drift in '03' -- using the "
+            "exact same station_keeping deadband thrust controller. Unlike GEO's typically-infrequent "
+            "corrections, LEO drag is continuous and altitude-dependent (denser air lower down means "
+            "faster decay), so this spacecraft needs noticeably more frequent, smaller corrections.\n\n"
+            "What to look at: same as '03' -- run the CLI and check command_summary/results for "
+            "propellant used over the 14-day run, and compare the number/frequency of burns against "
+            "'03's GEO case in the station-keeping summary (README, 'Running the CLI'). The contrast "
+            "is the lesson: GEO drift is slow and the deadband is wide (5 km) because the perturbing "
+            "forces are weak and roughly constant; LEO drag is faster and the deadband here is tight "
+            "(1 km) because a satellite this low can lose multiple km of altitude in days, not years.\n\n"
+            "Try changing: the orbit's semi_major_axis_km (lower = thicker atmosphere = much faster "
+            "decay = more frequent burns -- try 350 km or 300 km to see the effect accelerate "
+            "sharply), drag_area_m2/drag_coeff (a satellite with more cross-sectional area per unit "
+            "mass decays faster), or deadband_km (tighter means more frequent, smaller corrections, "
+            "the same trade '03' suggests for GEO).\n\n"
+            "enable_srp is deliberately OFF here (unlike '04'/'05', which enable it alongside drag): "
+            "the point of this template, like '03's point about GEO, is to isolate the ONE dominant "
+            "perturbation (drag) rather than mix in a secondary effect SRP is at this altitude. Uses "
+            "the same CONSERVATIVE, 95th-percentile sustained-worst-case nrlmsise00 drag margin from "
+            "real historical CelesTrak data as '04'/'05' (see engine/spaceweather.py's own docstring) "
+            "-- needs network access to CelesTrak (or a local historical space-weather file set via "
+            "space_weather.local_file_path) to actually run. NOTE: like '05', this template's exact "
+            "decay rate under the real nrlmsise00 model has NOT been re-verified against a real "
+            "multi-day Basilisk run in this development sandbox (no route to the NAIF SPICE kernel "
+            "host or CelesTrak here) -- the station_keeping/drag parameters were instead tuned and "
+            "confirmed against a bypass-SPICE build using a realistically-reparameterized simple "
+            "exponential atmosphere model (2-3 real reboost burns over 14 days, well under budget); "
+            "please report back if the real nrlmsise00 propellant budget looks off."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="orbit_only",
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
+        sim_settings=SimSettings(duration_days=14.0, dynamics_task_rate_s=30.0, integrator="rkf78"),
+        space_weather=_conservative_drag_margin(),
+        spacecraft=[
+            SpacecraftConfig(
+                name="leo-sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6778.0, eccentricity=0.0,
+                               inclination_deg=51.6, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=120.0,
+                enable_drag=True, drag_coeff=2.2, drag_area_m2=1.5,
+                station_keeping=StationKeepingConfig(
+                    target_altitude_km=400.0, deadband_km=1.0, thrust_n=0.05, isp_s=1500.0,
+                    propellant_kg=2.0,
+                ),
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -1134,6 +1212,7 @@ def main() -> None:
     _save(build_15_celestial_body_pointing(), "15_celestial_body_pointing.json")
     _save(build_16_lambert_transfer(), "16_lambert_transfer.json")
     _save(build_17_fuel_tank_depletion(), "17_fuel_tank_depletion.json")
+    _save(build_18_leo_station_keeping(), "18_leo_station_keeping.json")
 
 
 if __name__ == "__main__":
