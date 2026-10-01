@@ -104,7 +104,7 @@ def test_dialog_round_trips_sensors_actuators_and_fsw_mode(qtbot):
         name="sat-with-fsw",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         sensors=[SensorConfig(kind="star_tracker", name="st-1", params={"noise_arcsec": 5.0})],
-        actuators=[ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]})],
+        actuators=[ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"})],
         fsw_mode="hillPoint",
         fsw_params={"foo": "bar"},
         control_params={"K": 4.0, "P": 25.0},
@@ -117,7 +117,7 @@ def test_dialog_round_trips_sensors_actuators_and_fsw_mode(qtbot):
     assert got.sensors[0].kind == "star_tracker"
     assert got.sensors[0].params == {"noise_arcsec": 5.0}
     assert len(got.actuators) == 1
-    assert got.actuators[0].params == {"gsHat_B": [1, 0, 0]}
+    assert got.actuators[0].params == {"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}
     assert got.fsw_mode == "hillPoint"
     assert got.fsw_params == {"foo": "bar"}
     assert got.control_params == {"K": 4.0, "P": 25.0}
@@ -1304,7 +1304,7 @@ def test_dialog_builds_momentum_dumping_config_when_group_checked(qtbot):
         name="sat-md",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         actuators=[
-            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
             ActuatorConfig(kind="thruster", name="thr-1",
                             params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
         ],
@@ -1332,7 +1332,7 @@ def test_dialog_round_trips_momentum_dumping(qtbot):
         name="sat-md",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         actuators=[
-            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
             ActuatorConfig(kind="thruster", name="thr-1",
                             params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
         ],
@@ -1369,8 +1369,8 @@ def test_dialog_builds_magnetic_momentum_management_config_when_group_checked(qt
         name="sat-mmm",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         actuators=[
-            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
-            ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0], "rw_type": "Honeywell_HR16"}),
             ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
                             params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
         ],
@@ -1398,7 +1398,7 @@ def test_dialog_round_trips_magnetic_momentum_management(qtbot):
         name="sat-mmm",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         actuators=[
-            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
             ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
                             params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
         ],
@@ -1426,7 +1426,7 @@ def test_dialog_rejects_malformed_wheel_speed_biases(qtbot):
         name="sat-mmm",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         actuators=[
-            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
             ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
                             params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
         ],

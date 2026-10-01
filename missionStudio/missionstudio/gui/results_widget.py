@@ -214,6 +214,9 @@ def _vector_display(name: str) -> Optional[_SeriesDisplay]:
         return _SeriesDisplay("Body Angular Rate", "Angular rate", "rad/s", 1.0, dict(_XYZ_LABELS))
     if name.endswith(".sun_heading_body"):
         return _SeriesDisplay("Sun Heading (Body Frame)", "Unit vector component", "-", 1.0, dict(_XYZ_LABELS))
+    if name.endswith(".sun_heading_body_estimated"):
+        return _SeriesDisplay("Sun Heading Estimate (CSS, Body Frame)", "Unit vector component", "-", 1.0,
+                               dict(_XYZ_LABELS))
     if name.endswith(".control_torque"):
         return _SeriesDisplay("Commanded Control Torque", "Torque", "N*m", 1.0, dict(_XYZ_LABELS))
     if name.endswith(".rw_speeds"):

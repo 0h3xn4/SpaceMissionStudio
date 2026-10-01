@@ -93,7 +93,9 @@
               1.0,
               0.0,
               0.0
-            ]
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0
           }
         },
         {
@@ -104,7 +106,9 @@
               0.0,
               1.0,
               0.0
-            ]
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0
           }
         },
         {
@@ -115,13 +119,18 @@
               0.0,
               0.0,
               1.0
-            ]
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0
           }
         }
       ],
       "fsw_mode": "sunSafePoint",
       "fsw_params": {},
-      "control_params": {},
+      "control_params": {
+        "K": 0.0194,
+        "P": 0.167
+      },
       "power": {
         "panel_area_m2": 0.3,
         "panel_efficiency": 0.28,

@@ -121,6 +121,7 @@ import numpy as np
 from Basilisk.architecture import messaging
 from Basilisk.fswAlgorithms import (
     attTrackingError,
+    cssWlsEst,
     hillPoint,
     inertial3D,
     locationPointing,
@@ -215,8 +216,95 @@ def _wrap_with_att_tracking_error(scSim, task_name: str, tag: str, att_ref_out_m
     return err.attGuidOutMsg
 
 
+def build_css_sun_estimation(scSim, task_name: str, tag: str, sc_object, css_sensor_configs: List,
+                              sun_state_out_msg):
+    """Real sun-heading ESTIMATION (not truth) from a spacecraft's own
+    ``coarse_sun_sensor`` hardware: a dedicated ``CSSConstellation`` (one
+    ``CoarseSunSensor`` device per entry in ``css_sensor_configs``, same
+    ``nHat_B``/``fov_deg``/``noise_std`` params as :func:`attach_sensors`
+    builds for the user-visible sensor of the same name) feeds
+    ``cssWlsEst``'s weighted-least-squares sun-direction estimator.
+    Returns ``cssWlsEst.navStateOutMsg`` (``NavAttMsg``-typed, directly
+    compatible with ``sunSafePoint.sunDirectionInMsg`` -- see
+    :func:`build_guidance`'s ``sun_direction_override_msg`` parameter).
+
+    This dedicated CSS cluster is intentionally separate from
+    :func:`attach_sensors`'s own per-sensor ``coarse_sun_sensor`` output
+    messages, same reasoning as :func:`build_mtb_desaturation`'s dedicated
+    TAM: those exist for user-visible per-sensor telemetry (one message
+    per sensor); ``cssWlsEst`` needs ONE aggregate ``CSSArraySensorMsgPayload``
+    across the whole cluster, which only Basilisk's ``CSSConstellation``
+    container produces (confirmed directly against
+    ``examples/BskSim/models/BSK_Dynamics.py``'s/``BSK_Fsw.py``'s own
+    ``SetCSSConstellation()``/``SetCSSWlsEst()`` -- notably, individual
+    ``CoarseSunSensor`` devices are NEVER added to the sim task directly
+    in that reference; only the ``CSSConstellation`` container is, which
+    drives each device's own update internally).
+
+    Verification note: confirmed directly against a real Basilisk build
+    that this chain's accuracy is governed entirely by sensor GEOMETRY
+    (how many of the cluster's sensors are actually sunlit for a given
+    sun direction, not a module bug) -- a sun direction illuminating only
+    2 of this function's 8-sensor layout gave a 14.5-degree error (an
+    under-determined 3-axis WLS fit from too few active sensors), while a
+    direction illuminating 4 gave an EXACT match (0.0-degree error, zero
+    sensor noise). Real spacecraft CSS clusters have exactly this
+    direction-dependent coverage gap; it is not something to "fix" here.
+
+    Returns ``(nav_state_out_msg, css_devices)`` -- the SECOND element is
+    NOT optional to discard. Caught directly as a real, reproducible
+    segfault: ``CSSConstellation.sensorList`` does not take ownership of
+    the ``CoarseSunSensor`` Python objects assigned to it (only a
+    reference) -- if ``css_devices`` is a purely-local list (e.g. this
+    function's own, if it didn't return it), Python garbage-collects the
+    devices once the function returns, and Basilisk segfaults inside
+    ``InitializeSimulation()``/``ExecuteSimulation()`` on the now-dangling
+    reference, with no error message pointing at the cause. Confirmed by
+    reproducing it both ways (segfaults when discarded, works when kept
+    alive) against a real Basilisk build -- the same category of lifetime
+    hazard this codebase's own Vizard wiring already documents
+    (``access_indicator_bridges``/``generic_storage_list``/
+    ``generic_sensor_list`` -- "the caller MUST keep ALL FOUR alive").
+    The caller must hold this list alive for as long as the simulation
+    runs (e.g. as an attribute on a long-lived object), exactly like
+    those Vizard lists.
+    """
+    css_devices = []
+    for sensor in css_sensor_configs:
+        css = coarseSunSensor.CoarseSunSensor()
+        css.ModelTag = f"{tag}_{sensor.name}_est"
+        css.nHat_B = [float(v) for v in sensor.params["nHat_B"]]
+        css.fov = np.radians(float(sensor.params.get("fov_deg", 90.0)) / 2.0)
+        css.senNoiseStd = float(sensor.params.get("noise_std", 0.0))
+        css.sunInMsg.subscribeTo(sun_state_out_msg)
+        css.stateInMsg.subscribeTo(sc_object.scStateOutMsg)
+        css_devices.append(css)
+
+    constellation = coarseSunSensor.CSSConstellation()
+    constellation.ModelTag = f"{tag}_cssConstellation_est"
+    constellation.sensorList = coarseSunSensor.CSSVector(css_devices)
+    scSim.AddModelToTask(task_name, constellation)
+
+    css_config_payload = messaging.CSSConfigMsgPayload(
+        nCSS=len(css_devices),
+        cssVals=[
+            messaging.CSSUnitConfigMsgPayload(CBias=1.0, nHat_B=[float(v) for v in sensor.params["nHat_B"]])
+            for sensor in css_sensor_configs
+        ],
+    )
+    css_config_msg = messaging.CSSConfigMsg().write(css_config_payload)
+
+    estimator = cssWlsEst.cssWlsEst()
+    estimator.ModelTag = f"{tag}_cssWlsEst"
+    estimator.cssDataInMsg.subscribeTo(constellation.constellationOutMsg)
+    estimator.cssConfigInMsg.subscribeTo(css_config_msg)
+    scSim.AddModelToTask(task_name, estimator)
+
+    return estimator.navStateOutMsg, css_devices
+
+
 def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: dict, nav, mu: float,
-                    ground_locations: Dict[str, object]):
+                    ground_locations: Dict[str, object], sun_direction_override_msg=None):
     """Builds the guidance mode named by ``fsw_mode`` (one of
     :data:`schema.scenario.SUPPORTED_FSW_MODES`) and returns its
     ``AttGuidMsg``-typed output message, ready for :func:`build_mrp_feedback`.
@@ -225,6 +313,14 @@ def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: d
         ground_locations: ``{ground_station_name: groundLocation.GroundLocation}``
             for every ``GroundStationConfig`` already built for this
             scenario's central body -- only consulted for ``"locationPointing"``.
+        sun_direction_override_msg: ``"sunSafePoint"`` only -- when given (a
+            ``NavAttMsg``-typed message, e.g. :func:`build_css_sun_estimation`'s
+            ``navStateOutMsg`` return value), ``sunDirectionInMsg`` subscribes
+            to THIS instead of ``nav.attOutMsg`` (truth). ``imuInMsg`` (body
+            rate) still always reads truth either way -- CSS-WLS estimates
+            sun-heading only, not rate; see module docstring's "attitude
+            control loop closes on truth" note for why rate stays
+            unestimated.
     """
     if fsw_mode not in SUPPORTED_FSW_MODES:
         raise FswError(f"fsw_mode {fsw_mode!r} must be one of {SUPPORTED_FSW_MODES}")  # unreachable if validated
@@ -257,7 +353,9 @@ def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: d
         mod.sHatBdyCmd = list(fsw_params.get("sHatBdyCmd", [0.0, 0.0, 1.0]))
         mod.minUnitMag = float(fsw_params.get("min_unit_mag", 0.1))
         mod.sunAxisSpinRate = float(fsw_params.get("sun_axis_spin_rate_rad_s", 0.0))
-        mod.sunDirectionInMsg.subscribeTo(nav.attOutMsg)
+        mod.sunDirectionInMsg.subscribeTo(
+            sun_direction_override_msg if sun_direction_override_msg is not None else nav.attOutMsg
+        )
         mod.imuInMsg.subscribeTo(nav.attOutMsg)  # see module docstring: same NavAttMsgPayload, both fields needed
         scSim.AddModelToTask(task_name, mod)
         return mod.attGuidanceOutMsg

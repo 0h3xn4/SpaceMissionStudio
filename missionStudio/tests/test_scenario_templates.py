@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 13
+    assert len(_TEMPLATE_PATHS) >= 14
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -115,6 +115,20 @@ def test_magnetic_momentum_management_template_mixes_reaction_wheel_and_mtb_actu
     assert sat.magnetic_momentum_management is not None
     num_rw = sum(1 for a in sat.actuators if a.kind == "reaction_wheel")
     assert len(sat.magnetic_momentum_management.wheel_speed_biases_rad_s) == num_rw
+
+
+def test_css_sun_heading_estimation_template_wires_use_css_estimation():
+    scenario = load_scenario(_TEMPLATES_DIR / "14_css_sun_heading_estimation.json")
+    sat = scenario.spacecraft[0]
+    assert sat.fsw_mode == "sunSafePoint"
+    assert sat.fsw_params.get("use_css_estimation") is True
+    assert sum(1 for s in sat.sensors if s.kind == "coarse_sun_sensor") == 8
+    assert "sun" in scenario.gravity.third_body_perturbers
+    # DEFAULT_MRP_GAINS (K=3.5/P=30) scaled down for this template's 5 kg*m^2
+    # hub -- see scripts/_generate_templates.py's own comment and
+    # HISTORY.md for why an unscaled default never converges here.
+    assert sat.control_params.get("K", 3.5) < 1.0
+    assert sat.control_params.get("P", 30.0) < 1.0
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

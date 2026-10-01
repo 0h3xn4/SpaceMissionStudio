@@ -394,7 +394,25 @@ def build_06_attitude_pointing_basic() -> Scenario:
         # enabled -- this template's own role is to stay the SIMPLE
         # version ('07' is explicitly "the realistic counterpart").
         gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
-        sim_settings=SimSettings(duration_days=0.05, dynamics_task_rate_s=1.0, integrator="rkf78"),
+        # dynamics_task_rate_s=0.1 (NOT the schema's own 10.0 default, and
+        # NOT this template's previous 1.0): confirmed directly against a
+        # real Basilisk build that idealized-actuation mrpFeedback control
+        # (engine/fsw.py's DEFAULT_MRP_GAINS, K=3.5/P=30 -- lifted from
+        # Basilisk's own examples/BskSim reference, which runs its FSW task
+        # at fswRate=0.1s) goes numerically unstable -- sigma_BN reaches
+        # NaN within ~15 task ticks -- at 1.0s with this template's inertia
+        # (_INERTIA_MEDIUM), because mrpFeedback's commanded torque is a
+        # zero-order hold applied for the WHOLE task period: a coarser
+        # period needs a proportionally weaker P relative to inertia to stay
+        # discrete-time stable (see _osculating_elements()'s own
+        # SimulationServiceError message in engine/service.py, which already
+        # names exactly this failure mode). 0.1s matches the reference
+        # fswRate this K/P pair is tuned against and was confirmed stable
+        # (no NaN) over this template's full duration. See HISTORY.md for
+        # the full investigation -- this is a general risk for ANY
+        # idealized-actuation spacecraft left on a coarse
+        # dynamics_task_rate_s, not specific to this template.
+        sim_settings=SimSettings(duration_days=0.05, dynamics_task_rate_s=0.1, integrator="rkf78"),
         spacecraft=[
             SpacecraftConfig(
                 name="sat-1",
@@ -469,11 +487,36 @@ def build_07_attitude_pointing_with_adcs_hardware() -> Scenario:
                     SensorConfig(kind="coarse_sun_sensor", name="css-1", params={"nHat_B": [1.0, 0.0, 0.0]}),
                 ],
                 actuators=[
-                    ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1.0, 0.0, 0.0]}),
-                    ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0.0, 1.0, 0.0]}),
-                    ActuatorConfig(kind="reaction_wheel", name="rw-3", params={"gsHat_B": [0.0, 0.0, 1.0]}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                                    params={"gsHat_B": [1.0, 0.0, 0.0], "rw_type": "Honeywell_HR16",
+                                            "maxMomentum": 100.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-2",
+                                    params={"gsHat_B": [0.0, 1.0, 0.0], "rw_type": "Honeywell_HR16",
+                                            "maxMomentum": 100.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-3",
+                                    params={"gsHat_B": [0.0, 0.0, 1.0], "rw_type": "Honeywell_HR16",
+                                            "maxMomentum": 100.0}),
                 ],
                 fsw_mode="sunSafePoint",
+                # DEFAULT_MRP_GAINS (engine/fsw.py: K=3.5, P=30.0) is lifted
+                # directly from Basilisk's own examples/BskSim reference
+                # (BSK_Fsw.py's mrpFeedbackRWs), which is tuned for THAT
+                # example's 900 kg*m^2 spacecraft (BSK_Dynamics.py's I_sc).
+                # Applied unscaled to this template's 5 kg*m^2 _INERTIA_SMALL
+                # hub, it is roughly 180x too stiff for this inertia and
+                # produces a persistent, non-decaying ~30-degree pointing
+                # oscillation (confirmed directly against a real Basilisk
+                # build: sigma_BN never settles, even from a dead-rest
+                # initial rate, over a 1500s run) -- bounded by RW torque
+                # saturation rather than NaN, but not a real "pointed and
+                # holding" safe mode. Scaled by this template's inertia
+                # relative to that reference (K,P both x (5/900)) converges
+                # cleanly instead (confirmed: sub-1e-6-degree final pointing
+                # error over the same run). See HISTORY.md for the full
+                # investigation -- this gain/inertia mismatch is a general
+                # risk for ANY small-sat-scale spacecraft left on
+                # DEFAULT_MRP_GAINS, not specific to this template.
+                control_params={"K": 0.0194, "P": 0.167},
                 power=PowerConfig(panel_area_m2=0.3, panel_efficiency=0.28, battery_capacity_wh=80.0),
             ),
         ],
@@ -820,6 +863,88 @@ def build_13_magnetic_torque_rod_momentum_management() -> Scenario:
     )
 
 
+def build_14_css_sun_heading_estimation() -> Scenario:
+    return Scenario(
+        name="14 - Sun-heading estimation from coarse sun sensors",
+        description=(
+            "Real sun-direction ESTIMATION (not truth) feeding a closed attitude-control loop: eight "
+            "coarse_sun_sensor devices in a cube layout (same directions as "
+            "examples/BskSim/models/BSK_Dynamics.py's SetCSSConstellation()) feed a dedicated "
+            "CSSConstellation + cssWlsEst weighted-least-squares estimator (engine.fsw."
+            "build_css_sun_estimation), and fsw_params['use_css_estimation']=True routes that ESTIMATE "
+            "(rather than simpleNav's truth) into fsw_mode 'sunSafePoint''s sunDirectionInMsg -- the "
+            "same architecture as examples/BskSim/scenarios/scenario_AttEclipse.py's real reference "
+            "(cssWlsEst -> sunSafePoint -> mrpFeedback -> reaction wheels).\n\n"
+            "control_params is deliberately NOT left at engine.fsw.DEFAULT_MRP_GAINS (K=3.5/P=30): that "
+            "default is lifted directly from Basilisk's own BSK_Fsw.py reference, tuned for THAT "
+            "example's 900 kg*m^2 spacecraft. Applied unscaled to this template's 5 kg*m^2 hub it is "
+            "roughly 180x too stiff -- confirmed directly against a real Basilisk build to produce a "
+            "persistent, non-decaying ~30-degree pointing oscillation (bounded by RW torque saturation, "
+            "not a crash, but never actually 'pointed and holding'). Scaling K and P by this hub's "
+            "inertia relative to that reference (both x 5/900) converges cleanly instead -- confirmed: "
+            "sub-1e-6-degree final pointing error. See HISTORY.md for the full investigation; this "
+            "gain/inertia mismatch is a general risk for ANY small-sat-scale spacecraft left on "
+            "DEFAULT_MRP_GAINS, worth checking on every new fsw_mode spacecraft this small, not "
+            "something specific to CSS estimation.\n\n"
+            "What to look at: '{sat-1}.sun_heading_body_estimated' (the CSS estimate) should settle near "
+            "[0, 0, 1] in the body frame as sunSafePoint drives the commanded body +Z axis "
+            "(sHatBdyCmd) onto the real sun direction -- compare its early, still-converging samples "
+            "against its settled final value to see the estimate itself stabilize as the attitude "
+            "stops moving. The WLS estimate's accuracy is purely geometry-dependent (how many of the "
+            "8 sensors are actually sunlit for the current sun direction, confirmed directly against a "
+            "real Basilisk build: an under-determined 2-of-8-illuminated case gave 14.5 degrees of "
+            "error, a well-conditioned 4-of-8 case gave an exact 0.0-degree match with zero sensor "
+            "noise) -- real hardware has exactly this coverage gap, it is not something to 'fix' here.\n\n"
+            "Try changing: the coarse_sun_sensor fov_deg values (a narrower FOV sees fewer sensors "
+            "illuminated at once, degrading the WLS conditioning), or fsw_params['use_css_estimation'] "
+            "to False to compare against simpleNav's noise-free truth sun direction instead."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        # "sun" must be SPICE-tracked (third_body_perturbers) -- the CSS
+        # estimation chain's sunInMsg needs the same SpicePlanetStateMsg
+        # simpleNav's own truth sun direction uses (see engine.service.py's
+        # SimulationServiceError guard for this exact requirement).
+        gravity=GravityConfig(central_body="earth", central_body_degree=0, third_body_perturbers=["sun"]),
+        sim_settings=SimSettings(duration_days=2160.0 / 86400.0, dynamics_task_rate_s=1.0, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=50.0,
+                inertia_kg_m2=list(_INERTIA_SMALL),
+                sigma_bn_init=[0.1, 0.2, -0.15],
+                omega_bn_b_init_rad_s=[0.001, -0.001, 0.0005],
+                sensors=[
+                    SensorConfig(kind="coarse_sun_sensor", name=f"css-{i + 1}",
+                                   params={"nHat_B": nhat, "fov_deg": 160.0})
+                    for i, nhat in enumerate([
+                        [0.0, 0.707107, 0.707107], [0.707107, 0.0, 0.707107],
+                        [0.0, -0.707107, 0.707107], [-0.707107, 0.0, 0.707107],
+                        [0.0, -0.965926, -0.258819], [-0.707107, -0.353553, -0.612372],
+                        [0.0, 0.258819, -0.965926], [0.707107, -0.353553, -0.612372],
+                    ])
+                ],
+                actuators=[
+                    ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                                     params={"gsHat_B": [1.0, 0.0, 0.0], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-2",
+                                     params={"gsHat_B": [0.0, 1.0, 0.0], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-3",
+                                     params={"gsHat_B": [0.0, 0.0, 1.0], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0}),
+                ],
+                fsw_mode="sunSafePoint",
+                fsw_params={"sHatBdyCmd": [0.0, 0.0, 1.0], "use_css_estimation": True},
+                control_params={"K": 0.0194, "P": 0.167},
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -836,6 +961,7 @@ def main() -> None:
     _save(build_12_reaction_wheel_momentum_dumping(), "12_reaction_wheel_momentum_dumping.json")
     _save(build_13_magnetic_torque_rod_momentum_management(),
           "13_magnetic_torque_rod_momentum_management.json")
+    _save(build_14_css_sun_heading_estimation(), "14_css_sun_heading_estimation.json")
 
 
 if __name__ == "__main__":

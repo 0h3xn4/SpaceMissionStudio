@@ -136,8 +136,9 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
                     "wheel model name known to Basilisk's simIncludeRW.rwFactory(), e.g. 'Honeywell_HR16'"),
         _ParamSpec("Omega_max", False, 6000.0, "max wheel speed [RPM]"),
         _ParamSpec("u_max", False, 0.2, "max motor torque [N*m]"),
-        _ParamSpec("maxMomentum", False, 50.0, "max wheel angular momentum [N*m*s]"),
-        _ParamSpec("Js", False, 0.028, "wheel inertia about the spin axis [kg*m^2]"),
+        _ParamSpec("Js", False, 0.028, "wheel inertia about the spin axis [kg*m^2] -- rw_type='custom' can "
+                    "derive this from maxMomentum [N*m*s] instead, but NOT both: rwFactory.create() hard"
+                    "-exits the whole process if Js and maxMomentum are both set"),
     ],
     "thruster": [
         _ParamSpec("r_B", True, [1.0, 0.0, 0.0], "thruster location, body frame [m]", normalizable=False),

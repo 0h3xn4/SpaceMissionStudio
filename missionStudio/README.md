@@ -579,7 +579,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-thirteen built-in template missions (see "Template missions" below) or
+fourteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -596,15 +596,16 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has thirteen ready-to-run scenario
+`missionstudio/scenarios/templates/` has fourteen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
 attitude pointing (idealized, then with real ADCS hardware), a Mission
 Sequence-based impulsive orbit raise, a Monte Carlo dispersion
 analysis, uncontrolled gravity-gradient torque, thruster-only attitude
-control, and reaction-wheel momentum management via thrusters or via
-magnetic torque rods. See that directory's own `README.md` for the full catalog and
+control, reaction-wheel momentum management via thrusters or via
+magnetic torque rods, and real sun-heading estimation from coarse sun
+sensor hardware. See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -618,7 +619,7 @@ and every one is covered by `tests/test_scenario_templates.py`
 `tests/gui/test_scenario_templates_gui.py` (confirms each one also
 round-trips through the actual `ScenarioEditorWidget` form), and
 `tests/gui/test_load_scenario_widget.py` (the in-GUI picker described
-below) -- 59 tests total, all passing before this was committed. What's
+below) -- 89 tests total, all passing before this was committed. What's
 NOT yet verified: an actual Basilisk run of any of them (this sandbox has
 none), so treat the physical numbers (propellant use, drift rates,
 orbital periods) as reasonable back-of-the-envelope choices, not
@@ -700,10 +701,37 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   detumble mode, so a `"magnetic_torque_rod"` actuator without
   `magnetic_momentum_management` set is rejected early with a specific
   error.
-* **The attitude control loop closes on truth spacecraft state.**
-  `simpleNav` is in the loop (not raw `scStateOutMsg`), but its
-  error-model matrices are left at Basilisk's own zero defaults -- there
-  is no GUI/schema field yet to configure realistic navigation error.
+* **The attitude control loop closes on truth spacecraft state**, EXCEPT
+  for sun heading specifically. `simpleNav` is in the loop (not raw
+  `scStateOutMsg`), but its error-model matrices are left at Basilisk's
+  own zero defaults -- there is no GUI/schema field yet to configure
+  realistic navigation error. `fsw_mode: sunSafePoint`'s
+  `fsw_params['use_css_estimation']` is the one exception: it drives the
+  controller from a real `cssWlsEst` weighted-least-squares estimate
+  computed from a dedicated `coarse_sun_sensor` cluster, not truth (see
+  `14_css_sun_heading_estimation.json`). A full attitude DETERMINATION
+  filter (star tracker + rate gyro + reaction-wheel speeds through
+  Basilisk's `inertialUKF`) is deliberately not built -- no clean shipped
+  Basilisk example was found to verify one against safely.
+* **`engine.fsw.DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`) is tuned for a
+  900 kg*m^2 spacecraft** (lifted directly from Basilisk's own
+  `examples/BskSim` reference) running its FSW task at a 0.1s rate --
+  applied unscaled to a much smaller spacecraft (this schema's own
+  default inertia is 10 kg*m^2) at a coarser `dynamics_task_rate_s`, the
+  resulting discrete-time control update can be numerically unstable
+  (confirmed: idealized/unsaturated actuation can reach NaN within
+  seconds; reaction-wheel actuation's own torque saturation bounds the
+  damage but can still leave a persistent, non-decaying pointing
+  oscillation rather than real convergence). There is no automatic
+  gain-vs-inertia scaling in `engine.fsw`/`engine.service` -- scale
+  `SpacecraftConfig.control_params`'s `K`/`P` by this spacecraft's own
+  inertia relative to that 900 kg*m^2 reference (both by the same
+  factor) for anything much smaller or larger, and use a fine enough
+  `dynamics_task_rate_s` for idealized (no actuator hardware) attitude
+  control specifically. `07_attitude_pointing_with_adcs_hardware.json`,
+  `14_css_sun_heading_estimation.json` (scaled gains) and
+  `06_attitude_pointing_basic.json` (a finer task rate) all show a fix
+  for this.
 * **Monte Carlo dispersions cover two quantities**: `dry_mass_kg`
   (uniform/normal) and `attitude_sigma_bn` (uniform-random-attitude).
   Cartesian position/velocity dispersion is deliberately NOT offered --

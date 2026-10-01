@@ -118,6 +118,10 @@ _FSW_MODE_PARAM_SPECS: dict[str, list[_FswParamSpec]] = {
         _FswParamSpec("sHatBdyCmd", False, [0.0, 0.0, 1.0], "body-frame sun-pointing axis, unit vector [-]"),
         _FswParamSpec("min_unit_mag", False, 0.1, "minimum sun-sensor signal magnitude to trust [-]"),
         _FswParamSpec("sun_axis_spin_rate_rad_s", False, 0.0, "commanded spin rate about sHatBdyCmd [rad/s]"),
+        _FswParamSpec("use_css_estimation", False, False,
+                       "true: estimate sun heading from this spacecraft's own 'coarse_sun_sensor' "
+                       "sensors (cssWlsEst) instead of simpleNav's noise-free truth -- requires at "
+                       "least one coarse_sun_sensor sensor"),
     ],
     "locationPointing": [
         _FswParamSpec("target_ground_station", True, "<ground station name>",

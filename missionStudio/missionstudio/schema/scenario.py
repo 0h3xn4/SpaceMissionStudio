@@ -657,6 +657,10 @@ class SpacecraftConfig:
             _require(has_gs != has_body,  # xor: exactly one target
                       f"{self.name}: fsw_mode 'locationPointing' needs exactly one of "
                       "fsw_params['target_ground_station'] or fsw_params['target_body']")
+        if self.fsw_mode == "sunSafePoint" and self.fsw_params.get("use_css_estimation"):
+            _require(any(s.kind == "coarse_sun_sensor" for s in self.sensors),
+                      f"{self.name}: fsw_params['use_css_estimation'] is set but this spacecraft has no "
+                      "'coarse_sun_sensor' sensors to estimate sun-heading from")
 
         sensor_names = [s.name for s in self.sensors]
         _require(len(sensor_names) == len(set(sensor_names)),
@@ -685,6 +689,49 @@ class SpacecraftConfig:
                 _require(gsHat_B is not None and len(gsHat_B) == 3,
                           f"{self.name}: reaction_wheel {actuator.name!r} needs params['gsHat_B'] "
                           "as a 3-element body-frame spin-axis unit vector")
+                rw_type = actuator.params.get("rw_type", "custom")
+                if rw_type == "custom":
+                    # Confirmed directly against simIncludeRW.py's rwFactory.create(): the
+                    # "custom" type's own method (unlike every named hardware type, e.g.
+                    # "Honeywell_HR16") does nothing -- it relies entirely on these two
+                    # kwargs. Missing either one makes rwFactory.create() call exit(1)
+                    # directly (not a raised exception) -- which kills the whole
+                    # missionStudio process with no traceback, not just this one
+                    # simulation run -- so this schema requires them explicitly instead
+                    # of ever reaching that call with a bare rw_type="custom".
+                    has_u_max_guard = (actuator.params.get("u_max") is not None
+                                       or actuator.params.get("useMaxTorque") is False)
+                    _require(has_u_max_guard,
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) but has no params['u_max'] [N*m] -- rwFactory.create() hard-exits "
+                              "the whole process (not a catchable error) on a non-positive u_max for a "
+                              "default-saturating custom wheel; set params['u_max'], set "
+                              "params['useMaxTorque']=False, or use a named params['rw_type'] (e.g. "
+                              "'Honeywell_HR16') with its own built-in default instead")
+                    has_inertia = (actuator.params.get("Js") is not None
+                                   or (actuator.params.get("Omega_max") is not None
+                                       and actuator.params.get("maxMomentum") is not None))
+                    _require(has_inertia,
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) but has no params['Js'] [kg*m^2] (spin-axis inertia) and no "
+                              "params['Omega_max']+params['maxMomentum'] pair to derive it from -- "
+                              "rwFactory.create() cannot build this wheel's inertia without one of those; "
+                              "set one, or use a named params['rw_type'] with its own built-in default")
+                    # Confirmed directly against simIncludeRW.py: giving Js
+                    # AND the Omega_max+maxMomentum pair together is a
+                    # SEPARATE exit(1) hard-crash (rwFactory.create() builds
+                    # the wheel's inertia exactly one way, never both) --
+                    # found by exactly this combination in a real, already
+                    # -shipped params dict (engine.spacecraft_templates.py's
+                    # _RW_EXAMPLE_PARAMS, fixed alongside this check).
+                    _require(not (actuator.params.get("Js") is not None
+                                  and actuator.params.get("Omega_max") is not None
+                                  and actuator.params.get("maxMomentum") is not None),
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) with params['Js'] AND both params['Omega_max']/params['maxMomentum'] "
+                              "set -- rwFactory.create() hard-exits the whole process because it builds this "
+                              "wheel's inertia exactly one way, never both; remove params['Js'] (let it be "
+                              "derived from Omega_max/maxMomentum) or remove the Omega_max/maxMomentum pair")
             if actuator.kind == "thruster":
                 r_B = actuator.params.get("r_B")
                 _require(r_B is not None and len(r_B) == 3,

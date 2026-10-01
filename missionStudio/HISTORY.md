@@ -4103,3 +4103,139 @@ templates' result plots can be compared side by side (smooth continuous
 convergence vs. sharp discrete steps). Full suite: 774 passed, 109
 skipped.
 
+### Real sun-heading estimation from CSS hardware (task 5 of 19), and two unrelated crash bugs found along the way
+
+The last sensing-side gap on the 19-item backlog: every `fsw_mode` so far
+read `simpleNav`'s noise-free TRUTH sun direction even when a
+`coarse_sun_sensor` sensor was configured -- the sensor was cosmetic.
+New `engine.fsw.build_css_sun_estimation()` builds a dedicated 8-device
+`CoarseSunSensor` cluster (same cube layout as
+`examples/BskSim/models/BSK_Dynamics.py`'s own `SetCSSConstellation()`)
+feeding Basilisk's `cssWlsEst` weighted-least-squares estimator, and new
+`SpacecraftConfig.fsw_params['use_css_estimation']` (validated: requires
+at least one `coarse_sun_sensor` sensor) routes that ESTIMATE into
+`fsw_mode: sunSafePoint`'s `sunDirectionInMsg` instead of truth -- the
+same `cssWlsEst -> sunSafePoint -> mrpFeedback -> reaction wheels` chain
+as Basilisk's own `examples/BskSim/scenarios/scenario_AttEclipse.py`
+reference. This dedicated CSS cluster is intentionally separate from the
+user-visible per-sensor `coarse_sun_sensor` telemetry `attach_sensors()`
+already builds, same reasoning as task 4's dedicated TAM: `cssWlsEst`
+needs one aggregate `CSSArraySensorMsgPayload` across the whole cluster,
+which only Basilisk's `CSSConstellation` container produces.
+
+**A second, genuinely new Basilisk Python-binding lifetime hazard**,
+found by careful bisection after a reproducible segfault with no error
+message: `CSSConstellation.sensorList` does not take ownership of the
+`CoarseSunSensor` Python objects assigned to it, only a reference -- a
+function-local `css_devices` list, discarded once the builder function
+returned, let Python's garbage collector destroy the underlying C++
+objects, leaving a dangling reference that segfaulted Basilisk inside
+`InitializeSimulation()`. Same category of bug as this app's own Vizard
+wiring (`access_indicator_bridges`/`generic_storage_list`/
+`generic_sensor_list` -- "the caller MUST keep ALL FOUR alive"), now the
+SECOND time this exact pattern has been found in this codebase --
+confirmed reproducibly both ways (segfaults when discarded, works when
+kept alive) against a real Basilisk build. Fixed by returning
+`css_devices` from `build_css_sun_estimation()` and having
+`engine.service.SimulationService` retain it in a new
+`self._css_estimation_devices` list for the run's lifetime, mirroring
+the Vizard pattern exactly.
+
+**A much bigger, previously-undiscovered finding, chased down while
+debugging what first looked like a CSS-specific bug**: closing the loop
+end-to-end (CSS estimate -> `sunSafePoint` -> `mrpFeedback` -> idealized
+actuation) on a small-sat-scale spacecraft went numerically unstable --
+`sigma_BN` reached NaN within seconds, regardless of initial attitude
+error size, and regardless of whether the estimate or simpleNav's own
+truth drove the loop (ruling out CSS estimation itself as the cause).
+Root-caused by direct experimentation, not guesswork: `engine.fsw.
+DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`) is lifted directly from Basilisk's
+own `examples/BskSim` reference (`BSK_Fsw.py`'s `mrpFeedbackRWs`), which
+is tuned for THAT example's 900 kg*m^2 spacecraft (`BSK_Dynamics.py`'s
+`I_sc`) running its FSW task at `fswRate=0.1`. Applied unscaled to a much
+smaller spacecraft (this app's own schema default inertia is
+10 kg*m^2) at a coarser `dynamics_task_rate_s`, the resulting discrete
+-time control update is wildly over-aggressive for the body's actual
+rotational inertia -- idealized (unsaturated) actuation then has nothing
+stopping the commanded torque from growing without bound every tick
+(confirmed: roughly 2x-29x growth per tick depending on the exact
+rate/inertia combination, a textbook discrete-time instability, not a
+Basilisk bug). Reaction-wheel actuation's own torque saturation bounds
+the damage (no NaN) but still produces a persistent, non-decaying
+~30-degree pointing oscillation rather than real convergence -- confirmed
+on BOTH the CSS-estimate-driven and truth-driven versions identically,
+again ruling out CSS estimation as the cause.
+
+**Two real, independent fixes came out of this**, both general risks for
+ANY attitude-controlled spacecraft left on schema/engine defaults, not
+specific to this feature:
+
+- Scaling `control_params` (`K`/`P`) by a spacecraft's own inertia
+  relative to that 900 kg*m^2 reference (both x `I_new/900`) converges
+  cleanly instead -- confirmed directly: this task's own CSS-driven
+  closed loop went from a persistent ~30-degree oscillation to a final
+  pointing error of 8.5e-7 degrees with scaled gains, everything else
+  unchanged. Applied to this task's new template (below) AND retroactively
+  to `07_attitude_pointing_with_adcs_hardware.json`'s existing
+  `sunSafePoint` + bare-RW setup, which had this exact problem already
+  shipped and never actually verified end-to-end.
+- For IDEALIZED actuation specifically (no RW/thruster hardware, so no
+  torque saturation to bound an over-aggressive control update), the fix
+  is a fine enough `dynamics_task_rate_s` instead -- confirmed:
+  `06_attitude_pointing_basic.json`'s existing `hillPoint` + idealized
+  -actuation setup reliably reached NaN within ~15 task ticks at its
+  previously-shipped 1.0s rate; 0.1s (matching the `BSK_Fsw.py` reference
+  `fswRate` this gain pair is tuned against) runs the same scenario
+  stably for its whole duration. `_osculating_elements()`'s own
+  `SimulationServiceError` message in `engine/service.py` already named
+  "`dynamics_task_rate_s` too coarse" as a known failure mode for
+  exactly this reason -- this is the first time it was actually
+  triggered and confirmed, not just anticipated.
+
+**A third, unrelated crash bug found while building a safe reaction
+-wheel configuration for this task's own verification**: `rwFactory.
+create()` (Basilisk's `simIncludeRW.py`) calls `exit(1)` directly -- not
+a raised exception, killing the whole missionStudio process, not just
+one run -- when `rw_type="custom"` (this schema's own default) is given
+without a positive `u_max`, or without enough information (`Js`, or
+`Omega_max`+`maxMomentum` together) to derive the wheel's spin-axis
+inertia, or with BOTH `Js` and the `Omega_max`+`maxMomentum` pair at
+once (those build a custom wheel's inertia exactly one way, never both).
+All three are now schema-validated `ActuatorConfig(kind="reaction_wheel")`
+requirements, confirmed against `rwFactory.create()`'s actual source,
+with a message that always suggests the fix (set the missing param, or
+use a named `rw_type` like `"Honeywell_HR16"` with its own built-in
+defaults). Two already-shipped, real places hit variants of this exact
+crash and are fixed alongside the schema check: '07's own bare
+`gsHat_B`-only reaction wheels (now `"Honeywell_HR16"` + `maxMomentum`),
+and `engine.spacecraft_templates.py`'s/`gui.sensor_actuator_editor.py`'s
+own "new reaction wheel" default params (which gave `Js` AND
+`Omega_max`+`maxMomentum` together -- the mutually-exclusive case).
+
+**Template**: `14_css_sun_heading_estimation.json` -- the same 8-CSS
+cluster, `sunSafePoint`, and scaled `control_params` confirmed above,
+with `use_css_estimation: true`. New result series
+`{name}.sun_heading_body_estimated` (the CSS estimate, alongside the
+existing `{name}.sun_heading_body` truth series) lets the two be
+compared directly in the GUI's results plots. New
+`fsw_params['use_css_estimation']` GUI support in the spacecraft
+editor's `sunSafePoint` parameter spec list.
+
+**Verification**: `tests/test_css_estimation.py` (2 new
+`requires_basilisk` tests) confirms, against a real Basilisk build, that
+the scaled-gain CSS-driven closed loop converges the commanded body axis
+to within 1 degree of the true sun direction (no NaN), and that its
+final accuracy matches the truth-driven version for this template's
+well-conditioned sun-direction/CSS-geometry combination -- the CSS-WLS
+estimate's accuracy remains purely geometry-dependent, same as the
+already-documented finding from earlier exploration (an under-determined
+2-of-8-illuminated case gives large errors, a well-conditioned 4-of-8
+case is exact with zero sensor noise; real hardware has exactly this
+coverage gap, it is not something to "fix"). Plus 6 new schema
+-validation tests for the three new reaction-wheel requirements and the
+`use_css_estimation` sensor requirement, and 1 new template regression
+test. `InertialUKF` (a full star-tracker + RW UKF attitude filter) is
+deliberately OUT of scope for this task -- no clean shipped Basilisk
+example to verify it against safely was found; a future task should
+revisit it on its own.
+

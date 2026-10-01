@@ -450,6 +450,7 @@ class _SpacecraftHandle:
     num_rw: int = 0
     thruster_on_time_recorder: Optional[object] = None
     num_thrusters: int = 0
+    css_sun_estimate_recorder: Optional[object] = None
     sensor_recorders: Dict[str, object] = field(default_factory=dict)  # sensor.name -> (kind, recorder)
     battery_recorder: Optional[object] = None  # Phase 4: only set if sc_config.power was configured
     battery_module: Optional[object] = None  # Phase 4: the simpleBattery.SimpleBattery itself, for engine.vizard
@@ -485,6 +486,14 @@ class SimulationService:
         # priming one real dynamics tick -- see build()'s own comment and
         # engine.fsw.build_momentum_dumping's docstring for why.
         self._desat_controls: List = []
+        # Real, reproduced-against-a-real-build requirement: CSSConstellation
+        # does not own the CoarseSunSensor Python objects assigned to its
+        # sensorList, only a reference -- if nothing keeps them alive past
+        # build(), Basilisk segfaults inside InitializeSimulation() on a
+        # dangling reference (see engine.fsw.build_css_sun_estimation's own
+        # docstring). Same lifetime-retention pattern as Vizard's
+        # access_indicator_bridges/generic_storage_list/generic_sensor_list.
+        self._css_estimation_devices: List = []
         self._sun_state_out_msg = None
         self._ground_locations: Dict[str, object] = {}
         self._mag_field_model = None
@@ -1037,10 +1046,39 @@ class SimulationService:
                     self.scSim, dyn_task_name, sc_config.name, sc_object, sun_state_out_msg=self._sun_state_out_msg
                 )
                 veh_config_msg = fsw.build_vehicle_config_msg(sc_config.inertia_kg_m2)
+
+                # Real sun-heading ESTIMATION (schema.scenario's
+                # fsw_params['use_css_estimation']) instead of reading
+                # simpleNav's truth vehSunPntBdy -- Scenario.validate()
+                # already guarantees a coarse_sun_sensor sensor is present
+                # whenever this is set. Built BEFORE build_guidance() so its
+                # output message can be passed straight in, rather than
+                # re-subscribing sunSafePoint's input after the fact (the
+                # pattern build_mtb_desaturation uses for rwMotorCmdInMsg,
+                # not needed here since nothing else has already subscribed
+                # to sunDirectionInMsg yet at this point).
+                sun_direction_override_msg = None
+                if sc_config.fsw_mode == "sunSafePoint" and sc_config.fsw_params.get("use_css_estimation"):
+                    if self._sun_state_out_msg is None:
+                        raise SimulationServiceError(
+                            f"{sc_config.name}: fsw_params['use_css_estimation'] needs 'sun' to be SPICE-tracked "
+                            "-- add 'sun' to gravity.third_body_perturbers (or set it as gravity.central_body)"
+                        )
+                    css_sensors = [s for s in sc_config.sensors if s.kind == "coarse_sun_sensor"]
+                    sun_direction_override_msg, css_devices = fsw.build_css_sun_estimation(
+                        self.scSim, dyn_task_name, sc_config.name, sc_object, css_sensors, self._sun_state_out_msg
+                    )
+                    # Must outlive build() -- see engine.fsw.build_css_sun_estimation's
+                    # docstring and self._css_estimation_devices's own comment.
+                    self._css_estimation_devices.append(css_devices)
+                    handle.css_sun_estimate_recorder = sun_direction_override_msg.recorder()
+                    self.scSim.AddModelToTask(dyn_task_name, handle.css_sun_estimate_recorder)
+
                 try:
                     guid_msg = fsw.build_guidance(
                         self.scSim, dyn_task_name, sc_config.name, sc_config.fsw_mode, sc_config.fsw_params,
                         nav, mu, self._ground_locations,
+                        sun_direction_override_msg=sun_direction_override_msg,
                     )
                 except fsw.FswError as exc:
                     raise SimulationServiceError(str(exc)) from exc
@@ -1440,6 +1478,10 @@ class SimulationService:
                                        handle.nav_recorder.omega_BN_B, units="rad/s"))
                 result.add(TimeSeries(f"{name}.sun_heading_body", nav_t_s, ("x", "y", "z"),
                                        handle.nav_recorder.vehSunPntBdy, units="-"))
+            if handle.css_sun_estimate_recorder is not None:
+                css_t_s = handle.css_sun_estimate_recorder.times() * macros.NANO2SEC
+                result.add(TimeSeries(f"{name}.sun_heading_body_estimated", css_t_s, ("x", "y", "z"),
+                                       handle.css_sun_estimate_recorder.vehSunPntBdy, units="-"))
             if handle.control_torque_recorder is not None:
                 ctrl_t_s = handle.control_torque_recorder.times() * macros.NANO2SEC
                 result.add(TimeSeries(f"{name}.control_torque", ctrl_t_s, ("x", "y", "z"),
