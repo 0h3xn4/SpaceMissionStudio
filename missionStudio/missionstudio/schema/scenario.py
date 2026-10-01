@@ -1115,6 +1115,14 @@ class Scenario:
                           f"{sc.name}: fsw_params['target_ground_station'] {target_gs!r} is not one of "
                           f"this scenario's ground_stations {gs_names}")
         for sc in self.spacecraft:
+            target_body = sc.fsw_params.get("target_body") if sc.fsw_mode == "locationPointing" else None
+            if target_body is not None:
+                spice_tracked = {self.gravity.central_body, *self.gravity.third_body_perturbers}
+                _require(target_body in spice_tracked,
+                          f"{sc.name}: fsw_params['target_body'] {target_body!r} needs a real SPICE "
+                          f"ephemeris -- it must be gravity.central_body or one of "
+                          f"gravity.third_body_perturbers, got {sorted(spice_tracked)}")
+        for sc in self.spacecraft:
             if sc.phasing_keeping is not None:
                 _require(sc.phasing_keeping.chief_spacecraft in names,
                           f"{sc.name}: phasing_keeping.chief_spacecraft {sc.phasing_keeping.chief_spacecraft!r} "

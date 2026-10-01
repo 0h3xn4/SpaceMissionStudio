@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 14
+    assert len(_TEMPLATE_PATHS) >= 15
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -129,6 +129,17 @@ def test_css_sun_heading_estimation_template_wires_use_css_estimation():
     # HISTORY.md for why an unscaled default never converges here.
     assert sat.control_params.get("K", 3.5) < 1.0
     assert sat.control_params.get("P", 30.0) < 1.0
+
+
+def test_celestial_body_pointing_template_uses_target_body_not_ground_station():
+    scenario = load_scenario(_TEMPLATES_DIR / "15_celestial_body_pointing.json")
+    sat = scenario.spacecraft[0]
+    assert sat.fsw_mode == "locationPointing"
+    assert sat.fsw_params.get("target_body") == "moon"
+    assert "target_ground_station" not in sat.fsw_params
+    assert sat.fsw_params.get("target_body") in (
+        {scenario.gravity.central_body} | set(scenario.gravity.third_body_perturbers)
+    )
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

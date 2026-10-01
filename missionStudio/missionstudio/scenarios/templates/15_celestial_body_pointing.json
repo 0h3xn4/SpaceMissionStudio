@@ -1,0 +1,121 @@
+{
+  "name": "15 - Direct celestial-body pointing (locationPointing + target_body)",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "full_attitude",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 10,
+    "third_body_perturbers": [
+      "sun",
+      "moon"
+    ]
+  },
+  "spacecraft": [
+    {
+      "name": "sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6928.0,
+        "eccentricity": 0.0,
+        "inclination_deg": 45.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 300.0,
+      "inertia_kg_m2": [
+        12.5,
+        0.0,
+        0.0,
+        0.0,
+        12.5,
+        0.0,
+        0.0,
+        0.0,
+        7.5
+      ],
+      "sigma_bn_init": [
+        0.1,
+        0.2,
+        -0.15
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.001,
+        -0.001,
+        0.0005
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [],
+      "fsw_mode": "locationPointing",
+      "fsw_params": {
+        "target_body": "moon",
+        "pHat_B": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 0.05,
+    "dynamics_task_rate_s": 0.1,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "fsw_mode 'locationPointing' has TWO target options: '07'-style pointing at a ground station (fsw_params['target_ground_station']), or pointing straight at a celestial body (fsw_params['target_body']) -- this template is the second one. A body-fixed axis (pHat_B, here the spacecraft +Z) stays pointed at the Moon throughout the orbit, built via engine.fsw.build_ephemeris_converter() (SpicePlanetStateMsg -> EphemerisMsg -> locationPointing.celBodyInMsg), the same converter + guidance pairing as Basilisk's own examples/scenarioAsteroidArrival.py (there pointing an antenna at Earth and a camera at an asteroid; here, at the Moon). target_body must name gravity.central_body or one of gravity.third_body_perturbers -- 'moon' is SPICE-tracked here for exactly that reason.\n\nWhat to look at: there is no separate result series for the body-to-target pointing error yet (add a 'report' mission_sequence command on sat-1.attitude_sigma_bn, see '08', or watch Vizard's live attitude indicator) -- but unlike '06'/'07's hillPoint/sunSafePoint, the target direction here keeps changing as the Moon moves along its own orbit while the spacecraft moves along its much faster one, so the commanded attitude is never constant.\n\nTry changing: target_body to 'sun' (already SPICE-tracked here too) to compare a much farther, slower-moving target's pointing behavior against the Moon's; or pHat_B to a different body axis to re-point a different physical location on the spacecraft (e.g. a antenna mounted off the +Z face) at the same target.",
+  "schema_version": 1
+}

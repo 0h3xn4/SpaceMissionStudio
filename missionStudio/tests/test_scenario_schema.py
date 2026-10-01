@@ -712,12 +712,25 @@ def test_location_pointing_with_existing_ground_station_validates():
     sc.validate()  # must not raise
 
 
-def test_location_pointing_with_target_body_validates_structurally():
-    # Schema-valid (exactly one target given); engine.fsw is what rejects
-    # target_body as not-yet-wired-up at run time, not schema validation.
+def test_location_pointing_target_body_requires_spice_tracking():
     sc = _minimal_scenario()
     sc.spacecraft[0].fsw_mode = "locationPointing"
-    sc.spacecraft[0].fsw_params = {"target_body": "sun"}
+    sc.spacecraft[0].fsw_params = {"target_body": "sun"}  # not in gravity.third_body_perturbers
+    with pytest.raises(ScenarioValidationError, match="needs a real SPICE ephemeris"):
+        sc.validate()
+
+
+def test_location_pointing_with_spice_tracked_target_body_validates():
+    sc = _minimal_scenario(gravity=GravityConfig(central_body="earth", third_body_perturbers=["moon"]))
+    sc.spacecraft[0].fsw_mode = "locationPointing"
+    sc.spacecraft[0].fsw_params = {"target_body": "moon"}
+    sc.validate()  # must not raise
+
+
+def test_location_pointing_target_body_can_be_the_central_body():
+    sc = _minimal_scenario(gravity=GravityConfig(central_body="earth"))
+    sc.spacecraft[0].fsw_mode = "locationPointing"
+    sc.spacecraft[0].fsw_params = {"target_body": "earth"}
     sc.validate()  # must not raise
 
 

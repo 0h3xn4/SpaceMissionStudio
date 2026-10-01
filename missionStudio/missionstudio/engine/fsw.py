@@ -94,12 +94,15 @@ docstring for the full list):
   caught once Basilisk actually ran end-to-end (see ``engine/service.py``'s
   ``zeroBase`` comment for the full explanation).
 * ``locationPointing``'s ``fsw_params["target_body"]`` (point at a
-  celestial body directly, vs. a ground station) is schema-valid but NOT
-  built here yet -- it needs an ``EphemerisMsg`` (``celBodyInMsg``), which
-  this checkout only produces via ``ephemerisConverter`` from a
-  ``SpicePlanetStateMsg``; that conversion is not wired up in Phase 2.
-  :func:`build_guidance` raises a clear error for it rather than silently
-  falling back to ground-station targeting.
+  celestial body directly, vs. a ground station) is built via
+  :func:`build_ephemeris_converter` (``SpicePlanetStateMsg`` ->
+  ``EphemerisMsg``, confirmed against
+  ``examples/scenarioAsteroidArrival.py``'s own usage) feeding
+  ``locationPointing.celBodyInMsg`` -- ``engine.service`` builds one
+  converter per targeted body from ``gravity.central_body``/
+  ``gravity.third_body_perturbers``'s already-SPICE-tracked state
+  messages, same source ``build_css_sun_estimation``'s sun direction and
+  ``simpleNav``'s own truth sun heading already use.
 * The attitude control loop is closed on TRUTH spacecraft state
   (``simpleNav``'s error model defaults to zero, i.e. ``PMatrix``/noise are
   left at Basilisk's own zero defaults unless a future phase adds a GUI/
@@ -138,6 +141,7 @@ from Basilisk.fswAlgorithms import (
 )
 from Basilisk.simulation import (
     coarseSunSensor,
+    ephemerisConverter,
     extForceTorque,
     groundLocation,
     imuSensor,
@@ -303,8 +307,30 @@ def build_css_sun_estimation(scSim, task_name: str, tag: str, sc_object, css_sen
     return estimator.navStateOutMsg, css_devices
 
 
+def build_ephemeris_converter(scSim, task_name: str, tag: str, body_name: str, planet_state_msg):
+    """Converts a single SPICE-sourced ``SpicePlanetStateMsg`` into the
+    ``EphemerisMsg`` ``locationPointing.celBodyInMsg`` needs for direct
+    celestial-body pointing (``fsw_params['target_body']``) -- confirmed
+    against ``examples/scenarioAsteroidArrival.py``'s own
+    ``ephemerisConverter`` + ``locationPointing`` usage (that example calls
+    ``addSpiceInputMsg()`` once per body on a single shared converter and
+    indexes ``ephemOutMsgs`` by call order; this builds one dedicated
+    converter per target body instead, trading a few extra trivial
+    pass-through modules for never needing that index bookkeeping across
+    spacecraft/targets).
+
+    Returns the single ``EphemerisMsg`` this converter produces.
+    """
+    converter = ephemerisConverter.EphemerisConverter()
+    converter.ModelTag = f"{tag}_ephemConverter_{body_name}"
+    converter.addSpiceInputMsg(planet_state_msg)
+    scSim.AddModelToTask(task_name, converter)
+    return converter.ephemOutMsgs[0]
+
+
 def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: dict, nav, mu: float,
-                    ground_locations: Dict[str, object], sun_direction_override_msg=None):
+                    ground_locations: Dict[str, object], sun_direction_override_msg=None,
+                    target_body_eph_msg=None):
     """Builds the guidance mode named by ``fsw_mode`` (one of
     :data:`schema.scenario.SUPPORTED_FSW_MODES`) and returns its
     ``AttGuidMsg``-typed output message, ready for :func:`build_mrp_feedback`.
@@ -321,6 +347,14 @@ def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: d
             sun-heading only, not rate; see module docstring's "attitude
             control loop closes on truth" note for why rate stays
             unestimated.
+        target_body_eph_msg: ``"locationPointing"`` only, required exactly
+            when ``fsw_params['target_body']`` is set (xor'd against
+            ``target_ground_station`` by ``Scenario.validate()``) -- an
+            ``EphemerisMsg``-typed message (e.g.
+            :func:`build_ephemeris_converter`'s return value) subscribed to
+            ``celBodyInMsg`` for direct celestial-body pointing, confirmed
+            against ``examples/scenarioAsteroidArrival.py``'s own
+            ``locationPointing`` + ``ephemerisConverter`` usage.
     """
     if fsw_mode not in SUPPORTED_FSW_MODES:
         raise FswError(f"fsw_mode {fsw_mode!r} must be one of {SUPPORTED_FSW_MODES}")  # unreachable if validated
@@ -361,24 +395,26 @@ def build_guidance(scSim, task_name: str, tag: str, fsw_mode: str, fsw_params: d
         return mod.attGuidanceOutMsg
 
     if fsw_mode == "locationPointing":
-        if fsw_params.get("target_body"):
-            raise FswError(
-                "fsw_params['target_body'] (celestial-body pointing via locationPointing.celBodyInMsg) is "
-                "schema-valid but not wired up yet in Phase 2 -- it needs an EphemerisMsg, which this "
-                "checkout only produces via ephemerisConverter from a SpicePlanetStateMsg, not yet built "
-                "here. Use fsw_params['target_ground_station'] instead."
-            )
-        target_name = fsw_params.get("target_ground_station")
-        ground_location = ground_locations.get(target_name)
-        if ground_location is None:  # unreachable if Scenario.validate() passed
-            raise FswError(f"locationPointing target_ground_station {target_name!r} has no built GroundLocation")
         mod = locationPointing.locationPointing()
         mod.ModelTag = f"{tag}_locationPointing"
         mod.pHat_B = list(fsw_params.get("pHat_B", [0.0, 0.0, 1.0]))
         mod.useBoresightRateDamping = 1
         mod.scAttInMsg.subscribeTo(nav.attOutMsg)
         mod.scTransInMsg.subscribeTo(nav.transOutMsg)
-        mod.locationInMsg.subscribeTo(ground_location.currentGroundStateOutMsg)
+        if fsw_params.get("target_body"):
+            # Scenario.validate() already guarantees target_body_eph_msg is
+            # given whenever fsw_params['target_body'] is set (xor'd against
+            # target_ground_station) -- see engine.service's own build()
+            # wiring, which builds the ephemerisConverter this subscribes to.
+            if target_body_eph_msg is None:  # unreachable if validate() passed
+                raise FswError("locationPointing fsw_params['target_body'] needs target_body_eph_msg")
+            mod.celBodyInMsg.subscribeTo(target_body_eph_msg)
+        else:
+            target_name = fsw_params.get("target_ground_station")
+            ground_location = ground_locations.get(target_name)
+            if ground_location is None:  # unreachable if Scenario.validate() passed
+                raise FswError(f"locationPointing target_ground_station {target_name!r} has no built GroundLocation")
+            mod.locationInMsg.subscribeTo(ground_location.currentGroundStateOutMsg)
         scSim.AddModelToTask(task_name, mod)
         return mod.attGuidOutMsg
 

@@ -4239,3 +4239,69 @@ deliberately OUT of scope for this task -- no clean shipped Basilisk
 example to verify it against safely was found; a future task should
 revisit it on its own.
 
+### Direct celestial-body pointing (task 6 of 19): closing an already-documented gap
+
+Surveyed every module in `src/fswAlgorithms/attGuidance/` against what
+`engine.fsw.build_guidance` already wires up (`inertial3D`, `hillPoint`,
+`velocityPoint`, `sunSafePoint`, `locationPointing`) to find the next
+real, verifiable guidance gap. The highest-value one turned out to be
+one this project had already flagged and explicitly deferred:
+`fsw_mode: "locationPointing"`'s `fsw_params["target_body"]` option
+(point a body-fixed axis straight at a celestial body, as opposed to
+`target_ground_station`'s ground-station targeting) was schema-valid
+-- `Scenario.validate()` already enforced the xor between the two
+-- but `engine.fsw.build_guidance` hard-raised `FswError` for it,
+because `locationPointing.celBodyInMsg` needs an `EphemerisMsg`, and
+this checkout only ever produced a SPICE-sourced `SpicePlanetStateMsg`,
+never converted.
+
+That conversion turned out to be a single, well-defined Basilisk
+module -- `ephemerisConverter.EphemerisConverter` -- confirmed directly
+against `examples/scenarioAsteroidArrival.py`'s own
+`addSpiceInputMsg()`/`ephemOutMsgs[i]`/`celBodyInMsg.subscribeTo()`
+usage (that example points THREE separate `locationPointing` instances
+at Earth, an asteroid, and back at Earth again, via exactly this
+converter). New `engine.fsw.build_ephemeris_converter()` wraps one
+dedicated converter per targeted body (trading a few trivial
+pass-through modules for never needing `ephemObject`'s own
+call-order index bookkeeping across spacecraft/targets); new
+`engine.service.SimulationService` state
+(`self._planet_state_out_msgs: Dict[str, msg]`) generalizes the
+existing sun-specific `self._sun_state_out_msg` to every SPICE-tracked
+body (`gravity.central_body` plus every `gravity.third_body_perturbers`
+entry), so `target_body` can name any of them. New schema validation:
+`target_body` must actually be one of those names (a real SPICE
+ephemeris), with a specific error otherwise.
+
+**A real, independently-found GUI bug, fixed alongside this**: the
+spacecraft editor's `locationPointing` FSW-param spec list had
+`target_ground_station` hard-marked `required=True` with no
+`target_body` entry at all -- editing a spacecraft to use `target_body`
+alone would have been rejected by the dialog itself with a "missing
+required param" error before ever reaching the (now-correct) schema
+validation. Fixed by adding `target_body` as its own spec and teaching
+`_fsw_missing_required_keys` the real xor (either key present satisfies
+the requirement); a new `_FswParamSpec.fill_on_reset` flag (default
+`True`, set `False` only for `target_body`) keeps the "Reset to
+template" button from filling BOTH mutually-exclusive keys at once,
+which would have otherwise immediately failed `Scenario.validate()`'s
+own xor check.
+
+**Verification**: `tests/test_location_pointing_target_body.py` (1 new
+`requires_basilisk` test) confirms, against a real Basilisk build, that
+`pHat_B` converges onto a stand-in target body's direction (93.9-degree
+initial error down to under 1 degree) with NO NaN, using the SAME
+`dynamics_task_rate_s=0.1`/`DEFAULT_MRP_GAINS`/idealized-actuation fix
+already established for task 5's gain/inertia investigation -- confirmed
+to hold for this mode too, not just `hillPoint`/`sunSafePoint`. Plus 2
+new schema-validation tests (SPICE-tracking requirement, central-body
+-as-target case) and all pre-existing `locationPointing` schema tests
+updated for the now-real (not just structural) `target_body`
+validation. GUI tests pass unchanged.
+
+**Template**: `15_celestial_body_pointing.json` -- a spacecraft keeping
+its +Z axis pointed at the Moon throughout its orbit, the direct
+counterpart to '07'/'06's ground-relative and orbit-relative pointing
+modes (here the commanded attitude keeps changing as the TARGET itself
+moves, not just the spacecraft).
+

@@ -945,6 +945,55 @@ def build_14_css_sun_heading_estimation() -> Scenario:
     )
 
 
+def build_15_celestial_body_pointing() -> Scenario:
+    return Scenario(
+        name="15 - Direct celestial-body pointing (locationPointing + target_body)",
+        description=(
+            "fsw_mode 'locationPointing' has TWO target options: '07'-style pointing at a ground "
+            "station (fsw_params['target_ground_station']), or pointing straight at a celestial body "
+            "(fsw_params['target_body']) -- this template is the second one. A body-fixed axis "
+            "(pHat_B, here the spacecraft +Z) stays pointed at the Moon throughout the orbit, built via "
+            "engine.fsw.build_ephemeris_converter() (SpicePlanetStateMsg -> EphemerisMsg -> "
+            "locationPointing.celBodyInMsg), the same converter + guidance pairing as Basilisk's own "
+            "examples/scenarioAsteroidArrival.py (there pointing an antenna at Earth and a camera at an "
+            "asteroid; here, at the Moon). target_body must name gravity.central_body or one of "
+            "gravity.third_body_perturbers -- 'moon' is SPICE-tracked here for exactly that reason.\n\n"
+            "What to look at: there is no separate result series for the body-to-target pointing error "
+            "yet (add a 'report' mission_sequence command on sat-1.attitude_sigma_bn, see '08', or watch "
+            "Vizard's live attitude indicator) -- but unlike '06'/'07's hillPoint/sunSafePoint, the "
+            "target direction here keeps changing as the Moon moves along its own orbit while the "
+            "spacecraft moves along its much faster one, so the commanded attitude is never constant.\n\n"
+            "Try changing: target_body to 'sun' (already SPICE-tracked here too) to compare a much "
+            "farther, slower-moving target's pointing behavior against the Moon's; or pHat_B to a "
+            "different body axis to re-point a different physical location on the spacecraft (e.g. a "
+            "antenna mounted off the +Z face) at the same target."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        gravity=GravityConfig(central_body="earth", central_body_degree=10, third_body_perturbers=["sun", "moon"]),
+        # dynamics_task_rate_s=0.1: idealized (no actuator hardware)
+        # mrpFeedback control with DEFAULT_MRP_GAINS needs this fine a rate
+        # to stay discrete-time stable -- see '06's own comment and
+        # HISTORY.md for the full investigation; confirmed directly for
+        # this exact locationPointing/target_body combination in
+        # tests/test_location_pointing_target_body.py.
+        sim_settings=SimSettings(duration_days=0.05, dynamics_task_rate_s=0.1, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=300.0,
+                inertia_kg_m2=list(_INERTIA_MEDIUM),
+                sigma_bn_init=[0.1, 0.2, -0.15],
+                omega_bn_b_init_rad_s=[0.001, -0.001, 0.0005],
+                fsw_mode="locationPointing",
+                fsw_params={"target_body": "moon", "pHat_B": [0.0, 0.0, 1.0]},
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -962,6 +1011,7 @@ def main() -> None:
     _save(build_13_magnetic_torque_rod_momentum_management(),
           "13_magnetic_torque_rod_momentum_management.json")
     _save(build_14_css_sun_heading_estimation(), "14_css_sun_heading_estimation.json")
+    _save(build_15_celestial_body_pointing(), "15_celestial_body_pointing.json")
 
 
 if __name__ == "__main__":

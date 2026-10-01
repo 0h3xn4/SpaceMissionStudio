@@ -671,6 +671,17 @@ class SimulationService:
         if "sun" in body_names:
             self._sun_state_out_msg = self.spice_object.planetStateOutMsgs[body_names.index("sun")]
 
+        # Every SPICE-tracked body's own SpicePlanetStateMsg, by name -- the
+        # general form of the sun-specific message above, used by
+        # fsw_params['target_body'] (any of gravity.central_body/
+        # third_body_perturbers) to build a dedicated
+        # fsw.build_ephemeris_converter() for direct celestial-body
+        # pointing. Scenario.validate() already guarantees target_body is
+        # one of body_names whenever it's set.
+        self._planet_state_out_msgs: Dict[str, object] = {
+            name: self.spice_object.planetStateOutMsgs[idx] for idx, name in enumerate(body_names)
+        }
+
         central_body_state_out_msg = self.spice_object.planetStateOutMsgs[body_names.index(gravity.central_body)]
 
         # Phase 3: every ground station is built (used as both a possible
@@ -1074,11 +1085,23 @@ class SimulationService:
                     handle.css_sun_estimate_recorder = sun_direction_override_msg.recorder()
                     self.scSim.AddModelToTask(dyn_task_name, handle.css_sun_estimate_recorder)
 
+                target_body_eph_msg = None
+                target_body_name = sc_config.fsw_params.get("target_body")
+                if sc_config.fsw_mode == "locationPointing" and target_body_name:
+                    # Scenario.validate() already guarantees target_body_name
+                    # is one of self._planet_state_out_msgs's keys (gravity
+                    # .central_body or a third_body_perturbers entry).
+                    target_body_eph_msg = fsw.build_ephemeris_converter(
+                        self.scSim, dyn_task_name, sc_config.name, target_body_name,
+                        self._planet_state_out_msgs[target_body_name],
+                    )
+
                 try:
                     guid_msg = fsw.build_guidance(
                         self.scSim, dyn_task_name, sc_config.name, sc_config.fsw_mode, sc_config.fsw_params,
                         nav, mu, self._ground_locations,
                         sun_direction_override_msg=sun_direction_override_msg,
+                        target_body_eph_msg=target_body_eph_msg,
                     )
                 except fsw.FswError as exc:
                     raise SimulationServiceError(str(exc)) from exc

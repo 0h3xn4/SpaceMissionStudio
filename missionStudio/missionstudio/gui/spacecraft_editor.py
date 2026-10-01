@@ -101,6 +101,11 @@ class _FswParamSpec(NamedTuple):
     required: bool
     example: object
     help_text: str
+    # False only for locationPointing's target_body: it and
+    # target_ground_station are mutually exclusive (Scenario.validate()
+    # enforces exactly one), so "Reset to template" must not fill both at
+    # once -- see _fsw_template_params.
+    fill_on_reset: bool = True
 
 
 # Same rationale/pattern as gui.sensor_actuator_editor._KIND_PARAM_SPECS
@@ -124,8 +129,18 @@ _FSW_MODE_PARAM_SPECS: dict[str, list[_FswParamSpec]] = {
                        "least one coarse_sun_sensor sensor"),
     ],
     "locationPointing": [
+        # Exactly one of these two is required (Scenario.validate() enforces
+        # the xor with a specific error message); target_body's
+        # fill_on_reset=False keeps "Reset to template" from filling both at
+        # once -- see _FswParamSpec.fill_on_reset and
+        # _fsw_missing_required_keys's own locationPointing special case.
         _FswParamSpec("target_ground_station", True, "<ground station name>",
-                       "name of a GroundStationConfig already in this scenario"),
+                       "name of a GroundStationConfig already in this scenario -- exactly one of this or "
+                       "target_body is required"),
+        _FswParamSpec("target_body", False, "<central body or third-body name, e.g. 'moon'>",
+                       "name of a SPICE-tracked body (gravity.central_body or a gravity"
+                       ".third_body_perturbers entry) to point at directly -- exactly one of this or "
+                       "target_ground_station is required", fill_on_reset=False),
         _FswParamSpec("pHat_B", False, [0.0, 0.0, 1.0], "body-frame pointing axis, unit vector [-]"),
     ],
 }
@@ -145,11 +160,16 @@ _CONTROL_PARAM_SPECS: list[_FswParamSpec] = [
 def _fsw_template_params(fsw_mode: "str | None") -> dict:
     if fsw_mode is None:
         return {}
-    return {spec.key: spec.example for spec in _FSW_MODE_PARAM_SPECS.get(fsw_mode, [])}
+    return {spec.key: spec.example for spec in _FSW_MODE_PARAM_SPECS.get(fsw_mode, []) if spec.fill_on_reset}
 
 
 def _fsw_missing_required_keys(fsw_mode: "str | None", params: dict) -> list[str]:
     if fsw_mode is None:
+        return []
+    if fsw_mode == "locationPointing" and ("target_ground_station" in params or "target_body" in params):
+        # Exactly one of these two satisfies locationPointing's own
+        # requirement (Scenario.validate() enforces the xor itself, with a
+        # specific error message, if neither or both end up present).
         return []
     return [spec.key for spec in _FSW_MODE_PARAM_SPECS.get(fsw_mode, []) if spec.required and spec.key not in params]
 
@@ -158,17 +178,11 @@ def _fsw_hint_text(fsw_mode: "str | None") -> str:
     if fsw_mode is None:
         return "No attitude control -- FSW params/control gains below are unused."
     specs = _FSW_MODE_PARAM_SPECS.get(fsw_mode, [])
-    note = ""
-    if fsw_mode == "locationPointing":
-        note = (
-            "\n⚠ fsw_params['target_body'] (point at a celestial body directly) is schema-valid but not "
-            "wired up -- use target_ground_station above instead."
-        )
     if not specs:
-        return f"{fsw_mode!r} needs no FSW params." + note
+        return f"{fsw_mode!r} needs no FSW params."
     lines = [f"• {spec.key} ({'required' if spec.required else 'optional'}): {spec.help_text}"
              for spec in specs]
-    return "\n".join(lines) + note
+    return "\n".join(lines)
 
 
 def _control_params_hint_text() -> str:
