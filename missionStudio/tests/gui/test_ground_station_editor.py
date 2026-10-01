@@ -118,3 +118,13 @@ def test_list_widget_remove_shows_a_toast(qtbot):
 
     toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
     assert any("svalbard" in t.text() and "Removed" in t.text() for t in toasts)
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.ground_station_editor import GroundStationEditorDialog
+
+    dialog = GroundStationEditorDialog()
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

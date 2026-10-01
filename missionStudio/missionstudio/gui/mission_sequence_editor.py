@@ -150,6 +150,12 @@ class _CommandEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
+
     def _on_kind_changed(self, kind: str) -> None:
         self.stack.setCurrentIndex(_KIND_PAGE_INDEX[kind])
 

@@ -115,3 +115,16 @@ def test_accept_blocked_when_follower_name_equals_chief_name(qtbot, monkeypatch)
     dialog.follower_name_edit.setText("chief-1")
     dialog._on_accept()
     assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why --
+    measured directly for THIS dialog before the fix: 497x545 vs its own
+    497x601 sizeHint().
+    """
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+
+    dialog = PhasingFormationDialog(["chief-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

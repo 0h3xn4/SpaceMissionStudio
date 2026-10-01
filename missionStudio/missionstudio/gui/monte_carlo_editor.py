@@ -150,6 +150,12 @@ class _DispersionEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
+
     def _refresh_kind_choices(self, quantity: str) -> None:
         current = self.kind_combo.currentText()
         self.kind_combo.clear()

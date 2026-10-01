@@ -138,6 +138,18 @@ class WalkerConstellationDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See propagation_setup_dialog.py's identical fix for why this is
+        # needed even though nothing here looks obviously undersized in
+        # this project's own offscreen test rendering: on a real desktop
+        # (confirmed from an actual user screenshot of a sibling dialog,
+        # gui.template_wizard.TemplateCustomizeWizard), Qt can size a
+        # freshly-constructed QDialog/QWizard smaller than its OWN
+        # sizeHint() on first show() -- a real, platform-dependent layout
+        # -convergence gap this project's own offscreen Qt backend does
+        # not reproduce, so it can only be caught by explicitly forcing
+        # the size rather than trusting Qt's default first-show sizing.
+        self.resize(self.sizeHint())
+
     def _on_accept(self) -> None:
         try:
             self.to_request()

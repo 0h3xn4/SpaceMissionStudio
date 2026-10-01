@@ -307,6 +307,12 @@ class _ItemEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
+
     def _rebuild_vector_rows(self, kind: str) -> None:
         # Regression fix: this used to only re-use self._item_params (the
         # ORIGINAL item's saved values) when switching back to the exact

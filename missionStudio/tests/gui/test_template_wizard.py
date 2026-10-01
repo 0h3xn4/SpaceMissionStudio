@@ -143,3 +143,30 @@ def test_reaction_wheel_max_momentum_applies_to_every_wheel_uniformly(qtbot):
     result.validate()
     wheel_momenta = [a.params["maxMomentum"] for a in result.spacecraft[0].actuators if a.kind == "reaction_wheel"]
     assert wheel_momenta == [250.0, 250.0, 250.0]
+
+
+@pytest.mark.parametrize("filename", [
+    "03_geo_station_keeping.json",
+    "18_leo_station_keeping.json",
+    "07_attitude_pointing_with_adcs_hardware.json",
+])
+def test_wizard_is_sized_to_fit_its_own_busiest_page_not_a_flat_default(qtbot, filename):
+    """Regression test for a real bug, found from a user screenshot:
+    QWizard.sizeHint() does NOT reflect its own pages' content at all --
+    it measures a flat 500x360 regardless of what spec/pages were given
+    (confirmed directly), so several pages' intro text and field rows
+    rendered clipped. TemplateCustomizeWizard.__init__ now explicitly
+    sizes itself from the widest/tallest page across the WHOLE wizard.
+    """
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.gui.template_wizard import TemplateCustomizeWizard, get_wizard_spec
+    from missionstudio.schema import load_scenario
+
+    scenario = load_scenario(TEMPLATES_DIR / filename)
+    wizard = TemplateCustomizeWizard(scenario, get_wizard_spec(filename))
+    qtbot.addWidget(wizard)
+
+    busiest_page_width = max(p.sizeHint().width() for p in wizard._field_pages)
+    busiest_page_height = max(p.sizeHint().height() for p in wizard._field_pages)
+    assert wizard.size().width() >= busiest_page_width
+    assert wizard.size().height() >= busiest_page_height + 100  # room for QWizard's own title/nav chrome

@@ -166,6 +166,14 @@ class PhasingFormationDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce
+        # -- measured directly for THIS dialog, even: 497x545 vs its own
+        # 497x601 sizeHint.
+        self.resize(self.sizeHint())
+
     def _on_accept(self) -> None:
         try:
             self.to_request()

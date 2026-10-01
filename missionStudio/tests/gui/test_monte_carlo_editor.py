@@ -208,3 +208,13 @@ def test_dispersion_list_add_and_remove_show_a_toast(qtbot, monkeypatch):
     toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
     assert any("Removed" in t.text() for t in toasts)
     assert widget.to_list() == []
+
+
+def test_dispersion_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
+
+    dialog = _DispersionEditorDialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

@@ -124,3 +124,13 @@ def test_accept_blocked_when_save_file_mode_has_no_path(qtbot, monkeypatch):
     # user why OK didn't do anything via QMessageBox.critical; this dialog
     # must too.
     assert len(critical_calls) == 1
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.vizard_dialog import VizardDialog
+
+    dialog = VizardDialog()
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

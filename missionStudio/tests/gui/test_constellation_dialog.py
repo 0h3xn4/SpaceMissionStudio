@@ -97,3 +97,19 @@ def test_pattern_combo_offers_delta_and_star(qtbot):
     qtbot.addWidget(dialog)
     patterns = {dialog.pattern_combo.itemData(i) for i in range(dialog.pattern_combo.count())}
     assert patterns == {"delta", "star"}
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """Regression test: see propagation_setup_dialog.py's identical test
+    for why this is needed -- Qt can size a freshly-constructed QDialog
+    smaller than its own sizeHint() on first show() on a real desktop (a
+    gap confirmed from an actual user screenshot of a sibling dialog,
+    gui.template_wizard.TemplateCustomizeWizard), which this project's
+    own offscreen test rendering does not reproduce.
+    """
+    from missionstudio.gui.constellation_dialog import WalkerConstellationDialog
+
+    dialog = WalkerConstellationDialog(template_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

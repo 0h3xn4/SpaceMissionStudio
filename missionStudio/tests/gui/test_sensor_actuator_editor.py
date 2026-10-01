@@ -364,3 +364,14 @@ def test_thruster_position_vector_row_has_no_normalize_button(qtbot):
     t_hat_row_widget = dialog._vector_form.itemAt(1, dialog._vector_form.ItemRole.FieldRole).widget()
     assert not r_b_row_widget.findChildren(QPushButton), "r_B (a position, not a direction) must have no Normalize button"
     assert len(t_hat_row_widget.findChildren(QPushButton)) == 1, "tHat_B (a direction) must keep its Normalize button"
+
+
+def test_item_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS)
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

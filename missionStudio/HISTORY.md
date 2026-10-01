@@ -4938,3 +4938,65 @@ regardless of the list's current selection, the exact failure mode of
 the earlier design). Full suite: 861 passed, 126 skipped, zero
 regressions.
 
+## "Apparently the dialog windows open too small everywhere" -- an app-wide audit
+
+Direct follow-up after the SpacecraftEditorDialog fix above: a second
+real user screenshot showed `gui.template_wizard.TemplateCustomizeWizard`
+(brand new this session) with the SAME class of bug -- intro text and
+help labels cut off mid-sentence -- plus a blanket report that this
+might not be isolated to just these two dialogs. Audited every
+`QDialog`/`QWizard` subclass in `gui/` (11 total) rather than only
+reacting to the two already reported.
+
+**Root cause, confirmed for each one individually, not assumed**:
+`propagation_setup_dialog.py` already had its own documented, measured
+fix for this exact bug class (`self.resize(self.sizeHint())`, with a
+comment noting Qt sized that window smaller than its own sizeHint() on
+first `show()` on a real desktop -- 871x734 vs. 871x768). Of the 11
+dialog/wizard classes, only 3 had picked up that same fix
+(`PropagationSetupDialog`, the just-fixed `SpacecraftEditorDialog`, and
+`SpacecraftTemplateDialog`'s own fixed `520x320`) -- the other 8 had NO
+explicit sizing at all, silently relying on Qt's default first-show
+behavior, exactly the behavior `propagation_setup_dialog.py` already
+proved unreliable on a real desktop. Rendering all 11 through this
+project's own offscreen Qt test backend did NOT reproduce the user's
+screenshot (every dialog measured `size() == sizeHint()` there) --
+confirming this is a genuine, platform-dependent Qt layout-convergence
+gap that can only be caught by explicitly forcing the size, never by
+trusting headless/offscreen rendering alone to rule a dialog safe.
+
+**Fixed by applying the same explicit resize to every dialog that was
+missing it**: `WalkerConstellationDialog`, `GroundStationEditorDialog`,
+`_CommandEditorDialog` (mission sequence), `_DispersionEditorDialog`
+(Monte Carlo), `PhasingFormationDialog`, `_ItemEditorDialog`
+(sensor/actuator), and `VizardDialog` each now call
+`self.resize(self.sizeHint())` at the end of `__init__`, identical to
+`propagation_setup_dialog.py`'s own proven fix -- for
+`PhasingFormationDialog` specifically, this closes a REAL, independently
+-measured 56px shortfall (497x545 vs. its own 497x601 sizeHint()), not
+just a defensive guess.
+
+**`TemplateCustomizeWizard` needed a different fix, not just the same
+one-liner**: confirmed directly that `QWizard.sizeHint()` does NOT
+reflect its own pages' content at all -- it measured a flat 500x360
+regardless of which of the three registered specs ('03'/'07'/'18') was
+given, while the busiest actual page ("Station-keeping controller",
+shared by '03' and '18') needs 367x326 just for its own fields, before
+QWizard's own title/intro banner and Back/Next/Cancel row are added on
+top. `self.resize(self.sizeHint())` alone would therefore have done
+nothing here. Fixed by computing the explicit target size from the
+widest/tallest `_WizardFieldPage` across the WHOLE wizard (not just
+whichever page is shown first) plus fixed padding for QWizard's own
+chrome -- confirmed by rendering every page of all three specs at the
+new size and checking none of them clip. Sizing from every page (not
+just the current one) also means paging through Back/Next never
+triggers an awkward mid-flow resize.
+
+**Verification**: one new `test_dialog_resizes_to_its_own_sizehint_on
+_construction`-style regression test per fixed dialog (matching
+`propagation_setup_dialog.py`'s own existing test for the same bug
+class), plus a dedicated `test_wizard_is_sized_to_fit_its_own_busiest
+_page_not_a_flat_default` for the wizard's different fix, parametrized
+across all three registered specs. Full suite: 871 passed, 126 skipped,
+zero regressions.
+

@@ -387,6 +387,22 @@ class TemplateCustomizeWizard(QWizard):
             self._field_pages.append(page)
             self.addPage(page)
 
+        # Real bug, found from a user screenshot: QWizard.sizeHint() does
+        # NOT reflect its own pages' content at all -- it measured a flat
+        # 500x360 here regardless of which spec/pages were given, while
+        # this wizard's own busiest page ("Station-keeping controller")
+        # needs 367x326 just for its fields, before QWizard's own
+        # title/intro banner and Back/Next/Cancel row are added on top --
+        # so several pages' intro text and field rows rendered clipped.
+        # Sized from the widest/tallest PAGE across the whole wizard (not
+        # just the one shown first), so paging through Back/Next never
+        # needs a mid-flow resize -- plus fixed padding for QWizard's own
+        # chrome, confirmed by actually rendering every page in this
+        # wizard and checking nothing clips.
+        widest_page = max((p.sizeHint().width() for p in self._field_pages), default=0)
+        tallest_page = max((p.sizeHint().height() for p in self._field_pages), default=0)
+        self.resize(max(500, widest_page + 60), max(420, tallest_page + 220))
+
     def accept(self) -> None:
         for page in self._field_pages:
             page.apply_to_scenario()

@@ -434,3 +434,11 @@ def test_editing_child_does_not_stale_parent_children_field(qtbot, monkeypatch):
 
     got = widget.to_command_list()
     assert got[0].children[0].label == "after"
+
+
+def test_command_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    dialog = _dialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()
