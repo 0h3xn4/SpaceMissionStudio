@@ -5160,3 +5160,47 @@ overlapping the content below it. Two new regression tests added to
 one behavioral (the squeeze-and-measure check above). Full suite: 940
 passed, 126 skipped, zero regressions (up from 938/126).
 
+---
+
+## Version 1.1.0 released
+
+Cut a new release on top of everything accumulated since 1.0.0 was
+tagged (`54545db6c`, which shipped with nine templates and no
+`template_wizard.py` at all): the four new actuator/effector
+capabilities (gravity gradient, thruster attitude control, momentum
+dumping, magnetic torque rods) and their templates (10-13), the two new
+attitude-guidance capabilities (CSS sun-heading estimation, celestial
+-body pointing) and their templates (14-15), the `lambert_transfer`
+Mission Sequence command and its template (16), the real `FuelTank`
+effector and its template (17), the LEO station-keeping template (18),
+the "Customize: ..." wizard's full rollout to all eighteen templates,
+`engine.fsw`'s automatic MRP-gain-vs-inertia scaling, the GUI dialog
+-sizing audit (`SpacecraftEditorDialog`, every `TemplateCustomizeWizard`
+spec, `LoadScenarioWidget`'s `QScrollArea` fix), and this session's own
+README accuracy pass plus the new `USER_MANUAL.md`.
+
+Confirmed no breaking change before cutting the version: `schema.scenario.
+CURRENT_SCHEMA_VERSION` is still `1`, unchanged since 1.0.0 -- every new
+field across all of the above is purely additive with a sensible
+default (`schema/migrations.py`'s own docstring: additive fields need no
+migration), so every scenario file valid under 1.0.0 stays valid,
+byte-identical, under 1.1.0. This is therefore a MINOR version bump
+under semver (new backward-compatible functionality, no breaking
+changes), not a MAJOR one, despite the size of the feature list above.
+
+Version bumped `1.0.0` -> `1.1.0` in `pyproject.toml`,
+`missionstudio/__init__.py`, and `packaging/windows/missionstudio.iss`'s
+`MyAppVersion` (the `.deb` build reads `missionstudio.__version__`
+directly -- `packaging/deb/DEBIAN/control.in` has no version string to
+touch). `packaging/build_deb.sh` was re-run in this development sandbox
+to confirm the packaging mechanics still work end-to-end at the new
+version: `dpkg-deb --build` succeeds and produces a valid
+`missionstudio_1.1.0_all.deb`. The full real-Basilisk install/test pass
+(venv creation, `bsk[all]` from PyPI, a real `printBuildInfo()`, hundreds
+of tests passing from the installed copy) was NOT independently re-run
+against this specific 1.1.0 artifact -- it was run once, at 1.0.0,
+against install logic that is unchanged since (see `packaging/README.md`'s
+"1.1.0 release note" for the same caveat in context). Full suite: 940
+passed, 126 skipped, same as immediately before this release (no tests
+added or removed by the version bump itself).
+

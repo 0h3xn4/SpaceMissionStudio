@@ -30,7 +30,7 @@
 ;        powershell -File packaging\build_wheel.ps1 packaging\windows\dist
 ;   2. Compile this script:
 ;        ISCC packaging\windows\missionstudio.iss
-;      -> packaging\windows\Output\missionstudio-1.0.0-setup.exe
+;      -> packaging\windows\Output\missionstudio-1.1.0-setup.exe
 ;
 ; Verification status: written carefully against Inno Setup's documented,
 ; stable script syntax and packaging/install.ps1's own already-written
@@ -44,7 +44,7 @@
 ; Basilisk, in this project's own sandbox).
 
 #define MyAppName "missionStudio"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "missionStudio contributors"
 #define MyAppURL "https://github.com/AVSLab/basilisk"
 
