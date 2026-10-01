@@ -152,6 +152,15 @@ not independently re-run against that specific 1.1.0 artifact this
 release -- it was run once, at 1.0.0, against install logic that hasn't
 changed since.
 
+**2.0.0 release note**: the 2.0.0 bump is the missionStudio ->
+SpaceMissionStudio rename (see README.md's "Version 2.0.0" for the full
+list of what changed) -- a new package/command/installer identity, not
+new install LOGIC. `build_deb.sh` was re-run again under the renamed
+package and still produces a valid, installable
+`spacemissionstudio_2.0.0_all.deb`; the real-Basilisk install/test pass
+has still only been run once, at 1.0.0, against logic that is unchanged
+through both the 1.1.0 feature release and this rename.
+
 ### The Windows installer (Inno Setup)
 
 `windows/spacemissionstudio.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php)

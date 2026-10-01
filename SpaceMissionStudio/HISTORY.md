@@ -5215,3 +5215,113 @@ against install logic that is unchanged since (see `packaging/README.md`'s
 passed, 126 skipped, same as immediately before this release (no tests
 added or removed by the version bump itself).
 
+---
+
+## Version 2.0.0: renamed to SpaceMissionStudio, missionAnalysis removed
+
+Two changes landed together, each its own commit/PR, then released as
+one version bump.
+
+**Removed `missionAnalysis`**, a standalone, one-off constellation
+mission-design case study that predates this project (its own README
+said it was never run end-to-end in this development sandbox). Checked
+thoroughly before removing: not imported anywhere, no `sys.path`
+reference, nothing in the build system, CI, docs toctree, or packaging
+-- the only references anywhere else in the repo were prose provenance
+comments in `engine/*.py`/`schema/scenario.py` ("ported directly from
+`../missionAnalysis`'s X"), left as historical design-rationale notes,
+not functional dependencies. This project has since absorbed and
+generalized essentially everything missionAnalysis did -- constellation
+generation, station-keeping/phasing controllers, power budget,
+link-margin estimate, Vizard comm-ring visualization -- with a real
+schema, GUI, and test suite, and far more capability than the one fixed
+case study ever covered. Confirmed with the full test suite unchanged
+after deletion (940 passed, 126 skipped) -- proof nothing actually
+depended on it. Also dropped the now-stale `missionAnalysis/*` entries
+from `.gitignore`.
+
+**Renamed "missionStudio" to "SpaceMissionStudio"** (short form "SMS"),
+requested directly, with one explicit constraint: "SMS" collides hard
+with Short Message Service, so it was scoped to prose only -- never the
+CLI command, package name, or any identifier. A full technical rename,
+not just branding, since that's what was asked for:
+
+* Directory: `missionStudio/` -> `SpaceMissionStudio/` (via `git mv`,
+  history preserved).
+* Python package/import name: `missionstudio` -> `spacemissionstudio`.
+* CLI command, PyPI/`.deb` package name: same substitution.
+* Windows installer: `MyAppName`/`MyAppPublisher`/install
+  directory/Start Menu group/output filename all updated, plus the
+  `AppId` GUID regenerated (`D9A6194C-1034-4A25-946A-689B2B13E86D`, was
+  `B96F3E9D-6C0B-4C61-9C1E-8B9E3E5B6F7A`) -- that field's own comment
+  says not to reuse a GUID for a different application identity, and
+  this genuinely is one (no end user has ever installed the old build
+  via this installer, which has still never run on a real Windows
+  machine).
+* Desktop entry (`packaging/spacemissionstudio.desktop.in` and the
+  packaged `.desktop`): `Name=`/`Exec=`/`Icon=`/`StartupWMClass=`
+  updated, files renamed.
+* Every in-app GUI string -- confirmed with a real headless render
+  (window title read `SpaceMissionStudio -- untitled`, the About dialog
+  and Load Scenario tab intro text both read "SpaceMissionStudio", all
+  eighteen templates still loaded), not just grep.
+
+**A real gap found mid-rename, not anticipated going in**: a blind
+two-rule sed (`missionstudio` -> `spacemissionstudio`,
+`missionStudio` -> `SpaceMissionStudio`) missed two more case variants
+genuinely present in the codebase -- `Missionstudio` (PowerShell's own
+PascalCase-of-a-lowercase-string convention for parameter names, e.g.
+`$MissionstudioWheel` in `install.ps1`) and `MISSIONSTUDIO` (an
+env-var-style all-caps pair, `MISSIONSTUDIO_DIAG_SKIP_ECLIPSE_READ/
+_SUBSCRIBE`, embedded in one template's own `description` field, plus
+`MISSIONSTUDIO_SETUP_ERROR` in `bootstrap_env.ps1`). Found by an
+exhaustive case-variant inventory (`grep -ohE "[Mm]ission[Ss]tudio"`)
+before declaring the rename done, not assumed complete after the first
+pass -- two more targeted sed rules closed both gaps, confirmed by a
+final occurrence-count cross-check (every remaining lowercase
+`missionstudio` substring is part of `spacemissionstudio`, every
+`missionStudio` is part of `SpaceMissionStudio`, with zero exceptions
+outside two deliberately-preserved historical references).
+
+Also found: a stale, untracked `build/`/`*.egg-info` directory pair
+sitting in the working tree from an earlier local install, still
+containing a copy of the OLD package under the old name. Not tracked by
+git (so not part of any diff), but real stray content that would have
+caused confusion on the next local build -- deleted outright; both
+regenerate correctly under the new name on reinstall.
+
+**Deliberately NOT touched**: this file's own body, for the same reason
+stated in its own opening section -- an honest record of what was
+actually true when each entry was written, not a current reference. One
+note near the top (read it first) explains the rename and asks the
+reader to mentally substitute the new name below that point.
+
+**Verification**: full test suite unchanged through both changes (940
+passed, 126 skipped) -- re-run after `missionAnalysis` removal, then
+again after a real `pip uninstall missionstudio` + `pip install -e
+".[dev,gui]"` reinstall under the new package name. The new
+`spacemissionstudio` CLI command confirmed working and the old
+`missionstudio` command confirmed gone. `packaging/build_deb.sh` re-run
+and produces a valid `spacemissionstudio_2.0.0_all.deb`.
+
+**Version bumped** `1.1.0` -> `2.0.0` -- a MAJOR bump under semver, the
+first in this project's history, because this is the first genuinely
+breaking change: every scenario file/template/capability from 1.1.0
+carries over completely unchanged, but anyone's own code importing
+`missionstudio` or invoking the `missionstudio` CLI command breaks and
+needs updating to `spacemissionstudio`. `CURRENT_SCHEMA_VERSION` stays
+`1` -- the scenario file format itself has no breaking change, only the
+package/CLI identity does. Bumped in `pyproject.toml`,
+`spacemissionstudio/__init__.py`, and
+`packaging/windows/spacemissionstudio.iss`'s `MyAppVersion` (the `.deb`
+reads `spacemissionstudio.__version__` directly, no change needed
+there).
+
+A published GitHub Release, "missionStudio v1.1.0" (tag `v1.1.0`), had
+already gone out pointing at the commit immediately after the 1.1.0
+version bump -- before this rename and the `missionAnalysis` removal
+landed. Rather than move that tag out from under an already-published
+release (a published release's tag shouldn't move retroactively), this
+version bump gets its own fresh tag/release instead, so `v1.1.0` stays
+an honest, immutable snapshot of exactly what it was when published.
+
