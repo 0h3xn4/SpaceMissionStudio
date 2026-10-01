@@ -1,0 +1,1283 @@
+#
+#  ISC License
+#
+#  Copyright (c) 2026, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
+#
+#  Permission to use, copy, modify, and/or distribute this software for any
+#  purpose with or without fee is hereby granted, provided that the above
+#  copyright notice and this permission notice appear in all copies.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+#  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+#  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+#  ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+#  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+#  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+#  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+#
+
+"""Spacecraft list + per-spacecraft editor dialog.
+
+Phase 1 scope note (superseded): editing used to only touch the fields
+``engine.service.SimulationService`` consumed at the time (name, orbit,
+dry mass, inertia, initial attitude/rate) and silently DROPPED
+``sensors``/``actuators``/``fsw_mode``/``fsw_params``/``control_params``
+on every edit -- ``to_dataclass()`` built a brand new ``SpacecraftConfig``
+without passing them through. That was fine as long as nothing set them
+(no Phase 1 editor did), but it was a latent bug the moment anything else
+did (a hand-edited scenario file, or this Phase 2 editor itself re-editing
+a spacecraft). Fixed now: ``to_dataclass()`` takes the ORIGINAL config (if
+editing one) and carries those fields through unless this dialog's own
+sensor/actuator/FSW editors changed them.
+
+drag/SRP are still not editable here -- there is deliberately no UI for
+them yet, same reasoning as before -- even though ``engine.service`` DOES
+now wire them up (Phase 4; see that module's docstring). ``to_dataclass()``
+carries ``enable_drag``/``drag_coeff``/``drag_area_m2``/``enable_srp``/
+``srp_coeff``/``srp_area_m2`` through from the original config the same
+way it does sensors/actuators/fsw_mode, so editing a spacecraft with these
+already set (e.g. from a hand-edited scenario file) doesn't silently reset
+them -- that was a real bug (found by audit, no editor ever existed to
+trigger it in the GUI itself) fixed at the same time this paragraph was
+corrected.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import NamedTuple
+
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..schema.scenario import (
+    ActuatorConfig,
+    ConstantThrustConfig,
+    FuelTankConfig,
+    MagneticMomentumManagementConfig,
+    MomentumDumpingConfig,
+    OrbitIC,
+    PhasingKeepingConfig,
+    PowerConfig,
+    RFLinkConfig,
+    ScenarioValidationError,
+    SensorConfig,
+    SpacecraftConfig,
+    StationKeepingConfig,
+    SUPPORTED_ACTUATOR_KINDS,
+    SUPPORTED_FSW_MODES,
+    SUPPORTED_SENSOR_KINDS,
+    SUPPORTED_THRUST_FRAMES,
+)
+from .feedback import clear_invalid, mark_invalid, show_toast
+from .orbit_ic_widget import OrbitIcWidget
+from .sensor_actuator_editor import SensorActuatorListWidget
+
+_FSW_MODE_NONE_LABEL = "(none -- no attitude control)"
+
+
+class _FswParamSpec(NamedTuple):
+    key: str
+    required: bool
+    example: object
+    help_text: str
+    # False only for locationPointing's target_body: it and
+    # target_ground_station are mutually exclusive (Scenario.validate()
+    # enforces exactly one), so "Reset to template" must not fill both at
+    # once -- see _fsw_template_params.
+    fill_on_reset: bool = True
+
+
+# Same rationale/pattern as gui.sensor_actuator_editor._KIND_PARAM_SPECS
+# (see that module's docstring) -- drives a per-mode hint label, a "Reset
+# to template" button, and immediate required-key validation here, instead
+# of a blank JSON box with only a one-line static example. Keep in sync
+# with engine.fsw.build_guidance()'s actual fsw_params.get()/[...] usage.
+_FSW_MODE_PARAM_SPECS: dict[str, list[_FswParamSpec]] = {
+    "inertial3D": [
+        _FswParamSpec("sigma_R0N", False, [0.0, 0.0, 0.0], "target inertial attitude, MRP [-]"),
+    ],
+    "hillPoint": [],
+    "velocityPoint": [],
+    "sunSafePoint": [
+        _FswParamSpec("sHatBdyCmd", False, [0.0, 0.0, 1.0], "body-frame sun-pointing axis, unit vector [-]"),
+        _FswParamSpec("min_unit_mag", False, 0.1, "minimum sun-sensor signal magnitude to trust [-]"),
+        _FswParamSpec("sun_axis_spin_rate_rad_s", False, 0.0, "commanded spin rate about sHatBdyCmd [rad/s]"),
+        _FswParamSpec("use_css_estimation", False, False,
+                       "true: estimate sun heading from this spacecraft's own 'coarse_sun_sensor' "
+                       "sensors (cssWlsEst) instead of simpleNav's noise-free truth -- requires at "
+                       "least one coarse_sun_sensor sensor"),
+    ],
+    "locationPointing": [
+        # Exactly one of these two is required (Scenario.validate() enforces
+        # the xor with a specific error message); target_body's
+        # fill_on_reset=False keeps "Reset to template" from filling both at
+        # once -- see _FswParamSpec.fill_on_reset and
+        # _fsw_missing_required_keys's own locationPointing special case.
+        _FswParamSpec("target_ground_station", True, "<ground station name>",
+                       "name of a GroundStationConfig already in this scenario -- exactly one of this or "
+                       "target_body is required"),
+        _FswParamSpec("target_body", False, "<central body or third-body name, e.g. 'moon'>",
+                       "name of a SPICE-tracked body (gravity.central_body or a gravity"
+                       ".third_body_perturbers entry) to point at directly -- exactly one of this or "
+                       "target_ground_station is required", fill_on_reset=False),
+        _FswParamSpec("pHat_B", False, [0.0, 0.0, 1.0], "body-frame pointing axis, unit vector [-]"),
+    ],
+}
+
+# Mirrors engine.fsw.DEFAULT_MRP_GAINS -- not imported directly since
+# engine.fsw pulls in Basilisk, which this GUI module must not require
+# just to be opened (see e.g. tests/gui/'s requires_gui-only, no
+# requires_basilisk, marker on every test that imports this module).
+_CONTROL_PARAM_SPECS: list[_FswParamSpec] = [
+    _FswParamSpec("K", False, 3.5, "MRP feedback proportional (attitude) gain"),
+    _FswParamSpec("P", False, 30.0, "MRP feedback derivative (rate) gain"),
+    _FswParamSpec("Ki", False, -1.0, "integral gain (negative disables integral feedback)"),
+    _FswParamSpec("integral_limit", False, 0.0, "integral windup limit"),
+]
+
+
+def _fsw_template_params(fsw_mode: "str | None") -> dict:
+    if fsw_mode is None:
+        return {}
+    return {spec.key: spec.example for spec in _FSW_MODE_PARAM_SPECS.get(fsw_mode, []) if spec.fill_on_reset}
+
+
+def _fsw_missing_required_keys(fsw_mode: "str | None", params: dict) -> list[str]:
+    if fsw_mode is None:
+        return []
+    if fsw_mode == "locationPointing" and ("target_ground_station" in params or "target_body" in params):
+        # Exactly one of these two satisfies locationPointing's own
+        # requirement (Scenario.validate() enforces the xor itself, with a
+        # specific error message, if neither or both end up present).
+        return []
+    return [spec.key for spec in _FSW_MODE_PARAM_SPECS.get(fsw_mode, []) if spec.required and spec.key not in params]
+
+
+def _fsw_hint_text(fsw_mode: "str | None") -> str:
+    if fsw_mode is None:
+        return "No attitude control -- FSW params/control gains below are unused."
+    specs = _FSW_MODE_PARAM_SPECS.get(fsw_mode, [])
+    if not specs:
+        return f"{fsw_mode!r} needs no FSW params."
+    lines = [f"• {spec.key} ({'required' if spec.required else 'optional'}): {spec.help_text}"
+             for spec in specs]
+    return "\n".join(lines)
+
+
+def _control_params_hint_text() -> str:
+    return "\n".join(f"• {spec.key} (optional): {spec.help_text}" for spec in _CONTROL_PARAM_SPECS)
+
+
+def _spin(minimum: float, maximum: float, decimals: int = 4, step: float = 1.0, value: float = 0.0) -> QDoubleSpinBox:
+    box = QDoubleSpinBox()
+    box.setRange(minimum, maximum)
+    box.setDecimals(decimals)
+    box.setSingleStep(step)
+    box.setValue(value)
+    return box
+
+
+def _scrollable(content: QWidget) -> QScrollArea:
+    """Wraps a tab page in its own scroll area. Without this, a
+    QTabWidget sizes EVERY tab to fit whichever tab page is tallest (a
+    well-known Qt behavior -- its internal QStackedWidget's size hint is
+    the max across all pages, not just the current one), so one busy tab
+    (e.g. "Power / propulsion / link budget", with five stacked group
+    boxes) forced every other tab -- including "Orbit / mass", whose own
+    content is a third the height -- to render with a huge dead-space gap
+    at the bottom of its group box. Each tab scrolling independently
+    fixes that and keeps the dialog itself from growing unreasonably
+    tall, same reasoning as ``gui.scenario_editor.ScenarioEditorWidget``'s
+    own top-level QScrollArea.
+    """
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setWidget(content)
+    return scroll
+
+
+class SpacecraftEditorDialog(QDialog):
+    """Edits one :class:`SpacecraftConfig` in place. Construct with an
+    existing config to edit it, or ``None`` for a fresh default.
+    """
+
+    def __init__(self, config: SpacecraftConfig | None = None, parent: QWidget | None = None,
+                 other_spacecraft_names: list[str] | None = None, simulation_mode: str = "full_attitude"):
+        super().__init__(parent)
+        self.setWindowTitle("Spacecraft" if config is None else f"Spacecraft: {config.name}")
+        self._other_spacecraft_names = other_spacecraft_names or []
+        # See Scenario.simulation_mode's docstring: "orbit_only" hides the
+        # Sensors/actuators and FSW tabs and the Power budget group below
+        # (RF link/station-keeping/constant-thrust stay -- none need
+        # attitude). Only affects what's SHOWN here; the actual enforcement
+        # is schema-level (Scenario.validate()), so a scenario file that
+        # already has these set still round-trips correctly if the mode is
+        # later switched back to "full_attitude".
+        self._orbit_only = simulation_mode == "orbit_only"
+
+        outer_layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        self.tabs = tabs
+        outer_layout.addWidget(tabs)
+
+        orbit_tab = QWidget()
+        layout = QVBoxLayout(orbit_tab)
+
+        top_form = QFormLayout()
+        self.name_edit = QLineEdit(config.name if config else "sat-1")
+        self.name_edit.textChanged.connect(self._on_name_changed)
+        top_form.addRow("Name", self.name_edit)
+        self.dry_mass_kg = _spin(0.001, 1.0e6, decimals=3, step=10.0, value=config.dry_mass_kg if config else 100.0)
+        top_form.addRow("Dry mass [kg]", self.dry_mass_kg)
+        layout.addLayout(top_form)
+
+        orbit_group = QGroupBox("Orbit initial condition")
+        orbit_layout = QVBoxLayout(orbit_group)
+        self.orbit_widget = OrbitIcWidget()
+        orbit_layout.addWidget(self.orbit_widget)
+        layout.addWidget(orbit_group)
+
+        inertia_group = QGroupBox("Principal moments of inertia [kg*m^2] (off-diagonal terms fixed at 0)")
+        inertia_form = QFormLayout(inertia_group)
+        inertia0 = config.inertia_kg_m2 if config else [10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0]
+        self.ixx = _spin(0.001, 1.0e8, decimals=3, step=1.0, value=inertia0[0])
+        self.iyy = _spin(0.001, 1.0e8, decimals=3, step=1.0, value=inertia0[4])
+        self.izz = _spin(0.001, 1.0e8, decimals=3, step=1.0, value=inertia0[8])
+        inertia_form.addRow("Ixx", self.ixx)
+        inertia_form.addRow("Iyy", self.iyy)
+        inertia_form.addRow("Izz", self.izz)
+        self.gravity_gradient_check = QCheckBox("Enable gravity gradient torque")
+        self.gravity_gradient_check.setToolTip(
+            "Real torque from the central body's gravity acting across this spacecraft's own inertia "
+            "(Basilisk's GravityGradientEffector). Usually negligible next to an active attitude "
+            "controller's own torques, but real for a coasting (fsw_mode = None) or high-inertia spacecraft."
+        )
+        self.gravity_gradient_check.setChecked(config.enable_gravity_gradient if config else False)
+        inertia_form.addRow(self.gravity_gradient_check)
+        layout.addWidget(inertia_group)
+
+        # Drag/SRP finally get a real editor here (Phase 5) -- previously
+        # round-tripped only (see this module's docstring history): no UI
+        # existed anywhere to actually SET them, even though engine.service
+        # has wired them into the physics since Phase 4. Needed in
+        # particular for Scenario.simulation_mode's "orbit_only" cannonball
+        # use case, where drag_area_m2/srp_area_m2 ARE the spacecraft's
+        # only physical shape.
+        drag_srp_group = QGroupBox("Atmospheric drag / solar radiation pressure")
+        drag_srp_form = QFormLayout(drag_srp_group)
+        self.enable_drag_check = QCheckBox("Enable atmospheric drag")
+        self.enable_drag_check.setChecked(config.enable_drag if config else False)
+        drag_srp_form.addRow(self.enable_drag_check)
+        self.drag_coeff = _spin(0.1, 10.0, decimals=3, step=0.1,
+                                 value=config.drag_coeff if config else SpacecraftConfig.drag_coeff)
+        drag_srp_form.addRow("Drag coefficient [-]", self.drag_coeff)
+        self.drag_area_m2 = _spin(0.0001, 1.0e6, decimals=4, step=0.1,
+                                   value=config.drag_area_m2 if config else SpacecraftConfig.drag_area_m2)
+        drag_srp_form.addRow("Drag cross-section area [m^2]", self.drag_area_m2)
+        self.enable_srp_check = QCheckBox("Enable solar radiation pressure")
+        self.enable_srp_check.setChecked(config.enable_srp if config else False)
+        drag_srp_form.addRow(self.enable_srp_check)
+        self.srp_coeff = _spin(0.0, 3.0, decimals=3, step=0.1,
+                                value=config.srp_coeff if config else SpacecraftConfig.srp_coeff)
+        drag_srp_form.addRow("SRP reflectivity coefficient [-]", self.srp_coeff)
+        self.srp_area_m2 = _spin(0.0001, 1.0e6, decimals=4, step=0.1,
+                                  value=config.srp_area_m2 if config else SpacecraftConfig.srp_area_m2)
+        drag_srp_form.addRow("SRP cross-section area [m^2]", self.srp_area_m2)
+        layout.addWidget(drag_srp_group)
+
+        attitude_group = QGroupBox("Initial attitude / body rate")
+        attitude_form = QFormLayout(attitude_group)
+        sigma0 = config.sigma_bn_init if config else [0.0, 0.0, 0.0]
+        omega0 = config.omega_bn_b_init_rad_s if config else [0.0, 0.0, 0.0]
+        self.sigma1 = _spin(-1.0, 1.0, decimals=6, step=0.01, value=sigma0[0])
+        self.sigma2 = _spin(-1.0, 1.0, decimals=6, step=0.01, value=sigma0[1])
+        self.sigma3 = _spin(-1.0, 1.0, decimals=6, step=0.01, value=sigma0[2])
+        self.omega1 = _spin(-10.0, 10.0, decimals=6, step=0.001, value=omega0[0])
+        self.omega2 = _spin(-10.0, 10.0, decimals=6, step=0.001, value=omega0[1])
+        self.omega3 = _spin(-10.0, 10.0, decimals=6, step=0.001, value=omega0[2])
+        attitude_form.addRow("sigma_BN [-] (3 components)",
+                              _hbox(self.sigma1, self.sigma2, self.sigma3))
+        attitude_form.addRow("omega_BN_B [rad/s] (3 components)",
+                              _hbox(self.omega1, self.omega2, self.omega3))
+        layout.addWidget(attitude_group)
+
+        if config is not None:
+            self.orbit_widget.from_dataclass(config.orbit)
+
+        tabs.addTab(_scrollable(orbit_tab), "Orbit / mass")
+
+        # -- Sensors / actuators tab (Phase 2) --------------------------------
+        sensors_tab = QWidget()
+        sensors_layout = QVBoxLayout(sensors_tab)
+        sensors_layout.addWidget(QLabel("Sensors"))
+        self.sensor_list = SensorActuatorListWidget(SensorConfig, SUPPORTED_SENSOR_KINDS)
+        sensors_layout.addWidget(self.sensor_list)
+        sensors_layout.addWidget(QLabel("Actuators"))
+        self.actuator_list = SensorActuatorListWidget(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
+        sensors_layout.addWidget(self.actuator_list)
+        if config is not None:
+            self.sensor_list.from_list(config.sensors)
+            self.actuator_list.from_list(config.actuators)
+        self._sensors_tab_index = tabs.addTab(_scrollable(sensors_tab), "Sensors / actuators")
+
+        # -- Attitude control (FSW) tab (Phase 2) -----------------------------
+        fsw_tab = QWidget()
+        fsw_layout = QVBoxLayout(fsw_tab)
+        fsw_form = QFormLayout()
+        self.fsw_mode_combo = QComboBox()
+        self.fsw_mode_combo.addItem(_FSW_MODE_NONE_LABEL, userData=None)
+        for mode in SUPPORTED_FSW_MODES:
+            self.fsw_mode_combo.addItem(mode, userData=mode)
+        if config is not None and config.fsw_mode is not None:
+            index = self.fsw_mode_combo.findData(config.fsw_mode)
+            if index >= 0:
+                self.fsw_mode_combo.setCurrentIndex(index)
+        self.fsw_mode_combo.currentIndexChanged.connect(self._on_fsw_mode_changed)
+        fsw_form.addRow("FSW mode", self.fsw_mode_combo)
+        fsw_layout.addLayout(fsw_form)
+
+        self.fsw_hint_label = QLabel(_fsw_hint_text(self.fsw_mode_combo.currentData()))
+        self.fsw_hint_label.setWordWrap(True)
+        self.fsw_hint_label.setStyleSheet("color: palette(mid);")
+        fsw_layout.addWidget(self.fsw_hint_label)
+
+        fsw_params_row = QHBoxLayout()
+        fsw_params_row.addWidget(QLabel("FSW params (JSON object)"))
+        fsw_params_row.addStretch(1)
+        self.fsw_reset_template_button = QPushButton("Reset to template")
+        self.fsw_reset_template_button.setToolTip(
+            "Fill the FSW params box below with a working example for the selected FSW mode -- "
+            "overwrites whatever is currently typed there."
+        )
+        self.fsw_reset_template_button.clicked.connect(self._on_fsw_reset_template)
+        fsw_params_row.addWidget(self.fsw_reset_template_button)
+        fsw_layout.addLayout(fsw_params_row)
+
+        initial_fsw_params = config.fsw_params if config else _fsw_template_params(self.fsw_mode_combo.currentData())
+        self.fsw_params_edit = QPlainTextEdit(json.dumps(initial_fsw_params, indent=2))
+        fsw_layout.addWidget(self.fsw_params_edit)
+
+        fsw_layout.addWidget(QLabel("Control gains (JSON object)"))
+        control_hint_label = QLabel(_control_params_hint_text())
+        control_hint_label.setWordWrap(True)
+        control_hint_label.setStyleSheet("color: palette(mid);")
+        fsw_layout.addWidget(control_hint_label)
+        self.control_params_edit = QPlainTextEdit(json.dumps(config.control_params if config else {}, indent=2))
+        fsw_layout.addWidget(self.control_params_edit)
+        self._fsw_tab_index = tabs.addTab(_scrollable(fsw_tab), "Attitude control (FSW)")
+
+        # -- Power budget / RF link budget tab (Phase 4) ----------------------
+        # Both are OFF by default (unchecked group box) -- turning one on is
+        # the only input needed beyond the numbers themselves; engine.service
+        # (power) / engine.link_budget (RF) do the rest. See PowerConfig's
+        # and RFLinkConfig's docstrings for exactly what each does and
+        # doesn't affect.
+        power_tab = QWidget()
+        power_layout = QVBoxLayout(power_tab)
+
+        power0 = config.power if config else None
+        self.power_group = QGroupBox("Power budget (solar panel + battery)")
+        self.power_group.setCheckable(True)
+        self.power_group.setChecked(power0 is not None)
+        power_form = QFormLayout(self.power_group)
+        self.panel_area_m2 = _spin(0.001, 1.0e4, decimals=3, step=0.1,
+                                    value=power0.panel_area_m2 if power0 else 1.2)
+        self.panel_efficiency = _spin(0.001, 1.0, decimals=4, step=0.01,
+                                       value=power0.panel_efficiency if power0 else 0.29)
+        panel_normal0 = power0.panel_normal_b if power0 else [0.0, 0.0, 1.0]
+        self.panel_normal_x = _spin(-1.0, 1.0, decimals=4, step=0.1, value=panel_normal0[0])
+        self.panel_normal_y = _spin(-1.0, 1.0, decimals=4, step=0.1, value=panel_normal0[1])
+        self.panel_normal_z = _spin(-1.0, 1.0, decimals=4, step=0.1, value=panel_normal0[2])
+        self.bus_idle_power_w = _spin(0.0, 1.0e5, decimals=2, step=1.0,
+                                       value=power0.bus_idle_power_w if power0 else PowerConfig.bus_idle_power_w)
+        self.battery_capacity_wh = _spin(0.001, 1.0e6, decimals=2, step=10.0,
+                                          value=power0.battery_capacity_wh if power0
+                                          else PowerConfig.battery_capacity_wh)
+        self.battery_initial_soc = _spin(0.0, 1.0, decimals=4, step=0.05,
+                                          value=power0.battery_initial_soc if power0
+                                          else PowerConfig.battery_initial_soc)
+        power_form.addRow("Panel area [m^2]", self.panel_area_m2)
+        power_form.addRow("Panel efficiency [-]", self.panel_efficiency)
+        power_form.addRow("Panel normal (body frame, 3 components)",
+                           _hbox(self.panel_normal_x, self.panel_normal_y, self.panel_normal_z))
+        power_form.addRow("Bus idle power [W]", self.bus_idle_power_w)
+        power_form.addRow("Battery capacity [W*hr]", self.battery_capacity_wh)
+        power_form.addRow("Battery initial state of charge [-]", self.battery_initial_soc)
+        power_layout.addWidget(self.power_group)
+
+        sk0 = config.station_keeping if config else None
+        self.station_keeping_group = QGroupBox("Station keeping (altitude maintenance, delta-V + fuel tracking)")
+        self.station_keeping_group.setCheckable(True)
+        self.station_keeping_group.setChecked(sk0 is not None)
+        sk_form = QFormLayout(self.station_keeping_group)
+        self.sk_target_altitude_km = _spin(0.001, 1.0e6, decimals=3, step=10.0,
+                                            value=sk0.target_altitude_km if sk0 else 500.0)
+        self.sk_deadband_km = _spin(0.001, 1.0e5, decimals=3, step=0.5, value=sk0.deadband_km if sk0 else 1.0)
+        self.sk_thrust_n = _spin(1.0e-6, 1.0e4, decimals=6, step=0.001, value=sk0.thrust_n if sk0 else 0.01)
+        self.sk_isp_s = _spin(1.0, 1.0e5, decimals=1, step=10.0, value=sk0.isp_s if sk0 else 1500.0)
+        self.sk_propellant_kg = _spin(0.0, 1.0e5, decimals=3, step=0.1, value=sk0.propellant_kg if sk0 else 2.0)
+        self.sk_eclipse_sunlit_threshold = _spin(0.001, 1.0, decimals=4, step=0.01,
+                                                   value=sk0.eclipse_sunlit_threshold if sk0 else 0.99)
+        sk_form.addRow("Target altitude [km]", self.sk_target_altitude_km)
+        sk_form.addRow("Deadband below target [km]", self.sk_deadband_km)
+        sk_form.addRow("Reboost thrust [N]", self.sk_thrust_n)
+        sk_form.addRow("Reboost thruster Isp [s]", self.sk_isp_s)
+        sk_form.addRow("Propellant available [kg]", self.sk_propellant_kg)
+        sk_form.addRow("Eclipse sunlit threshold [-]", self.sk_eclipse_sunlit_threshold)
+        power_layout.addWidget(self.station_keeping_group)
+
+        # Independent of station keeping above -- its own propellant
+        # budget/tank (see ConstantThrustConfig's docstring). Available in
+        # EITHER simulation mode (not restricted to orbit_only): a
+        # continuous, always-on thrust with a fixed direction in a
+        # ROTATING orbit frame (VNB or RTN, re-evaluated every tick), for
+        # delta-V/propellant budgeting without needing a burn trigger.
+        ct0 = config.constant_thrust if config else None
+        self.constant_thrust_group = QGroupBox("Constant thrust (continuous, orbit-frame-relative)")
+        self.constant_thrust_group.setCheckable(True)
+        self.constant_thrust_group.setChecked(ct0 is not None)
+        ct_form = QFormLayout(self.constant_thrust_group)
+        self.ct_frame_combo = QComboBox()
+        self.ct_frame_combo.addItems(list(SUPPORTED_THRUST_FRAMES))
+        self.ct_frame_combo.setToolTip(
+            "VNB: V=velocity direction, N=orbit normal, B=V x N.\n"
+            "RTN: R=radial (outward), T=N x R (in-plane, ⊥ R), N=orbit normal.\n"
+            "Re-evaluated every tick from the spacecraft's current state."
+        )
+        if ct0 is not None:
+            index = self.ct_frame_combo.findText(ct0.frame)
+            if index >= 0:
+                self.ct_frame_combo.setCurrentIndex(index)
+        ct_form.addRow("Frame", self.ct_frame_combo)
+        ct_dir0 = ct0.direction if ct0 else [1.0, 0.0, 0.0]
+        self.ct_dir_x = _spin(-1.0, 1.0, decimals=6, step=0.1, value=ct_dir0[0])
+        self.ct_dir_y = _spin(-1.0, 1.0, decimals=6, step=0.1, value=ct_dir0[1])
+        self.ct_dir_z = _spin(-1.0, 1.0, decimals=6, step=0.1, value=ct_dir0[2])
+        ct_form.addRow("Direction [-] (3 components, in Frame above)",
+                        _hbox(self.ct_dir_x, self.ct_dir_y, self.ct_dir_z))
+        self.ct_thrust_n = _spin(1.0e-6, 1.0e4, decimals=6, step=0.001, value=ct0.thrust_n if ct0 else 0.01)
+        ct_form.addRow("Thrust [N]", self.ct_thrust_n)
+        self.ct_isp_s = _spin(1.0, 1.0e5, decimals=1, step=10.0, value=ct0.isp_s if ct0 else 1500.0)
+        ct_form.addRow("Thruster Isp [s]", self.ct_isp_s)
+        self.ct_propellant_kg = _spin(0.0, 1.0e5, decimals=3, step=0.1, value=ct0.propellant_kg if ct0 else 2.0)
+        ct_form.addRow("Propellant available [kg]", self.ct_propellant_kg)
+        power_layout.addWidget(self.constant_thrust_group)
+
+        # Requires station keeping above -- shares one physical thruster/tank
+        # (see schema.scenario.PhasingKeepingConfig's docstring), so this has
+        # no thrust/Isp/propellant fields of its own.
+        pk0 = config.phasing_keeping if config else None
+        self.phasing_keeping_group = QGroupBox("Phasing keeping (constellation-wide, vs. a chief spacecraft)")
+        self.phasing_keeping_group.setCheckable(True)
+        self.phasing_keeping_group.setChecked(pk0 is not None)
+        pk_form = QFormLayout(self.phasing_keeping_group)
+
+        self.pk_chief_combo = QComboBox()
+        if self._other_spacecraft_names:
+            for other_name in self._other_spacecraft_names:
+                self.pk_chief_combo.addItem(other_name, userData=other_name)
+        else:
+            self.pk_chief_combo.addItem("(add another spacecraft to this scenario first)", userData=None)
+            self.pk_chief_combo.setEnabled(False)
+        pk_form.addRow("Chief spacecraft", self.pk_chief_combo)
+
+        self.pk_target_separation_edit = QLineEdit(
+            ", ".join(f"{d:g}" for d in pk0.target_separation_km) if pk0 else "100"
+        )
+        self.pk_target_separation_edit.setPlaceholderText("e.g. 1000, 500, 100 (comma-separated, km)")
+        pk_form.addRow("Target separation(s) [km]", self.pk_target_separation_edit)
+        self.pk_reconfiguration_interval_days = _spin(
+            0.0, 1.0e5, decimals=2, step=1.0, value=pk0.reconfiguration_interval_days if pk0 else 90.0)
+        pk_form.addRow("Reconfiguration interval [days] (only if >1 separation above)",
+                        self.pk_reconfiguration_interval_days)
+        self.pk_tolerance_fraction = _spin(0.001, 1.0, decimals=4, step=0.01,
+                                            value=pk0.tolerance_fraction if pk0 else 0.10)
+        pk_form.addRow("Trigger tolerance [-] (fraction of target)", self.pk_tolerance_fraction)
+        self.pk_restore_tolerance_fraction = _spin(0.001, 1.0, decimals=4, step=0.01,
+                                                     value=pk0.restore_tolerance_fraction if pk0 else 0.02)
+        pk_form.addRow("Restore tolerance [-] (fraction of target)", self.pk_restore_tolerance_fraction)
+        self.pk_correction_window_days = _spin(0.1, 1.0e4, decimals=2, step=1.0,
+                                                value=pk0.correction_window_days if pk0 else 21.0)
+        pk_form.addRow("Correction window [days]", self.pk_correction_window_days)
+        self.pk_max_drift_days = _spin(0.1, 1.0e4, decimals=2, step=1.0,
+                                        value=pk0.max_drift_days if pk0 else 90.0)
+        pk_form.addRow("Max drift coast [days]", self.pk_max_drift_days)
+        self.pk_max_delta_sma_km = _spin(0.001, 1.0e4, decimals=4, step=0.1,
+                                          value=pk0.max_delta_semi_major_axis_km if pk0 else 3.0)
+        pk_form.addRow("Max drift-orbit SMA offset [km]", self.pk_max_delta_sma_km)
+        if pk0 is not None:
+            chief_index = self.pk_chief_combo.findData(pk0.chief_spacecraft)
+            if chief_index >= 0:
+                self.pk_chief_combo.setCurrentIndex(chief_index)
+            else:
+                # pk0.chief_spacecraft doesn't match any current spacecraft
+                # name (e.g. that spacecraft was renamed or removed since
+                # this config was saved). Silently falling back to index 0
+                # would swap the chief to whichever spacecraft happens to
+                # be first -- wrong, and invisible to the user. Surface the
+                # stale name as its own selectable entry instead, so
+                # to_dataclass() below still round-trips it (and
+                # SpacecraftConfig.validate()/Scenario.validate() catch it
+                # as a real error) unless the user explicitly picks a
+                # different chief.
+                self.pk_chief_combo.addItem(f"{pk0.chief_spacecraft} (not found in this scenario)",
+                                             userData=pk0.chief_spacecraft)
+                self.pk_chief_combo.setCurrentIndex(self.pk_chief_combo.count() - 1)
+        power_layout.addWidget(self.phasing_keeping_group)
+
+        # Requires BOTH a "reaction_wheel" AND a "thruster" actuator on this
+        # spacecraft (see schema.scenario.MomentumDumpingConfig's docstring
+        # for why mixing those two kinds is otherwise rejected) -- not
+        # cross-checked here against the Sensors/actuators tab's current
+        # contents, same as every other config on this tab (e.g. phasing
+        # -keeping's chief dropdown): SpacecraftConfig.validate() is the
+        # single source of truth, surfaced to the user via this dialog's
+        # live validity indicator rather than duplicated here.
+        md0 = config.momentum_dumping if config else None
+        self.momentum_dumping_group = QGroupBox("Momentum dumping (RW desaturation via thrusters)")
+        self.momentum_dumping_group.setCheckable(True)
+        self.momentum_dumping_group.setChecked(md0 is not None)
+        md_form = QFormLayout(self.momentum_dumping_group)
+        self.md_hs_max = _spin(1.0e-6, 1.0e6, decimals=3, step=1.0, value=md0.hs_max if md0 else 50.0)
+        md_form.addRow("Momentum threshold hs_max [N*m*s]", self.md_hs_max)
+        self.md_thr_min_fire_time = _spin(1.0e-4, 100.0, decimals=4, step=0.01,
+                                           value=md0.thr_min_fire_time if md0 else 0.02)
+        md_form.addRow("Thruster firing resolution [s]", self.md_thr_min_fire_time)
+        self.md_max_counter_value = _spin(1, 100000, decimals=0, step=10,
+                                           value=md0.max_counter_value if md0 else 100)
+        md_form.addRow("Control periods between firings [-]", self.md_max_counter_value)
+        power_layout.addWidget(self.momentum_dumping_group)
+
+        # The alternative desaturation strategy to momentum_dumping above --
+        # requires "reaction_wheel" AND "magnetic_torque_rod" actuators
+        # instead of "thruster" (see MagneticMomentumManagementConfig's
+        # docstring for why the two strategies are mutually exclusive).
+        # wheel_speed_biases_rad_s is a comma-separated list (one entry per
+        # reaction_wheel actuator) rather than a fixed set of spin boxes,
+        # matching this dialog's own pk_target_separation_edit precedent
+        # for a variable-length numeric list.
+        mmm0 = config.magnetic_momentum_management if config else None
+        self.magnetic_momentum_management_group = QGroupBox(
+            "Magnetic momentum management (RW desaturation via torque rods)"
+        )
+        self.magnetic_momentum_management_group.setCheckable(True)
+        self.magnetic_momentum_management_group.setChecked(mmm0 is not None)
+        mmm_form = QFormLayout(self.magnetic_momentum_management_group)
+        self.mmm_wheel_speed_biases_edit = QLineEdit(
+            ", ".join(f"{v:g}" for v in mmm0.wheel_speed_biases_rad_s) if mmm0 else "0"
+        )
+        self.mmm_wheel_speed_biases_edit.setPlaceholderText(
+            "e.g. 83.8, 62.8 (comma-separated, rad/s, one per reaction_wheel actuator)"
+        )
+        mmm_form.addRow("Wheel speed biases [rad/s]", self.mmm_wheel_speed_biases_edit)
+        self.mmm_c_gain = _spin(1.0e-9, 1.0e6, decimals=6, step=0.001, value=mmm0.c_gain if mmm0 else 0.003)
+        mmm_form.addRow("Control gain c_gain [-]", self.mmm_c_gain)
+        power_layout.addWidget(self.magnetic_momentum_management_group)
+
+        # Requires a "thruster" actuator on this spacecraft (see
+        # schema.scenario.FuelTankConfig's docstring) -- same
+        # not-cross-checked-here convention as momentum_dumping/
+        # magnetic_momentum_management above.
+        ft0 = config.fuel_tank if config else None
+        self.fuel_tank_group = QGroupBox("Fuel tank (real propellant depletion for thrusters)")
+        self.fuel_tank_group.setCheckable(True)
+        self.fuel_tank_group.setChecked(ft0 is not None)
+        ft_form = QFormLayout(self.fuel_tank_group)
+        self.ft_propellant_mass = _spin(0.0, 1.0e6, decimals=3, step=1.0,
+                                          value=ft0.propellant_mass_kg if ft0 else 10.0)
+        ft_form.addRow("Propellant mass [kg]", self.ft_propellant_mass)
+        self.ft_max_propellant_mass = _spin(1.0e-6, 1.0e6, decimals=3, step=1.0,
+                                              value=ft0.max_propellant_mass_kg if ft0 else 20.0)
+        ft_form.addRow("Tank capacity [kg]", self.ft_max_propellant_mass)
+        tank_pos = ft0.tank_position_b_m if ft0 else [0.0, 0.0, 0.0]
+        tank_pos_row = QHBoxLayout()
+        self.ft_tank_pos_x = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[0])
+        self.ft_tank_pos_y = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[1])
+        self.ft_tank_pos_z = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[2])
+        tank_pos_row.addWidget(self.ft_tank_pos_x)
+        tank_pos_row.addWidget(self.ft_tank_pos_y)
+        tank_pos_row.addWidget(self.ft_tank_pos_z)
+        tank_pos_row_widget = QWidget()
+        tank_pos_row_widget.setLayout(tank_pos_row)
+        ft_form.addRow("Tank position r_TB_B [m]", tank_pos_row_widget)
+        power_layout.addWidget(self.fuel_tank_group)
+
+        rf_link0 = config.rf_link if config else None
+        self.rf_link_group = QGroupBox("Downlink RF link budget (margin ESTIMATE only)")
+        self.rf_link_group.setCheckable(True)
+        self.rf_link_group.setChecked(rf_link0 is not None)
+        rf_form = QFormLayout(self.rf_link_group)
+        self.tx_power_w = _spin(0.001, 1.0e4, decimals=3, step=1.0, value=rf_link0.tx_power_w if rf_link0 else 15.0)
+        self.frequency_ghz = _spin(0.001, 1.0e3, decimals=6, step=0.1,
+                                    value=(rf_link0.frequency_hz / 1.0e9) if rf_link0 else 8.2)
+        self.data_rate_mbps = _spin(1.0e-6, 1.0e6, decimals=6, step=1.0,
+                                     value=(rf_link0.data_rate_bps / 1.0e6) if rf_link0 else 1.0)
+        self.tx_antenna_gain_dbi = _spin(-50.0, 100.0, decimals=2, step=1.0,
+                                          value=rf_link0.tx_antenna_gain_dbi if rf_link0
+                                          else RFLinkConfig.tx_antenna_gain_dbi)
+        self.rf_implementation_loss_db = _spin(0.0, 50.0, decimals=2, step=0.5,
+                                                 value=rf_link0.implementation_loss_db if rf_link0 else 2.0)
+        self.required_ebno_db = _spin(-50.0, 50.0, decimals=2, step=0.5,
+                                       value=rf_link0.required_ebno_db if rf_link0 else 6.0)
+        rf_form.addRow("TX power [W]", self.tx_power_w)
+        rf_form.addRow("Carrier frequency [GHz]", self.frequency_ghz)
+        rf_form.addRow("Data rate [Mbit/s]", self.data_rate_mbps)
+        rf_form.addRow("TX antenna gain [dBi]", self.tx_antenna_gain_dbi)
+        rf_form.addRow("Implementation/pointing loss [dB]", self.rf_implementation_loss_db)
+        rf_form.addRow("Required Eb/N0 [dB]", self.required_ebno_db)
+        power_layout.addWidget(self.rf_link_group)
+        power_layout.addStretch(1)
+
+        tabs.addTab(_scrollable(power_tab), "Power / propulsion / link budget")
+
+        # -- Vizard 3D model tab (Phase 5) -------------------------------------
+        # PURELY COSMETIC -- see SpacecraftConfig.vizard_model_path's
+        # docstring. Deliberately its own tab, not folded into another one,
+        # so it reads as clearly separate from anything that affects
+        # simulated physics.
+        viz_model_tab = QWidget()
+        viz_model_layout = QVBoxLayout(viz_model_tab)
+        viz_model_description_label = QLabel(
+            "Replaces this spacecraft's default cube icon in Vizard with a custom 3D model. "
+            "PURELY COSMETIC -- never affects simulated physics (mass, drag/SRP area, etc. are set "
+            "on the Orbit/mass and Power tabs and are unchanged by anything here)."
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        viz_model_description_label.setWordWrap(True)
+        viz_model_layout.addWidget(viz_model_description_label)
+
+        model0 = config if config else None
+        self.viz_model_group = QGroupBox("Custom 3D model")
+        self.viz_model_group.setCheckable(True)
+        self.viz_model_group.setChecked(bool(model0.vizard_model_path) if model0 else False)
+        viz_model_form = QFormLayout(self.viz_model_group)
+
+        path_row = QHBoxLayout()
+        self.viz_model_path_edit = QLineEdit(model0.vizard_model_path if model0 and model0.vizard_model_path else "")
+        self.viz_model_path_edit.setPlaceholderText("path to a .obj file, or CUBE / CYLINDER / SPHERE")
+        path_row.addWidget(self.viz_model_path_edit)
+        self.viz_model_browse_button = QPushButton("Browse...")
+        self.viz_model_browse_button.clicked.connect(self._on_browse_viz_model)
+        path_row.addWidget(self.viz_model_browse_button)
+        viz_model_form.addRow("Model path", path_row)
+
+        offset0 = model0.vizard_model_offset_m if model0 else [0.0, 0.0, 0.0]
+        self.viz_offset_x = _spin(-1.0e6, 1.0e6, decimals=4, step=0.1, value=offset0[0])
+        self.viz_offset_y = _spin(-1.0e6, 1.0e6, decimals=4, step=0.1, value=offset0[1])
+        self.viz_offset_z = _spin(-1.0e6, 1.0e6, decimals=4, step=0.1, value=offset0[2])
+        viz_model_form.addRow("Offset [m] (body frame, 3 components)",
+                               _hbox(self.viz_offset_x, self.viz_offset_y, self.viz_offset_z))
+
+        rot0 = model0.vizard_model_rotation_deg if model0 else [0.0, 0.0, 0.0]
+        self.viz_rotation_z = _spin(-360.0, 360.0, decimals=3, step=1.0, value=rot0[0])
+        self.viz_rotation_y = _spin(-360.0, 360.0, decimals=3, step=1.0, value=rot0[1])
+        self.viz_rotation_x = _spin(-360.0, 360.0, decimals=3, step=1.0, value=rot0[2])
+        viz_model_form.addRow("Rotation [deg] (3-2-1 Euler: Z, Y, X)",
+                               _hbox(self.viz_rotation_z, self.viz_rotation_y, self.viz_rotation_x))
+
+        scale0 = model0.vizard_model_scale if model0 else [1.0, 1.0, 1.0]
+        self.viz_scale_x = _spin(0.0001, 1.0e6, decimals=4, step=0.1, value=scale0[0])
+        self.viz_scale_y = _spin(0.0001, 1.0e6, decimals=4, step=0.1, value=scale0[1])
+        self.viz_scale_z = _spin(0.0001, 1.0e6, decimals=4, step=0.1, value=scale0[2])
+        viz_model_form.addRow("Scale [-] (body x, y, z axes, 3 components)",
+                               _hbox(self.viz_scale_x, self.viz_scale_y, self.viz_scale_z))
+
+        viz_model_layout.addWidget(self.viz_model_group)
+        viz_model_layout.addStretch(1)
+        tabs.addTab(_scrollable(viz_model_tab), "Vizard model (cosmetic)")
+
+        if self._orbit_only:
+            tabs.setTabVisible(self._sensors_tab_index, False)
+            tabs.setTabVisible(self._fsw_tab_index, False)
+            self.power_group.setChecked(False)
+            self.power_group.setVisible(False)
+            # momentum_dumping/magnetic_momentum_management/fuel_tank all
+            # require specific actuator kinds (SpacecraftConfig.validate())
+            # that can only be added on the now-hidden Sensors/actuators
+            # tab -- leaving these checkable would be a dead end (checking
+            # one and clicking OK always fails validation with no way back
+            # to fix it from this dialog), same reasoning as power_group
+            # just above.
+            self.momentum_dumping_group.setChecked(False)
+            self.momentum_dumping_group.setVisible(False)
+            self.magnetic_momentum_management_group.setChecked(False)
+            self.magnetic_momentum_management_group.setVisible(False)
+            self.fuel_tank_group.setChecked(False)
+            self.fuel_tank_group.setVisible(False)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        outer_layout.addWidget(buttons)
+
+        # Real bug, found from a user screenshot: with no explicit size,
+        # this dialog opened absurdly small -- even its own first tab's
+        # Name/Dry mass rows were clipped behind scrollbars. Unlike
+        # propagation_setup_dialog.py's similar (much milder) case,
+        # resizing to self.sizeHint() alone would NOT fix this here:
+        # every tab is wrapped in its own QScrollArea (see _scrollable()'s
+        # own docstring for why), and a QScrollArea's sizeHint() is a
+        # small, mostly-arbitrary default -- NOT the wrapped content's
+        # real size -- so QDialog's own sizeHint() stays tiny regardless
+        # of how much is actually in each tab (confirmed directly: this
+        # dialog's sizeHint() measured 530x416 while its own "Orbit /
+        # mass" tab content alone needs 572x789, and the widest tab
+        # ("Power / propulsion / link budget") needs 715).
+        #
+        # Picks a width wide enough for every tab's content (so nothing
+        # wraps/clips horizontally) and a fixed, generous height -- NOT
+        # tall enough to fit the busiest tab without scrolling (that tab
+        # alone wants ~1485px, far taller than most screens) -- each
+        # tab's own QScrollArea is deliberately there so a busy tab
+        # scrolls independently rather than forcing every other tab's
+        # dialog that tall (see _scrollable()'s own docstring).
+        widest_tab_content = max(tabs.widget(i).widget().sizeHint().width() for i in range(tabs.count()))
+        self.resize(max(650, widest_tab_content + 40), 700)
+
+    def _on_name_changed(self, text: str) -> None:
+        """Live, per-keystroke feedback (theme.py's ``[state="error"]``
+        red-border rule, via gui.feedback) for the one field whose
+        validity this dialog can check WITHOUT a full
+        :meth:`to_dataclass` call -- ``self._other_spacecraft_names`` is
+        already known at construction time. Catches the exact mistake
+        (an empty or duplicate name) before the user even reaches OK,
+        rather than only after :meth:`_on_accept` rejects it.
+        """
+        name = text.strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+        elif name in self._other_spacecraft_names:
+            mark_invalid(self.name_edit, f"A spacecraft named {name!r} already exists")
+        else:
+            clear_invalid(self.name_edit)
+
+    def _on_accept(self) -> None:
+        # Real UX bug this used to have: an empty/duplicate name wasn't
+        # checked HERE at all -- to_dataclass() doesn't care, so accept()
+        # always succeeded, the dialog closed, and only THEN did the
+        # caller (_on_add/_on_edit/_on_new_from_template) notice the
+        # duplicate and show a QMessageBox -- by which point the dialog
+        # was already gone and every edit the user just made was silently
+        # discarded. Checking it here, before accept(), keeps the dialog
+        # (and the user's edits) open so they can just fix the name.
+        name = self.name_edit.text().strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+            self.name_edit.setFocus()
+            return
+        if name in self._other_spacecraft_names:
+            mark_invalid(self.name_edit, f"A spacecraft named {name!r} already exists")
+            self.name_edit.setFocus()
+            return
+        try:
+            self.to_dataclass()
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Invalid spacecraft", str(exc))
+            return
+        except ValueError as exc:
+            QMessageBox.critical(self, "Invalid input", str(exc))
+            return
+        self.accept()
+
+    def _on_fsw_mode_changed(self, _index: int) -> None:
+        self.fsw_hint_label.setText(_fsw_hint_text(self.fsw_mode_combo.currentData()))
+
+    def _on_fsw_reset_template(self) -> None:
+        self.fsw_params_edit.setPlainText(
+            json.dumps(_fsw_template_params(self.fsw_mode_combo.currentData()), indent=2)
+        )
+
+    def _parse_json_object(self, edit: QPlainTextEdit, field_label: str) -> dict:
+        text = edit.toPlainText().strip() or "{}"
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_label} is not valid JSON: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{field_label} must be a JSON object")
+        return value
+
+    def to_dataclass(self) -> SpacecraftConfig:
+        name = self.name_edit.text().strip()
+        if self._orbit_only:
+            # Tabs/group are hidden above -- force-clear rather than trust
+            # their (stale, possibly pre-populated-from-an-existing-config)
+            # widget state, so this dialog can never itself produce a
+            # config that violates Scenario.simulation_mode's "orbit_only"
+            # rule (see that field's docstring), regardless of what was on
+            # the spacecraft being edited before the scenario's mode was
+            # switched to "orbit_only".
+            fsw_mode, fsw_params, sensors, actuators, power = None, {}, [], [], None
+        else:
+            fsw_mode = self.fsw_mode_combo.currentData()
+            fsw_params = self._parse_json_object(self.fsw_params_edit, "FSW params")
+            missing = _fsw_missing_required_keys(fsw_mode, fsw_params)
+            if missing:
+                raise ValueError(
+                    f"FSW mode {fsw_mode!r} is missing required params key(s): {', '.join(missing)} -- "
+                    "use 'Reset to template' for a working example"
+                )
+            sensors = self.sensor_list.to_list()
+            actuators = self.actuator_list.to_list()
+            power = self._power_to_dataclass()
+        config = SpacecraftConfig(
+            name=name,
+            orbit=self.orbit_widget.to_dataclass(),
+            dry_mass_kg=self.dry_mass_kg.value(),
+            inertia_kg_m2=[
+                self.ixx.value(), 0.0, 0.0,
+                0.0, self.iyy.value(), 0.0,
+                0.0, 0.0, self.izz.value(),
+            ],
+            sigma_bn_init=[self.sigma1.value(), self.sigma2.value(), self.sigma3.value()],
+            omega_bn_b_init_rad_s=[self.omega1.value(), self.omega2.value(), self.omega3.value()],
+            sensors=sensors,
+            actuators=actuators,
+            fsw_mode=fsw_mode,
+            fsw_params=fsw_params,
+            control_params=self._parse_json_object(self.control_params_edit, "Control gains"),
+            power=power,
+            rf_link=self._rf_link_to_dataclass(),
+            station_keeping=self._station_keeping_to_dataclass(),
+            phasing_keeping=self._phasing_keeping_to_dataclass(),
+            constant_thrust=self._constant_thrust_to_dataclass(),
+            momentum_dumping=self._momentum_dumping_to_dataclass(),
+            magnetic_momentum_management=self._magnetic_momentum_management_to_dataclass(),
+            fuel_tank=self._fuel_tank_to_dataclass(),
+            enable_drag=self.enable_drag_check.isChecked(),
+            drag_coeff=self.drag_coeff.value(),
+            drag_area_m2=self.drag_area_m2.value(),
+            enable_srp=self.enable_srp_check.isChecked(),
+            srp_coeff=self.srp_coeff.value(),
+            srp_area_m2=self.srp_area_m2.value(),
+            enable_gravity_gradient=self.gravity_gradient_check.isChecked(),
+            vizard_model_path=self._viz_model_to_dataclass_path(),
+            vizard_model_offset_m=[self.viz_offset_x.value(), self.viz_offset_y.value(), self.viz_offset_z.value()],
+            vizard_model_rotation_deg=[self.viz_rotation_z.value(), self.viz_rotation_y.value(),
+                                        self.viz_rotation_x.value()],
+            vizard_model_scale=[self.viz_scale_x.value(), self.viz_scale_y.value(), self.viz_scale_z.value()],
+        )
+        config.validate()  # raises ScenarioValidationError with a specific message on anything bad
+        return config
+
+    def _viz_model_to_dataclass_path(self) -> str | None:
+        if not self.viz_model_group.isChecked():
+            return None
+        path = self.viz_model_path_edit.text().strip()
+        return path or None
+
+    def _on_browse_viz_model(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(self, "Select a 3D model (.obj)", "", "Wavefront OBJ (*.obj)")
+        if path:
+            self.viz_model_path_edit.setText(path)
+
+    def _station_keeping_to_dataclass(self) -> StationKeepingConfig | None:
+        if not self.station_keeping_group.isChecked():
+            return None
+        return StationKeepingConfig(
+            target_altitude_km=self.sk_target_altitude_km.value(),
+            deadband_km=self.sk_deadband_km.value(),
+            thrust_n=self.sk_thrust_n.value(),
+            isp_s=self.sk_isp_s.value(),
+            propellant_kg=self.sk_propellant_kg.value(),
+            eclipse_sunlit_threshold=self.sk_eclipse_sunlit_threshold.value(),
+        )
+
+    def _constant_thrust_to_dataclass(self) -> ConstantThrustConfig | None:
+        if not self.constant_thrust_group.isChecked():
+            return None
+        return ConstantThrustConfig(
+            frame=self.ct_frame_combo.currentText(),
+            direction=[self.ct_dir_x.value(), self.ct_dir_y.value(), self.ct_dir_z.value()],
+            thrust_n=self.ct_thrust_n.value(),
+            isp_s=self.ct_isp_s.value(),
+            propellant_kg=self.ct_propellant_kg.value(),
+        )
+
+    def _momentum_dumping_to_dataclass(self) -> MomentumDumpingConfig | None:
+        if not self.momentum_dumping_group.isChecked():
+            return None
+        return MomentumDumpingConfig(
+            hs_max=self.md_hs_max.value(),
+            thr_min_fire_time=self.md_thr_min_fire_time.value(),
+            max_counter_value=int(self.md_max_counter_value.value()),
+        )
+
+    def _magnetic_momentum_management_to_dataclass(self) -> MagneticMomentumManagementConfig | None:
+        if not self.magnetic_momentum_management_group.isChecked():
+            return None
+        raw = self.mmm_wheel_speed_biases_edit.text().strip()
+        try:
+            wheel_speed_biases_rad_s = [float(part.strip()) for part in raw.split(",") if part.strip()]
+        except ValueError as exc:
+            raise ScenarioValidationError(
+                f"Wheel speed biases must be comma-separated numbers (e.g. '83.8, 62.8'): {exc}"
+            ) from exc
+        if not wheel_speed_biases_rad_s:
+            raise ScenarioValidationError("Wheel speed biases needs at least one number")
+        return MagneticMomentumManagementConfig(
+            wheel_speed_biases_rad_s=wheel_speed_biases_rad_s,
+            c_gain=self.mmm_c_gain.value(),
+        )
+
+    def _fuel_tank_to_dataclass(self) -> FuelTankConfig | None:
+        if not self.fuel_tank_group.isChecked():
+            return None
+        return FuelTankConfig(
+            propellant_mass_kg=self.ft_propellant_mass.value(),
+            max_propellant_mass_kg=self.ft_max_propellant_mass.value(),
+            tank_position_b_m=[self.ft_tank_pos_x.value(), self.ft_tank_pos_y.value(), self.ft_tank_pos_z.value()],
+        )
+
+    def _phasing_keeping_to_dataclass(self) -> PhasingKeepingConfig | None:
+        if not self.phasing_keeping_group.isChecked():
+            return None
+        chief = self.pk_chief_combo.currentData()
+        if chief is None:
+            raise ScenarioValidationError(
+                "phasing_keeping is enabled but no chief spacecraft is selectable -- add another "
+                "spacecraft to this scenario first, or uncheck 'Phasing keeping'"
+            )
+        raw = self.pk_target_separation_edit.text().strip()
+        try:
+            target_separation_km = [float(part.strip()) for part in raw.split(",") if part.strip()]
+        except ValueError as exc:
+            raise ScenarioValidationError(
+                f"Target separation(s) must be comma-separated numbers (e.g. '1000, 500, 100'): {exc}"
+            ) from exc
+        if not target_separation_km:
+            raise ScenarioValidationError("Target separation(s) needs at least one number")
+        return PhasingKeepingConfig(
+            chief_spacecraft=chief,
+            target_separation_km=target_separation_km,
+            reconfiguration_interval_days=self.pk_reconfiguration_interval_days.value(),
+            tolerance_fraction=self.pk_tolerance_fraction.value(),
+            restore_tolerance_fraction=self.pk_restore_tolerance_fraction.value(),
+            correction_window_days=self.pk_correction_window_days.value(),
+            max_drift_days=self.pk_max_drift_days.value(),
+            max_delta_semi_major_axis_km=self.pk_max_delta_sma_km.value(),
+        )
+
+    def _power_to_dataclass(self) -> PowerConfig | None:
+        if not self.power_group.isChecked():
+            return None
+        return PowerConfig(
+            panel_area_m2=self.panel_area_m2.value(),
+            panel_efficiency=self.panel_efficiency.value(),
+            panel_normal_b=[self.panel_normal_x.value(), self.panel_normal_y.value(), self.panel_normal_z.value()],
+            bus_idle_power_w=self.bus_idle_power_w.value(),
+            battery_capacity_wh=self.battery_capacity_wh.value(),
+            battery_initial_soc=self.battery_initial_soc.value(),
+        )
+
+    def _rf_link_to_dataclass(self) -> RFLinkConfig | None:
+        if not self.rf_link_group.isChecked():
+            return None
+        return RFLinkConfig(
+            tx_power_w=self.tx_power_w.value(),
+            frequency_hz=self.frequency_ghz.value() * 1.0e9,
+            data_rate_bps=self.data_rate_mbps.value() * 1.0e6,
+            tx_antenna_gain_dbi=self.tx_antenna_gain_dbi.value(),
+            implementation_loss_db=self.rf_implementation_loss_db.value(),
+            required_ebno_db=self.required_ebno_db.value(),
+        )
+
+
+def _hbox(*widgets: QWidget) -> QWidget:
+    container = QWidget()
+    box = QHBoxLayout(container)
+    box.setContentsMargins(0, 0, 0, 0)
+    for w in widgets:
+        box.addWidget(w)
+    return container
+
+
+class SpacecraftListWidget(QWidget):
+    """A list of spacecraft with Add/Edit/Remove, backed by a plain list
+    of :class:`SpacecraftConfig`. Emits :attr:`changed` whenever that list
+    changes (add, edit, remove, or reorder).
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._configs: list[SpacecraftConfig] = []
+        # Set by the owning ScenarioEditorWidget (see set_central_body_provider)
+        # so "Generate Walker constellation..." always uses this scenario's
+        # ACTUAL current central body, never an independently-selectable one
+        # that could silently drift out of sync with it. Falls back to
+        # "earth" when unset (e.g. this widget used standalone in a test).
+        self._central_body_provider = None
+        # Set by the owning ScenarioEditorWidget (see
+        # set_simulation_mode_provider) so every SpacecraftEditorDialog
+        # this widget opens reflects the scenario's CURRENT simulation
+        # mode. Falls back to "full_attitude" when unset (e.g. this widget
+        # used standalone in a test) -- see Scenario.simulation_mode's
+        # docstring.
+        self._simulation_mode_provider = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        # Two rows, not one: all 5 buttons in a single QHBoxLayout needed
+        # ~700px to avoid truncating/hiding the last one or two -- more
+        # than this panel reliably gets now that MainWindow's splitter
+        # gives the left pane less width than the right (see that
+        # change's own comment). Row 1 is the everyday list-editing
+        # actions; row 2 is the one-off bulk-generation action.
+        button_row = QHBoxLayout()
+        self.add_button = QPushButton("Add...")
+        self.edit_button = QPushButton("Edit...")
+        self.remove_button = QPushButton("Remove")
+        self.new_from_template_button = QPushButton("New from template...")
+        button_row.addWidget(self.add_button)
+        button_row.addWidget(self.new_from_template_button)
+        button_row.addWidget(self.edit_button)
+        button_row.addWidget(self.remove_button)
+        layout.addLayout(button_row)
+
+        second_button_row = QHBoxLayout()
+        self.generate_constellation_button = QPushButton("Generate Walker constellation...")
+        self.generate_phasing_formation_button = QPushButton("Generate phasing formation...")
+        second_button_row.addWidget(self.generate_constellation_button)
+        second_button_row.addWidget(self.generate_phasing_formation_button)
+        second_button_row.addStretch(1)
+        layout.addLayout(second_button_row)
+
+        self.add_button.clicked.connect(self._on_add)
+        self.new_from_template_button.clicked.connect(self._on_new_from_template)
+        self.edit_button.clicked.connect(self._on_edit)
+        self.remove_button.clicked.connect(self._on_remove)
+        self.generate_constellation_button.clicked.connect(self._on_generate_constellation)
+        self.generate_phasing_formation_button.clicked.connect(self._on_generate_phasing_formation)
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self._on_edit())
+
+    def set_central_body_provider(self, provider) -> None:
+        """``provider`` is a zero-argument callable returning the
+        scenario's current central-body name, e.g.
+        ``lambda: self._gravity.central_body`` from ``ScenarioEditorWidget``.
+        """
+        self._central_body_provider = provider
+
+    def set_simulation_mode_provider(self, provider) -> None:
+        """``provider`` is a zero-argument callable returning the
+        scenario's current ``simulation_mode`` ("full_attitude" or
+        "orbit_only"), e.g. ``lambda: self.simulation_mode_combo.currentData()``
+        from ``ScenarioEditorWidget``.
+        """
+        self._simulation_mode_provider = provider
+
+    def _simulation_mode(self) -> str:
+        return self._simulation_mode_provider() if self._simulation_mode_provider else "full_attitude"
+
+    def _refresh_list(self) -> None:
+        self.list_widget.clear()
+        for config in self._configs:
+            self.list_widget.addItem(QListWidgetItem(config.name))
+
+    def _on_add(self) -> None:
+        existing_names = {c.name for c in self._configs}
+        dialog = SpacecraftEditorDialog(parent=self, other_spacecraft_names=sorted(existing_names),
+                                         simulation_mode=self._simulation_mode())
+        # default name must be unique so QListWidget entries stay distinguishable
+        base_name = dialog.name_edit.text()
+        candidate, n = base_name, 1
+        while candidate in existing_names:
+            n += 1
+            candidate = f"{base_name}-{n}"
+        dialog.name_edit.setText(candidate)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            config = dialog.to_dataclass()
+            if config.name in existing_names:
+                QMessageBox.critical(self, "Duplicate name",
+                                      f"A spacecraft named {config.name!r} already exists.")
+                return
+            self._configs.append(config)
+            self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._configs) - 1)
+            show_toast(self.window(), f"Added spacecraft {config.name!r}")
+            self.changed.emit()
+
+    def _on_new_from_template(self) -> None:
+        from .spacecraft_template_dialog import SpacecraftTemplateDialog
+
+        picker = SpacecraftTemplateDialog(parent=self)
+        if picker.exec() != QDialog.DialogCode.Accepted:
+            return
+        template = picker.selected_template()
+        if template is None:
+            return
+
+        existing_names = {c.name for c in self._configs}
+        prefilled = template.build()
+        # default name must be unique so QListWidget entries stay distinguishable
+        base_name = prefilled.name
+        candidate, n = base_name, 1
+        while candidate in existing_names:
+            n += 1
+            candidate = f"{base_name}-{n}"
+        prefilled.name = candidate
+
+        dialog = SpacecraftEditorDialog(config=prefilled, parent=self, other_spacecraft_names=sorted(existing_names),
+                                         simulation_mode=self._simulation_mode())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            config = dialog.to_dataclass()
+            if config.name in existing_names:
+                QMessageBox.critical(self, "Duplicate name",
+                                      f"A spacecraft named {config.name!r} already exists.")
+                return
+            self._configs.append(config)
+            self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._configs) - 1)
+            show_toast(self.window(), f"Added spacecraft {config.name!r} from template")
+            self.changed.emit()
+
+    def _on_edit(self) -> None:
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return
+        other_names = sorted(c.name for i, c in enumerate(self._configs) if i != row)
+        dialog = SpacecraftEditorDialog(config=self._configs[row], parent=self, other_spacecraft_names=other_names,
+                                         simulation_mode=self._simulation_mode())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_config = dialog.to_dataclass()
+            other_names = {c.name for i, c in enumerate(self._configs) if i != row}
+            if new_config.name in other_names:
+                QMessageBox.critical(self, "Duplicate name",
+                                      f"A spacecraft named {new_config.name!r} already exists.")
+                return
+            self._configs[row] = new_config
+            self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated spacecraft {new_config.name!r}")
+            self.changed.emit()
+
+    def _on_remove(self) -> None:
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return
+        name = self._configs[row].name
+        del self._configs[row]
+        self._refresh_list()
+        show_toast(self.window(), f"Removed spacecraft {name!r}", kind="info")
+        self.changed.emit()
+
+    def _on_generate_constellation(self) -> None:
+        from ..engine.constellation import generate_walker_constellation
+        from ..schema.scenario import OrbitIC
+        from .constellation_dialog import WalkerConstellationDialog
+
+        central_body = self._central_body_provider() if self._central_body_provider else "earth"
+        dialog = WalkerConstellationDialog([c.name for c in self._configs], central_body=central_body, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        request = dialog.to_request()
+        template_name = dialog.selected_template_name()
+        if template_name is not None:
+            template = next(c for c in self._configs if c.name == template_name)
+        else:
+            template = SpacecraftConfig(name="template", orbit=OrbitIC(
+                type="classical_elements", semi_major_axis_km=7000.0, eccentricity=0.0,
+                inclination_deg=0.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0,
+            ))
+
+        try:
+            generated = generate_walker_constellation(request, template)
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Cannot generate constellation", str(exc))
+            return
+
+        existing_names = {c.name for c in self._configs}
+        colliding = [s.name for s in generated if s.name in existing_names]
+        if colliding:
+            QMessageBox.critical(self, "Name collision",
+                                  f"Generated spacecraft name(s) already exist in this scenario: {colliding}. "
+                                  "Change the name prefix and try again.")
+            return
+
+        self._configs.extend(generated)
+        self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._configs) - 1)
+        show_toast(self.window(), f"Generated {len(generated)} constellation spacecraft")
+        self.changed.emit()
+
+    def _on_generate_phasing_formation(self) -> None:
+        from .phasing_formation_dialog import PhasingFormationDialog
+
+        central_body = self._central_body_provider() if self._central_body_provider else "earth"
+        dialog = PhasingFormationDialog([c.name for c in self._configs], central_body=central_body, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        request = dialog.to_request()
+        chief = next(c for c in self._configs if c.name == dialog.selected_chief_name())
+        template_name = dialog.selected_template_name()
+        template = next((c for c in self._configs if c.name == template_name), chief)
+
+        existing_names = {c.name for c in self._configs}
+        if request.follower_name in existing_names:
+            QMessageBox.critical(self, "Duplicate name",
+                                  f"A spacecraft named {request.follower_name!r} already exists.")
+            return
+
+        # engine.formation imports Basilisk lazily (at generate_phasing_follower()
+        # call time, not at this module's own import time -- see that
+        # module's docstring), so a missing/unbuilt Basilisk only surfaces
+        # here, same "clear error, not a traceback" pattern every other
+        # Basilisk-needing GUI action already uses (gui.run_worker).
+        from ..engine.formation import generate_phasing_follower
+
+        try:
+            follower = generate_phasing_follower(request, chief, template, central_body)
+        except ImportError as exc:
+            QMessageBox.critical(self, "Basilisk not available",
+                                  f"Basilisk is not installed/built ({exc}) -- generating a phasing formation "
+                                  "needs a real Basilisk build (it computes the follower's orbit via a real "
+                                  "Hill-frame state-vector transform, not a hand-rolled equivalent). See "
+                                  "SpaceMissionStudio/README.md.")
+            return
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Cannot generate phasing formation", str(exc))
+            return
+
+        self._configs.append(follower)
+        self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._configs) - 1)
+        show_toast(self.window(), f"Generated phasing follower {follower.name!r}")
+        self.changed.emit()
+
+    def to_list(self) -> list[SpacecraftConfig]:
+        return list(self._configs)
+
+    def from_list(self, configs: list[SpacecraftConfig]) -> None:
+        self._configs = list(configs)
+        self._refresh_list()

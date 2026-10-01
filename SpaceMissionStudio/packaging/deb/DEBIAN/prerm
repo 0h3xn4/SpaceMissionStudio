@@ -1,0 +1,11 @@
+#!/bin/sh
+# prerm: runs before dpkg removes this package's files.
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        rm -f /usr/bin/spacemissionstudio
+        ;;
+esac
+
+exit 0
