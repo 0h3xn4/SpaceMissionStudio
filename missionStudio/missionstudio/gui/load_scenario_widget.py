@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -98,7 +99,36 @@ class LoadScenarioWidget(QWidget):
         super().__init__(parent)
         self._template_paths: Dict[str, Path] = {}
 
-        layout = QVBoxLayout(self)
+        # This tab's own natural content height (18 template rows, the
+        # description label, and one standalone "Customize: ..." button
+        # per template -- see _build_customize_buttons()) now comfortably
+        # exceeds what fits in a real, non-maximized window on a modest
+        # display, and can exceed even a maximized one. Without this
+        # QScrollArea, squeezing this widget's content into less height
+        # than it needs doesn't just clip cleanly: QLabel does not clip
+        # wrapped text to its own allocated rect, so description_label
+        # (and the intro label above the list) paint their overflow text
+        # past their own boundary and visibly overlap the sibling widget
+        # above/below them -- confirmed from a real user screenshot taken
+        # while resizing/maximizing the main window, where this showed up
+        # as garbled, overlapping text right at the template list /
+        # description label boundary. A QScrollArea never squeezes its
+        # inner widget below its own size hint -- it scrolls instead --
+        # which is exactly what ScenarioEditorWidget's own top-level
+        # QScrollArea (scenario_editor.py) and spacecraft_editor.py's
+        # per-tab _scrollable() already do for this same reason; this
+        # widget is the one tab-page-sized widget in the app that was
+        # still missing it.
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
         intro = QLabel(
             "Start from one of missionStudio's built-in template missions -- each demonstrates one "
             "concept in isolation and is a good starting point for your own scenario (see the "

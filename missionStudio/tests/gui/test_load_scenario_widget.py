@@ -228,6 +228,65 @@ def test_browse_cancelled_emits_nothing(qtbot, monkeypatch):
     assert emitted == []
 
 
+def test_content_is_wrapped_in_a_resizable_scroll_area(qtbot):
+    """Regression guard for a real bug, found from a user screenshot
+    taken while resizing/maximizing the main window: this tab's content
+    (18 template rows, the description label, and one standalone
+    "Customize: <template name>..." button per template -- see
+    _build_customize_buttons) is tall enough to exceed a real window's
+    available height. Before this fix, everything was added straight to
+    this widget's own top-level layout with no QScrollArea, so squeezing
+    it into less height than it needed didn't clip cleanly -- QLabel
+    does not clip wrapped text to its own allocated rect, so
+    description_label's text painted past its own boundary and visibly
+    overlapped the list widget above it. Matches the same pattern
+    scenario_editor.ScenarioEditorWidget and spacecraft_editor.py's
+    _scrollable() already use for this exact reason.
+    """
+    from PySide6.QtWidgets import QScrollArea
+
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+
+    scroll_areas = widget.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+    assert scroll_areas[0].widgetResizable()
+    # description_label must live inside the scroll area's own content
+    # widget, not directly on widget's top-level layout.
+    content = scroll_areas[0].widget()
+    assert widget.description_label in content.findChildren(type(widget.description_label))
+
+
+def test_description_label_is_never_squeezed_below_its_needed_height(qtbot):
+    """A real window resized/maximized smaller than this tab's natural
+    content height must not reproduce the overlapping-text bug: the
+    QScrollArea should scroll instead of shrinking description_label
+    below what it needs to render without clipping/overlap -- same
+    verification approach as
+    test_propagation_setup_dialog.test_srp_pointer_label_gets_its_full_wrapped_height_not_clipped,
+    which caught a real instance of this same QLabel-overflow failure
+    mode elsewhere in this app.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+    widget.list_widget.setCurrentRow(0)  # gives description_label real, long text to wrap
+
+    widget.resize(500, 150)  # far shorter than this tab's natural content height
+    widget.show()
+    for _ in range(3):
+        QApplication.processEvents()
+
+    label = widget.description_label
+    needed_height = label.heightForWidth(label.geometry().width())
+    assert label.geometry().height() >= needed_height
+
+
 def test_a_malformed_template_is_skipped_not_crashed_on(qtbot, monkeypatch, tmp_path):
     from missionstudio.gui import load_scenario_widget
 

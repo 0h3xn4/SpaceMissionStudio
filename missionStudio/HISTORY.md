@@ -5077,3 +5077,86 @@ still validates" sweep -- the two tests that actually caught the three
 precision bugs above. Full suite: 938 passed, 126 skipped, zero
 regressions (up from 871/126).
 
+---
+
+## Load Scenario tab: real screenshot caught overlapping/garbled text on resize/maximize
+
+A user reported the main window "doesn't allow to maximize and breaks
+and freezes and crashes" when just resizing/maximizing it -- no
+simulation running. A headless, offscreen `.show()` /
+`.showMaximized()` / `.showNormal()` reproduction of `MainWindow` and
+several dialogs raised no exception (same limitation this file's own
+earlier dialog-sizing bugs already ran into -- the offscreen Qt platform
+plugin's virtual framebuffer essentially always has "enough" room, so it
+cannot reproduce a bug that only shows up when a real window's available
+space is actually smaller than a widget's natural content). A follow-up
+real-desktop screenshot (not offscreen) made the bug concrete: visibly
+overlapping, garbled text in the Load Scenario tab, right at the
+boundary between the bottom of the 18-item template list and the
+description label below it.
+
+**Root cause**: `LoadScenarioWidget` (the "Load Scenario" tab) builds
+its entire body -- an intro label, the template `QListWidget` (grown
+from 9 to 18 rows over this file's own earlier entries), the
+description label, the Open/Browse button row, and now one always
+-visible standalone "Customize: \<template name\>..." button per
+template (18 of them, from the `template_wizard` rollout earlier in this
+file) -- straight onto its own single top-level `QVBoxLayout`, with no
+`QScrollArea` anywhere. It's embedded directly as a tab page inside
+`MainWindow`'s `self.left_tabs` (`QTabWidget`), itself inside a
+user-resizable `QSplitter`. This tab's natural content height grew
+substantially across this file's own history (9 rows -> 18 rows, plus 18
+new buttons with no scroll area) until it could exceed what a real,
+non-maximized window -- or even a maximized one on a modest display --
+actually has room for. When the real window (or just the splitter's left
+pane) is resized/maximized to less height than this tab needs, the
+`QVBoxLayout` has to compress something, and `QLabel` does **not** clip
+its own wrapped text to its allocated rect -- squeezed below the height
+its wrapped text needs, it simply paints the overflow past its own
+boundary, over whatever widget sits next to it in the layout. That's
+exactly what the screenshot showed: `description_label`'s (and the
+list's) painted content overlapping across their shared boundary. This
+is a real rendering bug, not a cosmetic one -- it's the same failure
+mode `scenario_editor.ScenarioEditorWidget`'s own top-level
+`QScrollArea` and `spacecraft_editor.py`'s per-tab `_scrollable()`
+helper were already built to prevent elsewhere in this app (see each
+module's own comments); `LoadScenarioWidget` was the one tab-page-sized
+widget in the GUI that still lacked it, and the two things that grew its
+content well past "always fits" (18 template rows, 18 customize buttons)
+were both added after those other widgets had already needed the fix.
+
+**Fix**: wrapped `LoadScenarioWidget`'s entire body in its own internal
+`QScrollArea` (`setWidgetResizable(True)`, zero-margin outer layout),
+exactly matching `ScenarioEditorWidget`'s own existing pattern -- the
+widget's public API (`list_widget`, `description_label`,
+`open_template_button`, the "Customize: ..." buttons, etc.) is
+unaffected, since a `QScrollArea` only changes *where* a widget's
+geometry comes from, not its identity or its own children. A
+`QScrollArea` never squeezes its inner widget below its own size hint:
+when there's enough room it sizes the content to the viewport as before,
+and when there isn't, it scrolls instead of letting the layout compress
+a child below what it needs -- which removes the overlap mechanism
+entirely, rather than just tuning the specific numbers (e.g. the list's
+own `_size_list_to_contents()` fixed-height computation) that happened
+to trigger it this time.
+
+**Verification**: offscreen `.show()` alone can't prove a real-desktop
+rendering bug is gone (same caveat as always in this file), but the
+mechanism itself is directly testable: resizing the widget to 500x150
+(far shorter than its real natural content height) and comparing
+`description_label.geometry().height()` against
+`description_label.heightForWidth(...)` after a few `processEvents()`
+calls -- the same verification approach
+`test_propagation_setup_dialog.test_srp_pointer_label_gets_its_full_wrapped_height_not_clipped`
+already used to catch a real instance of this exact QLabel-overflow
+failure mode elsewhere in this app -- confirms the label's allocated
+height now always matches what it needs, never less. A rendered,
+squeezed-window screenshot taken directly from this fix (offscreen, but
+still an actual pixel render, not just a geometry assertion) shows the
+template list scrolling cleanly within its own bounds instead of
+overlapping the content below it. Two new regression tests added to
+`tests/gui/test_load_scenario_widget.py`: one structural (a
+`QScrollArea` wraps the content, `description_label` lives inside it),
+one behavioral (the squeeze-and-measure check above). Full suite: 940
+passed, 126 skipped, zero regressions (up from 938/126).
+
