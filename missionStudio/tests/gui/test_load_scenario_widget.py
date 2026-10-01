@@ -45,23 +45,38 @@ def test_no_selection_disables_open_button_and_clears_description(qtbot):
     qtbot.addWidget(widget)
 
     assert not widget.open_template_button.isEnabled()
-    assert not widget.customize_button.isEnabled()
     assert widget.description_label.text() == ""
 
 
-def test_customize_button_only_enabled_for_a_template_with_a_registered_wizard_spec(qtbot):
+def _customize_button(widget, name_substring: str):
+    """Finds the standalone "Customize: <template name>..." button for a
+    given template -- see _build_customize_buttons's own docstring for
+    why these are separate, always-enabled buttons rather than one
+    shared, selection-dependent button.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    matches = [b for b in widget.findChildren(QPushButton) if name_substring in b.text()]
+    assert len(matches) == 1, f"expected exactly one Customize button matching {name_substring!r}, got {matches}"
+    return matches[0]
+
+
+def test_customize_button_exists_only_for_a_template_with_a_registered_wizard_spec(qtbot):
+    from PySide6.QtWidgets import QPushButton
+
     from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
 
     widget = LoadScenarioWidget()
     qtbot.addWidget(widget)
 
-    # "01 - Two-body circular orbit" (row 0): no registered wizard spec.
-    widget.list_widget.setCurrentRow(0)
-    assert not widget.customize_button.isEnabled()
+    # "01 - Two-body circular orbit": no registered wizard spec.
+    assert not any("01 - Two-body" in b.text() for b in widget.findChildren(QPushButton))
 
-    # "03 - GEO station-keeping" (row 2): has one.
-    widget.list_widget.setCurrentRow(2)
-    assert widget.customize_button.isEnabled()
+    # "03 - GEO station-keeping": has one, and it's enabled without any
+    # prior list selection -- these buttons are standalone actions, not
+    # gated on widget.list_widget.currentItem().
+    button = _customize_button(widget, "03 - GEO station-keeping")
+    assert button.isEnabled()
 
 
 def test_customize_clicked_emits_scenario_customized_on_accept(qtbot, monkeypatch):
@@ -70,14 +85,13 @@ def test_customize_clicked_emits_scenario_customized_on_accept(qtbot, monkeypatc
 
     widget = LoadScenarioWidget()
     qtbot.addWidget(widget)
-    widget.list_widget.setCurrentRow(2)  # 03_geo_station_keeping
 
     monkeypatch.setattr(TemplateCustomizeWizard, "exec",
                          lambda self: TemplateCustomizeWizard.DialogCode.Accepted)
 
     emitted = []
     widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
-    widget._on_customize_clicked()
+    _customize_button(widget, "03 - GEO station-keeping").click()
 
     assert len(emitted) == 1
     assert emitted[0].name == "03 - GEO station-keeping"
@@ -89,29 +103,39 @@ def test_customize_clicked_emits_nothing_on_cancel(qtbot, monkeypatch):
 
     widget = LoadScenarioWidget()
     qtbot.addWidget(widget)
-    widget.list_widget.setCurrentRow(2)
 
     monkeypatch.setattr(TemplateCustomizeWizard, "exec",
                          lambda self: TemplateCustomizeWizard.DialogCode.Rejected)
 
     emitted = []
     widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
-    widget._on_customize_clicked()
+    _customize_button(widget, "03 - GEO station-keeping").click()
 
     assert emitted == []
 
 
-def test_customize_clicked_with_no_selection_does_nothing(qtbot):
+def test_customize_clicked_is_independent_of_the_lists_current_selection(qtbot, monkeypatch):
+    """Regression test for the earlier (replaced) design, where a single
+    shared "Customize..." button only worked for whatever template was
+    currently selected in the list above -- these standalone buttons
+    must work regardless of that selection.
+    """
     from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import TemplateCustomizeWizard
 
     widget = LoadScenarioWidget()
     qtbot.addWidget(widget)
+    widget.list_widget.setCurrentRow(0)  # "01 - Two-body circular orbit" -- unrelated to '18'
+
+    monkeypatch.setattr(TemplateCustomizeWizard, "exec",
+                         lambda self: TemplateCustomizeWizard.DialogCode.Accepted)
 
     emitted = []
     widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
-    widget._on_customize_clicked()  # must not raise
+    _customize_button(widget, "18 - LEO station-keeping").click()
 
-    assert emitted == []
+    assert len(emitted) == 1
+    assert emitted[0].name == "18 - LEO station-keeping"
 
 
 def test_selecting_an_item_enables_open_and_shows_its_description(qtbot):

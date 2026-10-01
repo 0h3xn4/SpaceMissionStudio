@@ -33,19 +33,29 @@ that knows how to open a scenario file, matching how every other
 GUI-vs-``schema``/``engine`` split in this app works (see this module's
 own class docstring).
 
-Also offers a "Customize..." button, for a template with a registered
-``gui.template_wizard.TemplateWizardSpec`` -- runs a guided, multi-step
-wizard over just that template's own curated "Try changing:" parameters
-(see ``gui.template_wizard``'s own docstring) and emits the resulting
-in-memory ``Scenario`` via :attr:`scenario_customized`, instead of a
-path (there is no file yet -- see ``MainWindow._on_load_scenario_customized``
-for how that's opened without ever touching the original template file
-on disk). Disabled for a template with no registered spec, same
-"nothing to do" reasoning as `open_template_button` with no selection.
+Also offers one dedicated "Customize: <template name>..." button per
+template with a registered ``gui.template_wizard.TemplateWizardSpec`` --
+runs a guided, multi-step wizard over just that template's own curated
+"Try changing:" parameters (see ``gui.template_wizard``'s own docstring)
+and emits the resulting in-memory ``Scenario`` via
+:attr:`scenario_customized`, instead of a path (there is no file yet --
+see ``MainWindow._on_load_scenario_customized`` for how that's opened
+without ever touching the original template file on disk).
+
+Deliberately one STANDALONE, self-describing button per template --
+built in response to direct feedback that an earlier version (one
+generic "Customize..." button, enabled only once a template was already
+selected in the list above) was too easy to miss entirely -- rather than
+a single context-dependent button. Matches the existing
+``gui.spacecraft_editor.SpacecraftListWidget``'s own "Generate Walker
+constellation.../Generate phasing formation..." buttons: always visible,
+each one a complete, nameable action on its own, not conditional on
+some other widget's current selection.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -118,26 +128,55 @@ class LoadScenarioWidget(QWidget):
         self.open_template_button.setEnabled(False)
         self.open_template_button.clicked.connect(self._on_open_template_clicked)
         button_row.addWidget(self.open_template_button)
-        self.customize_button = QPushButton("Customize...")
-        self.customize_button.setEnabled(False)
-        self.customize_button.setToolTip(
-            "Run a guided wizard over this template's own key parameters, instead of opening the full "
-            "scenario editor directly."
-        )
-        self.customize_button.clicked.connect(self._on_customize_clicked)
-        button_row.addWidget(self.customize_button)
         self.browse_button = QPushButton("Browse for a file...")
         self.browse_button.clicked.connect(self._on_browse_clicked)
         button_row.addWidget(self.browse_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
-        layout.addStretch(1)
 
         self.list_widget.currentItemChanged.connect(self._on_selection_changed)
         self.list_widget.itemDoubleClicked.connect(lambda _item: self._on_open_template_clicked())
 
         self._populate_templates()
         self._size_list_to_contents()
+        self._build_customize_buttons(layout)
+        layout.addStretch(1)
+
+    def _build_customize_buttons(self, layout: QVBoxLayout) -> None:
+        """One standalone "Customize: <template name>..." button per
+        template with a registered ``template_wizard`` spec -- see this
+        module's own docstring for why these are always-visible, named
+        buttons (matching ``SpacecraftListWidget``'s own "Generate Walker
+        constellation.../Generate phasing formation..." pattern) rather
+        than a single button whose target depends on the list selection
+        above. Vertically stacked, not a row: `SpacecraftListWidget`'s own
+        comment on its 5-button row already found that this app's left
+        pane reliably gets less width than several full-sentence button
+        labels need side by side.
+        """
+        customize_specs = [
+            (path, spec) for path, spec in
+            sorted(
+                ((path, get_wizard_spec(path.name)) for path in self._template_paths.values()),
+                key=lambda item: item[0].name,
+            )
+            if spec is not None
+        ]
+        if not customize_specs:
+            return
+        header = QLabel("Or run a guided wizard over one template's own key parameters:")
+        header.setWordWrap(True)
+        layout.addWidget(header)
+        for path, spec in customize_specs:
+            scenario_name = next(name for name, p in self._template_paths.items() if p == path)
+            button = QPushButton(f"Customize: {scenario_name}...")
+            button.setToolTip(
+                "Runs a short, guided wizard over just this template's own key tunable parameters, "
+                "then opens the result in the Scenario Editor -- the original template file is never "
+                "modified."
+            )
+            button.clicked.connect(functools.partial(self._on_customize_template_clicked, path, spec))
+            layout.addWidget(button)
 
     def _size_list_to_contents(self) -> None:
         count = self.list_widget.count()
@@ -174,8 +213,6 @@ class LoadScenarioWidget(QWidget):
     def _on_selection_changed(self, current: Optional[QListWidgetItem], _previous) -> None:
         self.open_template_button.setEnabled(current is not None)
         self.description_label.setText(current.data(Qt.ItemDataRole.UserRole) if current is not None else "")
-        path = self._template_paths.get(current.text()) if current is not None else None
-        self.customize_button.setEnabled(path is not None and get_wizard_spec(path.name) is not None)
 
     def _on_open_template_clicked(self) -> None:
         item = self.list_widget.currentItem()
@@ -185,16 +222,13 @@ class LoadScenarioWidget(QWidget):
         if path is not None:
             self.path_chosen.emit(path)
 
-    def _on_customize_clicked(self) -> None:
-        item = self.list_widget.currentItem()
-        if item is None:
-            return
-        path = self._template_paths.get(item.text())
-        if path is None:
-            return
-        spec = get_wizard_spec(path.name)
-        if spec is None:  # unreachable: customize_button is disabled whenever this would be None
-            return
+    def _on_customize_template_clicked(self, path: Path, spec) -> None:
+        """One of the standalone "Customize: <template name>..." buttons
+        (see _build_customize_buttons) -- unlike _on_open_template_clicked,
+        this never reads self.list_widget.currentItem(): each button
+        already knows exactly which template/spec it's for, regardless of
+        whatever (if anything) is currently selected in the list above.
+        """
         try:
             scenario = load_scenario(path)
         except Exception as exc:  # noqa: BLE001 -- surface ANY failure in a dialog, never crash the GUI

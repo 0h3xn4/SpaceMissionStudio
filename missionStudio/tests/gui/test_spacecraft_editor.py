@@ -74,6 +74,34 @@ def test_dialog_natural_size_stays_reasonable(qtbot):
     assert dialog.sizeHint().height() < 800
 
 
+def test_dialog_opens_at_a_usable_size_not_just_a_reasonable_upper_bound(qtbot):
+    """Regression test for a real bug, found from a user screenshot: with
+    no explicit resize() anywhere in this class, the dialog opened so
+    small that even its own first tab's Name/Dry mass rows were clipped
+    behind scrollbars -- QDialog.sizeHint() is dominated by each tab's
+    QScrollArea (see test_dialog_every_tab_is_independently_scrollable's
+    own docstring for why every tab has one), whose OWN sizeHint() is a
+    small, mostly-arbitrary default, not the wrapped content's real size
+    (confirmed directly: this dialog's sizeHint() measured 530x416 while
+    its "Orbit / mass" tab content alone needed 572x789). The test above
+    only guards the UPPER bound (it must not blow back up past ~800px
+    tall) -- this one guards the other direction, that it doesn't collapse
+    back down to that tiny broken size either.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+    # Not pixel-exact (the real fix computes width from each tab's own
+    # content, which could legitimately shift with future tab content
+    # changes) -- wide/tall enough that "Orbit / mass"'s Name/Dry mass
+    # rows and every tab label are visibly usable without scrolling.
+    assert dialog.size().width() >= 600
+    assert dialog.size().height() >= 600
+
+
 def test_dialog_edits_existing_config(qtbot):
     from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
     from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig

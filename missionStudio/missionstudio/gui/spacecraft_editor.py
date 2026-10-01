@@ -735,6 +735,30 @@ class SpacecraftEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer_layout.addWidget(buttons)
 
+        # Real bug, found from a user screenshot: with no explicit size,
+        # this dialog opened absurdly small -- even its own first tab's
+        # Name/Dry mass rows were clipped behind scrollbars. Unlike
+        # propagation_setup_dialog.py's similar (much milder) case,
+        # resizing to self.sizeHint() alone would NOT fix this here:
+        # every tab is wrapped in its own QScrollArea (see _scrollable()'s
+        # own docstring for why), and a QScrollArea's sizeHint() is a
+        # small, mostly-arbitrary default -- NOT the wrapped content's
+        # real size -- so QDialog's own sizeHint() stays tiny regardless
+        # of how much is actually in each tab (confirmed directly: this
+        # dialog's sizeHint() measured 530x416 while its own "Orbit /
+        # mass" tab content alone needs 572x789, and the widest tab
+        # ("Power / propulsion / link budget") needs 715).
+        #
+        # Picks a width wide enough for every tab's content (so nothing
+        # wraps/clips horizontally) and a fixed, generous height -- NOT
+        # tall enough to fit the busiest tab without scrolling (that tab
+        # alone wants ~1485px, far taller than most screens) -- each
+        # tab's own QScrollArea is deliberately there so a busy tab
+        # scrolls independently rather than forcing every other tab's
+        # dialog that tall (see _scrollable()'s own docstring).
+        widest_tab_content = max(tabs.widget(i).widget().sizeHint().width() for i in range(tabs.count()))
+        self.resize(max(650, widest_tab_content + 40), 700)
+
     def _on_name_changed(self, text: str) -> None:
         """Live, per-keystroke feedback (theme.py's ``[state="error"]``
         red-border rule, via gui.feedback) for the one field whose

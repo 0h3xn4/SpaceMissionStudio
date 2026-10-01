@@ -4884,3 +4884,57 @@ existing template-open path, an invalid customized scenario shows a
 clear error instead of crashing). Full suite: 860 passed, 126 skipped,
 zero regressions (up from 844/126).
 
+## Two real user-screenshot bugs, found immediately after the wizard shipped
+
+**SpacecraftEditorDialog opened absurdly small.** A real user screenshot
+showed the dialog rendering tiny enough that even its own first tab's
+"Name"/"Dry mass [kg]" rows were clipped behind scrollbars, with the
+window title itself truncated to "Spa...". Root cause: unlike
+`propagation_setup_dialog.py` (which already has its own documented fix
+for a similar but much milder discrepancy), `SpacecraftEditorDialog` had
+NO explicit `resize()` call anywhere -- and simply adding
+`self.resize(self.sizeHint())` would not have been enough here either:
+every tab is wrapped in its own `QScrollArea` (see `_scrollable()`'s own
+docstring for why -- so one busy tab can't force every other tab that
+tall), and a `QScrollArea`'s `sizeHint()` is a small, mostly-arbitrary
+default, NOT the wrapped content's real size. Confirmed directly: this
+dialog's own `sizeHint()` measured 530x416 while its "Orbit / mass" tab
+content alone needed 572x789, and the widest tab ("Power / propulsion /
+link budget") needed 715. Fixed with an explicit `self.resize(...)`
+computed from the widest tab's own content width (so nothing clips
+horizontally) and a fixed, generous height (700px -- deliberately NOT
+tall enough to fit the busiest tab without scrolling, since that tab
+alone wants ~1485px, far taller than most screens; scrolling the busiest
+tab independently is `_scrollable()`'s whole intended design, not a
+bug). New `tests/gui/test_spacecraft_editor.py::
+test_dialog_opens_at_a_usable_size_not_just_a_reasonable_upper_bound` --
+the existing `test_dialog_natural_size_stays_reasonable` only guarded
+the UPPER bound (catching the dialog blowing back up past ~800px), which
+is exactly why this lower-bound regression shipped unnoticed; this new
+test closes that gap.
+
+**The Customize wizard buttons were too easy to miss.** Direct user
+feedback: "I don't see the wizards. where are they? I wanted something
+like what you did for the generate walker constellation, but bespoke
+for each template/example scenario." The shipped design (one generic
+"Customize..." button next to "Open Template", enabled only once a
+template was already selected in the list above) buried the feature
+behind a plain, unlabeled secondary button whose behavior depended on
+unrelated widget state -- unlike `gui.spacecraft_editor.
+SpacecraftListWidget`'s own "Generate Walker constellation.../Generate
+phasing formation..." buttons, which are standalone, self-describing,
+always-enabled actions. Fixed by replacing the single context-dependent
+button with one dedicated "Customize: <template name>..." button per
+registered `template_wizard` spec, always visible (not gated on list
+selection at all), vertically stacked rather than a row (matching
+`SpacecraftListWidget`'s own documented reasoning for why a 5-button row
+already didn't reliably fit this app's left pane). `LoadScenarioWidget
+.scenario_customized` and the rest of the hand-off to `MainWindow`
+(`_on_load_scenario_customized`, `_open_scenario`) are unchanged --
+only how a wizard gets STARTED moved. `tests/gui/
+test_load_scenario_widget.py` updated for the new per-template buttons
+(including a new regression test confirming a Customize click works
+regardless of the list's current selection, the exact failure mode of
+the earlier design). Full suite: 861 passed, 126 skipped, zero
+regressions.
+

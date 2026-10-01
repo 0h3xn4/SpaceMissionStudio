@@ -29,9 +29,10 @@ handful of parameters that template's own ``description`` already calls
 out under "Try changing:" (see ``scripts/_generate_templates.py``), each
 with its own plain-language label/help text -- a focused, approachable
 flow, not a second copy of the full editor. ``gui/load_scenario_widget.py``
-only offers "Customize..." for a template with a registered spec here;
-every other template still opens straight into the full editor via the
-existing "Open Template" button, unchanged.
+shows one standalone "Customize: <template name>..." button for every
+template with a registered spec here; every other template still only
+opens straight into the full editor via the existing "Open Template"
+button, unchanged.
 
 Scope (first pass, three representative templates -- see each spec's own
 comment for why these three): '03' (GEO station-keeping, a simple
