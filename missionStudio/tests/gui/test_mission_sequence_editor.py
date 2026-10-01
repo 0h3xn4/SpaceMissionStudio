@@ -76,6 +76,43 @@ def test_maneuver_rejects_missing_spacecraft(qtbot):
         dialog.to_dataclass()
 
 
+def test_lambert_transfer_round_trips(qtbot):
+    dialog = _dialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("lambert_transfer")
+    dialog.kind_combo.setCurrentIndex(index)
+    sc_index = dialog.lambert_spacecraft_combo.findText("sat-1")
+    dialog.lambert_spacecraft_combo.setCurrentIndex(sc_index)
+    dialog.lambert_target_x_spin.setValue(-6578000.0)
+    dialog.lambert_target_y_spin.setValue(0.0)
+    dialog.lambert_target_z_spin.setValue(0.0)
+    dialog.lambert_tof_spin.setValue(2490.0)
+    dialog.lambert_num_rev_spin.setValue(1)
+    dialog.lambert_max_dist_spin.setValue(500.0)
+    dialog.lambert_min_radius_spin.setValue(6378000.0)
+
+    command = dialog.to_dataclass()
+    assert command.kind == "lambert_transfer"
+    assert command.params == {
+        "spacecraft": "sat-1",
+        "target_position_m": [-6578000.0, 0.0, 0.0],
+        "time_of_flight_s": 2490.0,
+        "num_revolutions": 1,
+        "max_distance_target_m": 500.0,
+        "min_orbit_radius_m": 6378000.0,
+    }
+
+
+def test_lambert_transfer_rejects_missing_spacecraft(qtbot):
+    dialog = _dialog(spacecraft_names=[])  # no spacecraft defined yet -- combo stays empty
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("lambert_transfer")
+    dialog.kind_combo.setCurrentIndex(index)
+
+    with pytest.raises(ValueError, match="spacecraft"):
+        dialog.to_dataclass()
+
+
 def test_assignment_round_trips(qtbot):
     dialog = _dialog(spacecraft_names=["sat-1"])
     qtbot.addWidget(dialog)

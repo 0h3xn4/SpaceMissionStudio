@@ -994,6 +994,65 @@ def build_15_celestial_body_pointing() -> Scenario:
     )
 
 
+def build_16_lambert_transfer() -> Scenario:
+    from missionstudio.schema.command import Command
+
+    r_earth_m = 6378.0e3
+    time_of_flight_s = 2490.0
+
+    return Scenario(
+        name="16 - Lambert transfer: solving for a point-to-point delta-V",
+        description=(
+            "A new Mission Sequence command kind: 'lambert_transfer' solves for whatever impulsive "
+            "delta-V takes the spacecraft from its CURRENT state to target_position_m after "
+            "time_of_flight_s, via Basilisk's own lambertPlanner -> lambertSolver -> lambertValidator "
+            "chain (engine.mission_engine.MissionEngine._run_lambert_transfer), then applies it "
+            "immediately -- unlike '08's 'maneuver' command, you specify WHERE you want to end up, not "
+            "the delta-V itself. Same underlying 3 Basilisk modules, same validation/reporting "
+            "philosophy as Basilisk's own examples/scenarioLambertSolver.py.\n\n"
+            "This exact configuration (orbit, target_position_m, time_of_flight_s) was confirmed "
+            "directly against a real Basilisk build to land within floating-point noise (sub-millimeter) "
+            "of target_position_m when the resulting delta-V is propagated forward by time_of_flight_s -- "
+            "not a hand-picked-to-look-plausible example.\n\n"
+            "What to look at: the 'Mission Output' tab's two 'report' commands snapshot "
+            "sat-1.position_N before and after the transfer -- after propagating for time_of_flight_s, "
+            "the 'after' position should sit almost exactly at target_position_m "
+            f"([{-(r_earth_m + 200.0e3):.0f}, 0, 0] m here).\n\n"
+            "Try changing: target_position_m (any reachable point works, not just ones near the current "
+            "orbit), time_of_flight_s (very short times need very large, often rejected, delta-Vs -- try "
+            "making it unreasonably small to see lambert_transfer raise a clear "
+            "'lambertValidator reported' error instead of silently doing nothing), or "
+            "min_orbit_radius_m (set it to the central body's own radius to reject any transfer "
+            "trajectory that would dip through the surface)."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="orbit_only",
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=0.2, dynamics_task_rate_s=10.0, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=10000.0, eccentricity=0.001,
+                               inclination_deg=5.0, raan_deg=10.0, arg_periapsis_deg=10.0, true_anomaly_deg=10.0),
+                dry_mass_kg=330.0,
+            ),
+        ],
+        mission_sequence=[
+            Command(kind="report", label="Before transfer", params={"series": []}),
+            Command(kind="lambert_transfer", label="Lambert transfer burn", params={
+                "spacecraft": "sat-1",
+                "target_position_m": [-(r_earth_m + 200.0e3), 0.0, 0.0],
+                "time_of_flight_s": time_of_flight_s,
+                "max_distance_target_m": 500.0,
+                "min_orbit_radius_m": r_earth_m,
+            }),
+            Command(kind="propagate", label="Coast to arrival",
+                    params={"stop_condition": "duration", "duration_days": time_of_flight_s / 86400.0}),
+            Command(kind="report", label="After transfer (should match target_position_m)", params={"series": []}),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -1012,6 +1071,7 @@ def main() -> None:
           "13_magnetic_torque_rod_momentum_management.json")
     _save(build_14_css_sun_heading_estimation(), "14_css_sun_heading_estimation.json")
     _save(build_15_celestial_body_pointing(), "15_celestial_body_pointing.json")
+    _save(build_16_lambert_transfer(), "16_lambert_transfer.json")
 
 
 if __name__ == "__main__":

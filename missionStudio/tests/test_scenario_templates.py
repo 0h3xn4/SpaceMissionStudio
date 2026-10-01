@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 15
+    assert len(_TEMPLATE_PATHS) >= 16
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -140,6 +140,16 @@ def test_celestial_body_pointing_template_uses_target_body_not_ground_station():
     assert sat.fsw_params.get("target_body") in (
         {scenario.gravity.central_body} | set(scenario.gravity.third_body_perturbers)
     )
+
+
+def test_lambert_transfer_template_targets_the_documented_position():
+    scenario = load_scenario(_TEMPLATES_DIR / "16_lambert_transfer.json")
+    kinds = [c.kind for c in scenario.mission_sequence]
+    assert "lambert_transfer" in kinds
+    lambert_cmd = scenario.mission_sequence[kinds.index("lambert_transfer")]
+    assert lambert_cmd.params["spacecraft"] == "sat-1"
+    assert lambert_cmd.params["target_position_m"] == [-6578000.0, 0.0, 0.0]
+    assert lambert_cmd.params["time_of_flight_s"] == 2490.0
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

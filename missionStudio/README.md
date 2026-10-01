@@ -253,7 +253,10 @@ magnetometer sensors (magnetometer is Earth-only).
 **Mission planning** -- a GMAT/FreeFlyer-inspired Resources / Mission
 Sequence / Output architecture: `propagate` (duration, epoch, or
 periapsis/apoapsis-event stop conditions), `maneuver` (impulsive
-delta-V, inertial/VNB/RTN), `assignment`, `report`, `if`/`while`
+delta-V, inertial/VNB/RTN), `lambert_transfer` (solves for the
+impulsive delta-V that reaches a target position after a given time of
+flight, via Basilisk's own `lambertPlanner`/`lambertSolver`/
+`lambertValidator`), `assignment`, `report`, `if`/`while`
 conditionals, and `script_block` commands, run by a real execution
 engine (`engine.mission_engine.MissionEngine`) with a dedicated GUI
 editor and output console.
@@ -579,7 +582,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-fifteen built-in template missions (see "Template missions" below) or
+sixteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -596,7 +599,7 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has fifteen ready-to-run scenario
+`missionstudio/scenarios/templates/` has sixteen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
@@ -605,7 +608,8 @@ Sequence-based impulsive orbit raise, a Monte Carlo dispersion
 analysis, uncontrolled gravity-gradient torque, thruster-only attitude
 control, reaction-wheel momentum management via thrusters or via
 magnetic torque rods, real sun-heading estimation from coarse sun
-sensor hardware, and direct celestial-body pointing. See that directory's own `README.md` for the full catalog and
+sensor hardware, direct celestial-body pointing, and a Lambert-solver
+point-to-point transfer. See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -619,7 +623,7 @@ and every one is covered by `tests/test_scenario_templates.py`
 `tests/gui/test_scenario_templates_gui.py` (confirms each one also
 round-trips through the actual `ScenarioEditorWidget` form), and
 `tests/gui/test_load_scenario_widget.py` (the in-GUI picker described
-below) -- 95 tests total, all passing before this was committed. What's
+below) -- 101 tests total, all passing before this was committed. What's
 NOT yet verified: an actual Basilisk run of any of them (this sandbox has
 none), so treat the physical numbers (propellant use, drift rates,
 orbital periods) as reasonable back-of-the-envelope choices, not

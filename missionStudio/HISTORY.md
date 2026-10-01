@@ -4305,3 +4305,80 @@ counterpart to '07'/'06's ground-relative and orbit-relative pointing
 modes (here the commanded attitude keeps changing as the TARGET itself
 moves, not just the spacecraft).
 
+### Lambert transfer planning tool (task 7 of 19): a new Mission Sequence command, not an FSW mode
+
+Unlike every prior item on the 19-item backlog (all attitude/sensor/
+actuator features), "Lambert transfer planning" is an ORBIT-planning
+tool -- Basilisk's own `lambertPlanner`/`lambertSolver`/
+`lambertValidator` FSW module chain (confirmed against
+`examples/scenarioLambertSolver.py`'s own usage) solves for the
+impulsive delta-V that takes a spacecraft from a given state to a
+target position after a given time of flight. The natural integration
+point in this app isn't a new `fsw_mode` -- it's a new **Mission
+Sequence command**, `lambert_transfer`, alongside the existing
+`maneuver` command this project already has (`schema.command.Command`,
+`engine.mission_engine.MissionEngine`): where `maneuver` takes an
+explicit delta-V, `lambert_transfer` takes a TARGET POSITION and SOLVES
+for the delta-V, then applies it the same way.
+
+**A real test-harness pitfall worth documenting (not a module bug)**:
+`lambertValidator`'s own convergence check (`failedDvSolutionConvergence`)
+compares each tick's delta-V solution against the PREVIOUS tick's,
+zero-initialized at `Reset()` -- confirmed directly in
+`lambertValidator.cpp` -- so a SINGLE call always reads as
+"unconverged" even for a perfectly good, deterministic solution; it
+needs at least 2 ticks of IDENTICAL input to actually converge. This is
+a real, deliberate noise-robustness feature of the module (meant for a
+continuously-running real-time guidance loop sampling noisy navigation
+each tick), not a bug -- `_run_lambert_transfer` runs a throwaway,
+single-task, 2-tick mini `SimBaseClass` (fed a literal snapshot of the
+live spacecraft's current truth state, not the real running sim) for
+exactly this reason, then applies the resulting delta-V to the REAL
+simulation's velocity state object, same mechanism `_run_maneuver`
+already uses (`dynManager.getStateObject(...).setState(...)`).
+
+**Verification, including catching my own test-harness bug**: the
+first cross-check attempt (manually propagating the ORIGINAL t=0
+orbital state forward by the post-burn velocity) showed a 20,382 km
+miss -- which turned out to be my own mistake, not a Lambert-solver
+bug: `lambertPlanner` internally propagates the given nav state forward
+to the maneuver time itself and reports that propagated state as
+`lambertProblemMsgPayload.r1_N` (confirmed directly in its own message
+payload comment, "position vector at t0"). Re-deriving the cross-check
+from `r1_N`/`lambertSolutionMsgPayload.v1_N` (the actual burn point and
+post-burn velocity) instead of the raw initial state gave a miss
+distance of 4 MICROmeters -- pure floating-point noise, confirming
+Basilisk's own module is exactly correct and the earlier "miss" was a
+verification-script bug, not a real one. `tests/test_lambert_transfer.py`
+(2 new `requires_basilisk` tests) confirms this against the real
+`_run_lambert_transfer` method itself: one applies a transfer and
+RK4-propagates the result to confirm sub-meter arrival accuracy, the
+other confirms an infeasible transfer (5-second time of flight with a
+`min_orbit_radius_m` constraint) raises a clear `MissionEngineError`
+naming which `lambertValidator` checks failed, rather than silently
+doing nothing.
+
+New `Command(kind="lambert_transfer")` params: `spacecraft`,
+`target_position_m` (inertial, central-body-relative), `time_of_flight_s`
+(from THIS command's own execution, not a separately-delayed burn --
+the burn itself is always immediate, like `maneuver`), `num_revolutions`,
+`max_distance_target_m`, `min_orbit_radius_m` (the last two map directly
+to `lambertValidator`'s own constraint checks). New GUI support in
+`gui/mission_sequence_editor.py` (a dedicated command-editor page,
+following the exact same pattern `maneuver`'s page already uses). A
+real, independently-found reference-tracking gap fixed alongside this:
+`schema/references.py`'s spacecraft-rename/reference-scanning only knew
+about `"maneuver"`/`"propagate"`/`"assignment"` command kinds -- without
+adding `"lambert_transfer"` there too, renaming a spacecraft would have
+silently left any `lambert_transfer` command pointing at the OLD name
+(a real dangling reference), and reference validation wouldn't have
+caught a `lambert_transfer` targeting a nonexistent spacecraft.
+
+**Template**: `16_lambert_transfer.json` -- the exact configuration
+verified above (same orbit, target, and time of flight as
+`examples/scenarioLambertSolver.py`'s own scenario), wrapped in a
+3-command Mission Sequence (report position, lambert_transfer, coast,
+report position again) so the "before" and "after" snapshots in the
+GUI's Mission Output tab show the transfer actually landing on
+target_position_m.
+

@@ -258,6 +258,7 @@ class MissionEngine:
         handler = {
             "propagate": self._run_propagate,
             "maneuver": self._run_maneuver,
+            "lambert_transfer": self._run_lambert_transfer,
             "assignment": self._run_assignment,
             "report": self._run_report,
             "if": self._run_if,
@@ -520,6 +521,126 @@ class MissionEngine:
             axis1, axis2, axis3 = basis(r_bn_n, v_bn_n)
             delta_v_n = delta_v_m_s[0] * axis1 + delta_v_m_s[1] * axis2 + delta_v_m_s[2] * axis3
 
+        vel_ref.setState(v_bn_n + delta_v_n)
+
+    # -- lambert_transfer ----------------------------------------------------
+
+    def _run_lambert_transfer(self, command: Command, summary: CommandSummary, path: str) -> None:
+        """Solves for the impulsive delta-V that takes the spacecraft from
+        its CURRENT state (read live, like ``maneuver``) to
+        ``params['target_position_m']`` after ``params['time_of_flight_s']``,
+        via Basilisk's own ``lambertPlanner`` -> ``lambertSolver`` ->
+        ``lambertValidator`` chain (confirmed against
+        ``examples/scenarioLambertSolver.py``'s own usage), then applies it
+        immediately the same way ``_run_maneuver`` does -- this command
+        always burns NOW; ``time_of_flight_s`` is purely "how long until
+        arrival", not a separate delay before the burn.
+
+        Run in a throwaway, single-task, 2-tick mini ``SimBaseClass`` (not
+        the live ``self.service.scSim``) fed a literal snapshot of the
+        current truth state -- ``lambertValidator`` only reports a
+        convergence a solution needs at least 2 ticks of IDENTICAL input to
+        satisfy (confirmed directly against lambertValidator.cpp: its own
+        convergence check compares each tick's delta-V against the
+        PREVIOUS tick's, zero-initialized at ``Reset()``, so a single tick
+        always reads unconverged) -- a real, deterministic requirement of
+        the module itself, not a workaround for noise. Confirmed directly
+        against a real Basilisk build (matching
+        ``examples/scenarioLambertSolver.py``'s own configuration almost
+        exactly) that the resulting delta-V, applied at the maneuver point
+        and propagated forward by ``time_of_flight_s``, lands within
+        floating-point noise of the target position.
+        """
+        from Basilisk.architecture import messaging
+        from Basilisk.fswAlgorithms import lambertPlanner, lambertSolver, lambertValidator
+        from Basilisk.utilities import SimulationBaseClass, macros, simHelpers
+
+        spacecraft_name = command.params["spacecraft"]
+        handle = self.service.spacecraft_handles.get(spacecraft_name)
+        if handle is None:
+            raise MissionEngineError(f"{path}: lambert_transfer names unknown spacecraft {spacecraft_name!r}")
+        if self.service.mu is None:
+            raise MissionEngineError(f"{path}: lambert_transfer needs a central-body gravitational parameter")
+
+        target_position_m = np.array(command.params["target_position_m"], dtype=float)
+        time_of_flight_s = float(command.params["time_of_flight_s"])
+        num_revolutions = int(command.params.get("num_revolutions", 0))
+        max_distance_target_m = float(command.params.get("max_distance_target_m", 1000.0))
+        min_orbit_radius_m = float(command.params.get("min_orbit_radius_m", 0.0))
+
+        pos_ref = handle.sc_object.dynManager.getStateObject(handle.sc_object.hub.nameOfHubPosition)
+        vel_ref = handle.sc_object.dynManager.getStateObject(handle.sc_object.hub.nameOfHubVelocity)
+        r_bn_n = simHelpers.EigenVector3d2np(pos_ref.getState())  # [m]
+        v_bn_n = simHelpers.EigenVector3d2np(vel_ref.getState())  # [m/s]
+
+        lamSim = SimulationBaseClass.SimBaseClass()
+        lam_task_name = "lambertTask"
+        lam_process = lamSim.CreateNewProcess("lambertProcess")
+        # Same cadence as examples/scenarioLambertSolver.py's fswStep --
+        # arbitrary (this mini-sim never propagates dynamics), just needs
+        # to be fast enough that 2 ticks complete well within
+        # time_of_flight_s/maneuverTime=0 (irrelevant here either way).
+        lam_process.addTask(lamSim.CreateNewTask(lam_task_name, macros.sec2nano(30.0)))
+
+        nav_state = messaging.NavTransMsgPayload()
+        nav_state.r_BN_N = list(r_bn_n)
+        nav_state.v_BN_N = list(v_bn_n)
+        nav_msg = messaging.NavTransMsg().write(nav_state)
+
+        lam_planner = lambertPlanner.LambertPlanner()
+        lam_planner.ModelTag = "lambertPlanner"
+        lam_planner.setR_TN_N(target_position_m)
+        lam_planner.setFinalTime(time_of_flight_s)
+        lam_planner.setManeuverTime(0.0)  # burn now -- see docstring
+        lam_planner.setMu(self.service.mu)
+        lam_planner.setNumRevolutions(num_revolutions)
+        lam_planner.navTransInMsg.subscribeTo(nav_msg)
+
+        lam_solver = lambertSolver.LambertSolver()
+        lam_solver.ModelTag = "lambertSolver"
+        lam_solver.lambertProblemInMsg.subscribeTo(lam_planner.lambertProblemOutMsg)
+
+        lam_validator = lambertValidator.LambertValidator()
+        lam_validator.ModelTag = "lambertValidator"
+        lam_validator.setFinalTime(time_of_flight_s)
+        lam_validator.setManeuverTime(0.0)
+        lam_validator.setMaxDistanceTarget(max_distance_target_m)
+        lam_validator.setMinOrbitRadius(min_orbit_radius_m)
+        lam_validator.setUncertaintyStates(np.zeros((6, 6)))
+        lam_validator.setUncertaintyDV(0.0)
+        lam_validator.setDvConvergenceTolerance(1.0)
+        lam_validator.navTransInMsg.subscribeTo(nav_msg)
+        lam_validator.lambertProblemInMsg.subscribeTo(lam_planner.lambertProblemOutMsg)
+        lam_validator.lambertPerformanceInMsg.subscribeTo(lam_solver.lambertPerformanceOutMsg)
+        lam_validator.lambertSolutionInMsg.subscribeTo(lam_solver.lambertSolutionOutMsg)
+
+        lamSim.AddModelToTask(lam_task_name, lam_planner, 98)
+        lamSim.AddModelToTask(lam_task_name, lam_solver, 97)
+        lamSim.AddModelToTask(lam_task_name, lam_validator, 96)
+
+        dv_rec = lam_validator.dvBurnCmdOutMsg.recorder()
+        lamSim.AddModelToTask(lam_task_name, dv_rec)
+        val_rec = lam_validator.lambertValidatorOutMsg.recorder()
+        lamSim.AddModelToTask(lam_task_name, val_rec)
+
+        lamSim.InitializeSimulation()
+        lamSim.ConfigureStopTime(macros.sec2nano(60.0))  # 2 identical ticks -- see docstring
+        lamSim.ExecuteSimulation()
+
+        failed_fields = [
+            "failedValidLambert", "failedNumIterationsLambert", "failedXToleranceLambert",
+            "failedXSolutionConvergence", "failedDvSolutionConvergence",
+            "failedDistanceTargetConstraint", "failedOrbitRadiusConstraint",
+        ]
+        last_failures = {f: int(getattr(val_rec, f)[-1]) for f in failed_fields}
+        if any(last_failures.values()):
+            reasons = ", ".join(f for f, failed in last_failures.items() if failed)
+            raise MissionEngineError(
+                f"{path}: lambert_transfer found no valid Delta-V solution for spacecraft "
+                f"{spacecraft_name!r} -- lambertValidator reported: {reasons}"
+            )
+
+        delta_v_n = np.array(dv_rec.dvInrtlCmd)[-1]
         vel_ref.setState(v_bn_n + delta_v_n)
 
     # -- assignment ----------------------------------------------------------

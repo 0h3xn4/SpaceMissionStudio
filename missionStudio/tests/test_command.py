@@ -107,6 +107,72 @@ def test_maneuver_reports_every_problem_at_once():
     assert any("delta_v_m_s" in e for e in errors)
 
 
+# -- lambert_transfer -------------------------------------------------------
+
+def test_lambert_transfer_valid():
+    cmd = Command(kind="lambert_transfer", params={
+        "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+    })
+    assert cmd.validate("l") == []
+
+
+def test_lambert_transfer_defaults_num_revolutions_and_constraints():
+    cmd = Command(kind="lambert_transfer", params={
+        "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+    })
+    assert cmd.validate("l") == []  # num_revolutions/max_distance_target_m/min_orbit_radius_m all optional
+
+
+def test_lambert_transfer_missing_spacecraft_is_rejected():
+    errors = Command(kind="lambert_transfer",
+                      params={"target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0}).validate("l")
+    assert any("spacecraft" in e for e in errors)
+
+
+def test_lambert_transfer_bad_target_position_shape_is_rejected():
+    errors = Command(kind="lambert_transfer",
+                      params={"spacecraft": "sat-1", "target_position_m": [1.0, 0.0],
+                               "time_of_flight_s": 3600.0}).validate("l")
+    assert any("target_position_m" in e for e in errors)
+
+
+def test_lambert_transfer_missing_time_of_flight_is_rejected():
+    errors = Command(kind="lambert_transfer",
+                      params={"spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0]}).validate("l")
+    assert any("time_of_flight_s" in e for e in errors)
+
+
+def test_lambert_transfer_non_positive_time_of_flight_is_rejected():
+    errors = Command(kind="lambert_transfer", params={
+        "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 0.0,
+    }).validate("l")
+    assert any("time_of_flight_s" in e for e in errors)
+
+
+def test_lambert_transfer_negative_num_revolutions_is_rejected():
+    errors = Command(kind="lambert_transfer", params={
+        "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+        "num_revolutions": -1,
+    }).validate("l")
+    assert any("num_revolutions" in e for e in errors)
+
+
+def test_lambert_transfer_negative_min_orbit_radius_is_rejected():
+    errors = Command(kind="lambert_transfer", params={
+        "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+        "min_orbit_radius_m": -1.0,
+    }).validate("l")
+    assert any("min_orbit_radius_m" in e for e in errors)
+
+
+def test_lambert_transfer_reports_every_problem_at_once():
+    errors = Command(kind="lambert_transfer", params={}).validate("l")
+    assert len(errors) >= 2  # missing spacecraft AND missing target_position_m AND time_of_flight_s
+    assert any("spacecraft" in e for e in errors)
+    assert any("target_position_m" in e for e in errors)
+    assert any("time_of_flight_s" in e for e in errors)
+
+
 # -- assignment / report ----------------------------------------------------
 
 def test_assignment_valid():

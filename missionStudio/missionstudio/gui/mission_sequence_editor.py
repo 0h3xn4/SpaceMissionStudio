@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -90,7 +91,7 @@ _ASSIGNMENT_PARAMETER_CHOICES = ("thrust_n", "isp_s")
 # just "condition"), so this has one fewer entries than
 # SUPPORTED_COMMAND_KINDS.
 _KIND_PAGE_INDEX = {"propagate": 0, "maneuver": 1, "assignment": 2, "report": 3, "if": 4, "while": 4,
-                     "script_block": 5}
+                     "script_block": 5, "lambert_transfer": 6}
 
 
 def _spin_component(value: float = 0.0) -> QDoubleSpinBox:
@@ -138,6 +139,7 @@ class _CommandEditorDialog(QDialog):
         self._build_report_page(params)
         self._build_conditional_page(params)
         self._build_script_block_page(params)
+        self._build_lambert_transfer_page(params)
         layout.addWidget(self.stack)
 
         self.kind_combo.currentTextChanged.connect(self._on_kind_changed)
@@ -244,6 +246,68 @@ class _CommandEditorDialog(QDialog):
             "rtn: radial/transverse/normal orbit frame."
         )
         form.addRow("Frame", self.maneuver_frame_combo)
+
+        self.stack.addWidget(page)
+
+    def _build_lambert_transfer_page(self, params: dict) -> None:
+        page = QWidget()
+        form = QFormLayout(page)
+
+        self.lambert_spacecraft_combo = QComboBox()
+        self.lambert_spacecraft_combo.addItems(self._spacecraft_names)
+        index = self.lambert_spacecraft_combo.findText(params.get("spacecraft", ""))
+        if index >= 0:
+            self.lambert_spacecraft_combo.setCurrentIndex(index)
+        form.addRow("Spacecraft", self.lambert_spacecraft_combo)
+
+        target_position = params.get("target_position_m", [0.0, 0.0, 0.0])
+        row = QHBoxLayout()
+        self.lambert_target_x_spin = _spin_component(target_position[0] if len(target_position) > 0 else 0.0)
+        self.lambert_target_y_spin = _spin_component(target_position[1] if len(target_position) > 1 else 0.0)
+        self.lambert_target_z_spin = _spin_component(target_position[2] if len(target_position) > 2 else 0.0)
+        row.addWidget(self.lambert_target_x_spin)
+        row.addWidget(self.lambert_target_y_spin)
+        row.addWidget(self.lambert_target_z_spin)
+        row_widget = QWidget()
+        row_widget.setLayout(row)
+        form.addRow("Target position [m] (inertial)", row_widget)
+
+        self.lambert_tof_spin = QDoubleSpinBox()
+        self.lambert_tof_spin.setRange(1.0, 1.0e9)
+        self.lambert_tof_spin.setDecimals(1)
+        self.lambert_tof_spin.setSingleStep(60.0)
+        self.lambert_tof_spin.setValue(float(params.get("time_of_flight_s", 3600.0)))
+        self.lambert_tof_spin.setToolTip(
+            "Time from THIS command's own execution until arrival at the target position. The computed "
+            "delta-V is applied immediately (like a maneuver command), not at a separately-delayed time."
+        )
+        form.addRow("Time of flight [s]", self.lambert_tof_spin)
+
+        self.lambert_num_rev_spin = QSpinBox()
+        self.lambert_num_rev_spin.setRange(0, 20)
+        self.lambert_num_rev_spin.setValue(int(params.get("num_revolutions", 0)))
+        form.addRow("Number of revolutions", self.lambert_num_rev_spin)
+
+        self.lambert_max_dist_spin = QDoubleSpinBox()
+        self.lambert_max_dist_spin.setRange(0.001, 1.0e9)
+        self.lambert_max_dist_spin.setDecimals(3)
+        self.lambert_max_dist_spin.setValue(float(params.get("max_distance_target_m", 1000.0)))
+        self.lambert_max_dist_spin.setToolTip(
+            "lambertValidator rejects the solution (zero delta-V, no maneuver applied) if its own "
+            "propagated miss distance at arrival exceeds this."
+        )
+        form.addRow("Max distance from target [m]", self.lambert_max_dist_spin)
+
+        self.lambert_min_radius_spin = QDoubleSpinBox()
+        self.lambert_min_radius_spin.setRange(0.0, 1.0e12)
+        self.lambert_min_radius_spin.setDecimals(1)
+        self.lambert_min_radius_spin.setValue(float(params.get("min_orbit_radius_m", 0.0)))
+        self.lambert_min_radius_spin.setToolTip(
+            "lambertValidator rejects the solution if the transfer trajectory dips below this radius from "
+            "the central body. 0 disables the check -- set it to the central body's own radius to avoid a "
+            "transfer that clips the surface."
+        )
+        form.addRow("Min orbit radius [m]", self.lambert_min_radius_spin)
 
         self.stack.addWidget(page)
 
@@ -363,6 +427,16 @@ class _CommandEditorDialog(QDialog):
                 "delta_v_m_s": [self.delta_v_x_spin.value(), self.delta_v_y_spin.value(),
                                 self.delta_v_z_spin.value()],
                 "frame": self.maneuver_frame_combo.currentText(),
+            }
+        if kind == "lambert_transfer":
+            return {
+                "spacecraft": self.lambert_spacecraft_combo.currentText(),
+                "target_position_m": [self.lambert_target_x_spin.value(), self.lambert_target_y_spin.value(),
+                                       self.lambert_target_z_spin.value()],
+                "time_of_flight_s": self.lambert_tof_spin.value(),
+                "num_revolutions": self.lambert_num_rev_spin.value(),
+                "max_distance_target_m": self.lambert_max_dist_spin.value(),
+                "min_orbit_radius_m": self.lambert_min_radius_spin.value(),
             }
         if kind == "assignment":
             target = ".".join((

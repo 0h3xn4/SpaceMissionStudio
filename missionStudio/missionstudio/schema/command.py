@@ -50,11 +50,15 @@ are where ``fsw_params``' shape is enforced today.
 
 Minimum command set (per this project's current scope decision)
 -------------------------------------------------------------------
-``propagate``, ``maneuver`` (impulsive delta-V), ``assignment``,
-``report``, ``if``, ``while``, ``script_block``. Targeting/optimization
-commands (GMAT's ``Target``/``Vary``/``Optimize``) are explicitly NOT
-included -- interface design for those is future work, not implemented
-here.
+``propagate``, ``maneuver`` (impulsive delta-V), ``lambert_transfer``
+(solves for the impulsive delta-V that reaches a target position after a
+given time of flight, via Basilisk's own ``lambertPlanner``/
+``lambertSolver``/``lambertValidator`` chain, then applies it immediately
+-- see ``engine.mission_engine``'s own docstring for exactly how),
+``assignment``, ``report``, ``if``, ``while``, ``script_block``.
+Targeting/optimization commands (GMAT's ``Target``/``Vary``/``Optimize``)
+are explicitly NOT included -- interface design for those is future work,
+not implemented here.
 
 Collecting validation
 ----------------------
@@ -78,7 +82,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
-SUPPORTED_COMMAND_KINDS = ("propagate", "maneuver", "assignment", "report", "if", "while", "script_block")
+SUPPORTED_COMMAND_KINDS = (
+    "propagate", "maneuver", "lambert_transfer", "assignment", "report", "if", "while", "script_block",
+)
 
 # propagate.stop_condition
 SUPPORTED_STOP_CONDITIONS = ("duration", "epoch", "event")
@@ -152,6 +158,8 @@ class Command:
             self._validate_propagate(full_path, errors)
         elif self.kind == "maneuver":
             self._validate_maneuver(full_path, errors)
+        elif self.kind == "lambert_transfer":
+            self._validate_lambert_transfer(full_path, errors)
         elif self.kind == "assignment":
             self._validate_assignment(full_path, errors)
         elif self.kind == "report":
@@ -209,6 +217,35 @@ class Command:
         frame = self.params.get("frame", "inertial")
         _collect(errors, path, frame in SUPPORTED_MANEUVER_FRAMES,
                   f"maneuver.frame {frame!r} must be one of {SUPPORTED_MANEUVER_FRAMES}")
+
+    def _validate_lambert_transfer(self, path: str, errors: List[str]) -> None:
+        spacecraft = self.params.get("spacecraft")
+        _collect(errors, path, isinstance(spacecraft, str) and bool(spacecraft),
+                  "lambert_transfer.spacecraft must be a non-empty spacecraft name")
+        target_position_m = self.params.get("target_position_m")
+        _collect(errors, path, isinstance(target_position_m, list) and len(target_position_m) == 3
+                  and all(isinstance(v, (int, float)) for v in target_position_m),
+                  "lambert_transfer.target_position_m must be a 3-element [x, y, z] list of numbers [m], "
+                  "inertial frame, relative to the central body (same convention as engine.fsw's r_BN_N)")
+        time_of_flight_s = self.params.get("time_of_flight_s")
+        _collect(errors, path, isinstance(time_of_flight_s, (int, float)) and time_of_flight_s > 0,
+                  "lambert_transfer.time_of_flight_s must be a number > 0 -- time from THIS command's own "
+                  "execution until arrival at target_position_m; the burn itself is applied immediately "
+                  "(like maneuver), not at a separately-delayed time")
+        num_revolutions = self.params.get("num_revolutions", 0)
+        _collect(errors, path, isinstance(num_revolutions, int) and num_revolutions >= 0,
+                  "lambert_transfer.num_revolutions must be an integer >= 0")
+        max_distance_target_m = self.params.get("max_distance_target_m", 1000.0)
+        _collect(errors, path, isinstance(max_distance_target_m, (int, float)) and max_distance_target_m > 0,
+                  "lambert_transfer.max_distance_target_m must be a number > 0 -- lambertValidator rejects "
+                  "the solution (zero delta-V, no maneuver applied) if its own propagated miss distance at "
+                  "arrival exceeds this")
+        min_orbit_radius_m = self.params.get("min_orbit_radius_m", 0.0)
+        _collect(errors, path, isinstance(min_orbit_radius_m, (int, float)) and min_orbit_radius_m >= 0,
+                  "lambert_transfer.min_orbit_radius_m must be a number >= 0 -- lambertValidator rejects the "
+                  "solution if the transfer trajectory dips below this radius from the central body (0 "
+                  "disables the check; set it to the central body's own radius to avoid a transfer that "
+                  "clips the surface)")
 
     def _validate_assignment(self, path: str, errors: List[str]) -> None:
         target = self.params.get("target")
