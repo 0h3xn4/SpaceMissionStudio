@@ -143,6 +143,15 @@ the venv and rendered icon too (`postrm`) -- these aren't part of the
 package's own tracked payload (they're created at configure time), so
 without `postrm` they'd survive an uninstall silently.
 
+**1.1.0 release note**: `build_deb.sh` was re-run for the 1.1.0 release
+and still produces a valid, installable `missionstudio_1.1.0_all.deb`
+(`dpkg-deb --build` succeeds; the version string above comes from
+`missionstudio.__version__`, never hardcoded, so this needed no script
+change). The full real-Basilisk install/test pass described above was
+not independently re-run against that specific 1.1.0 artifact this
+release -- it was run once, at 1.0.0, against install logic that hasn't
+changed since.
+
 ### The Windows installer (Inno Setup)
 
 `windows/missionstudio.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php)

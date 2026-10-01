@@ -7,8 +7,8 @@ Think "STK/FreeFlyer-lite" -- every capability maps to a specific
 Basilisk module, or is explicitly flagged as custom/out-of-scope, never
 fabricated.
 
-**Status: v1.0.0**, first tagged release. See "Version 1.0.0" below for
-what that means, "Capabilities" for what's implemented, and
+**Status: v1.1.0**. See "Version 1.1.0" below for what's new in this
+release, "Capabilities" for the full current feature set, and
 [`HISTORY.md`](HISTORY.md) for the full phase-by-phase development log
 this README used to carry inline (every feature's design rationale, every
 bug found and fixed, the full crash-investigation writeups) -- nothing
@@ -25,18 +25,22 @@ assumed -- see [`USER_MANUAL.md`](USER_MANUAL.md).
 **Just want to use the app, not develop it?** There's a real installer
 for that -- no terminal, no typed `pip`/`venv` commands:
 
-* **Linux:** `packaging/build_deb.sh` produces `missionstudio_1.0.0_all.deb`
-  -- install it with `sudo apt install ./missionstudio_1.0.0_all.deb`
+* **Linux:** `packaging/build_deb.sh` produces `missionstudio_1.1.0_all.deb`
+  -- install it with `sudo apt install ./missionstudio_1.1.0_all.deb`
   (or double-click it in a file manager with package-install support) and
-  get a normal application-menu entry. **Genuinely built and installed
-  end-to-end in this project's own development sandbox**, including a
-  real Basilisk install -- see `packaging/README.md`'s "The real
-  installers" section for exactly what that confirmed.
+  get a normal application-menu entry. The build itself (this exact
+  version string included) was re-run in this project's own development
+  sandbox for the 1.1.0 release and produces a valid `.deb` with
+  `dpkg-deb`; the full real-Basilisk end-to-end install (venv creation,
+  `bsk[all]` from PyPI, a real `printBuildInfo()`) was confirmed at
+  1.0.0 against the same install logic, which 1.1.0 carries forward
+  unchanged -- see `packaging/README.md`'s "The real installers" section
+  for exactly what that confirmed and when.
 * **Windows:** `packaging/windows/missionstudio.iss` (built with
   [Inno Setup](https://jrsoftware.org/isinfo.php)) produces
-  `missionstudio-1.0.0-setup.exe` -- a normal installer wizard, ending in
-  a Start Menu entry. New for 1.0.0; written carefully but not yet run on
-  a real Windows machine (this development sandbox has none) -- see
+  `missionstudio-1.1.0-setup.exe` -- a normal installer wizard, ending in
+  a Start Menu entry. New for 1.0.0; written carefully but still not run
+  on a real Windows machine (this development sandbox has none) -- see
   `packaging/README.md` for the same honesty-first verification status
   this project applies everywhere else.
 
@@ -213,7 +217,13 @@ environment issue.
   as confirming a fresh install on a minimal target machine (the `.deb`
   postinst's or the Windows installer's own actual end user); if
   `missionstudio gui` starts but the results plot stays blank, that is
-  the first thing to check.
+  the first thing to check. Unrelated to that migration: `build_deb.sh`
+  itself was re-run for the 1.1.0 release and still produces a valid,
+  installable `missionstudio_1.1.0_all.deb` via `dpkg-deb` (it reads
+  `missionstudio.__version__` rather than hardcoding a version string),
+  but the full real-Basilisk install chain this paragraph describes was
+  not independently re-run against that specific 1.1.0 artifact -- only
+  the unchanged underlying install logic has been.
 
 ## Capabilities
 
@@ -427,7 +437,7 @@ missionStudio/
     build_deb.sh                     -- builds the real, double-click Linux .deb installer
     deb/                              -- .deb package skeleton (DEBIAN/control.in + postinst/prerm/postrm, desktop entry, copyright)
     windows/                          -- the real Windows installer wizard
-      missionstudio.iss              -- Inno Setup script -> missionstudio-1.0.0-setup.exe
+      missionstudio.iss              -- Inno Setup script -> missionstudio-1.1.0-setup.exe
       bootstrap_env.ps1              -- venv + Basilisk + missionStudio install step the installer runs
   tests/
     conftest.py                      -- requires_basilisk / requires_gui auto-skip markers
@@ -844,6 +854,78 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   access, has since run full multi-day simulations successfully (see
   "Verification status" above) -- kept in this list only because it's
   still true of THIS development sandbox specifically.
+
+## Version 1.1.0
+
+A feature release on top of 1.0.0 -- new simulation capabilities, nine
+more templates, and a GUI stability pass, all backward-compatible (no
+scenario schema migration needed: every new field is purely additive,
+see `schema/migrations.py`'s own docstring for that rule). What changed:
+
+* **Four new actuator/effector capabilities, each with its own template**
+  to learn from: real gravity-gradient disturbance torque
+  (`enable_gravity_gradient` -> Basilisk's own `GravityGradientEffector`,
+  `10_gravity_gradient_torque.json`); real thruster-actuated attitude
+  control (`thrusterDynamicEffector` + `thrForceMapping` +
+  `thrFiringSchmitt`, `11_thruster_attitude_control.json`); reaction
+  -wheel momentum desaturation via a thruster cluster
+  (`MomentumDumpingConfig`, `12_reaction_wheel_momentum_dumping.json`)
+  and, as an alternative, via magnetic torque rods
+  (`MagneticMomentumManagementConfig`,
+  `13_magnetic_torque_rod_momentum_management.json`); and real propellant
+  depletion through Basilisk's own `fuelTank` state effector, tied to a
+  thruster's own mass-flow rate (`FuelTankConfig`,
+  `17_fuel_tank_depletion.json`).
+* **Two new attitude-guidance capabilities**: real CSS-based sun-heading
+  ESTIMATION (not truth) feeding `sunSafePoint` via a `cssWlsEst`
+  weighted-least-squares estimator (`14_css_sun_heading_estimation.json`),
+  and direct celestial-body pointing -- `locationPointing` aimed at a
+  body other than a ground station, via `build_ephemeris_converter`
+  (`15_celestial_body_pointing.json`).
+* **A new Mission Sequence command**: `lambert_transfer` solves for
+  whatever delta-V takes a spacecraft to a target position after a given
+  time of flight (rather than specifying the delta-V directly), via
+  Basilisk's own `lambertPlanner` -> `lambertSolver` -> `lambertValidator`
+  chain (`16_lambert_transfer.json`).
+* **A direct LEO counterpart to GEO station-keeping**:
+  `18_leo_station_keeping.json` -- drag-driven decay instead of GEO's
+  Sun/Moon/SRP drift, same `station_keeping` controller. Eighteen
+  built-in templates total now, up from the nine 1.0.0 shipped with.
+* **The "Customize: \<template name\>..." guided wizard, rolled out to
+  all eighteen templates** (`gui/template_wizard.py`, piloted on three in
+  an earlier round) -- a short, multi-step walkthrough over just one
+  template's own key tunable parameters, pre-filled with its current
+  values, for anyone who wants "this template, but with X changed"
+  without learning the full Scenario Editor form.
+* **A real, previously-silent attitude-control instability closed by
+  default.** `engine.fsw.DEFAULT_MRP_GAINS` (tuned for a 900 kg*m^2
+  reference spacecraft) reliably diverges to NaN when applied unscaled to
+  a much smaller one -- previously fixed by hand, per template, wherever
+  it was noticed. `engine.fsw.build_mrp_feedback` now auto-scales K/P by
+  a spacecraft's own inertia by default, closing this for every new
+  spacecraft, not just the templates someone remembered to fix (see
+  "Known limitations" below and `tests/test_default_mrp_gain_scaling.py`).
+* **A GUI stability pass**, prompted by real user reports of windows that
+  "don't allow maximizing" and visual corruption on resize: audited every
+  `QDialog`/`QWizard` in `gui/` for the same root cause (a widget's
+  `sizeHint()` not reflecting its real content, confirmed from real
+  user screenshots -- the offscreen Qt platform plugin used for automated
+  testing could not reproduce any of these), fixing `SpacecraftEditorDialog`
+  and every `TemplateCustomizeWizard` spec's sizing, and wrapping
+  `LoadScenarioWidget`'s content in its own `QScrollArea` after a real
+  screenshot showed overlapping, garbled text in its Load Scenario tab on
+  resize/maximize.
+* **A beginner-friendly user manual** ([`USER_MANUAL.md`](USER_MANUAL.md)),
+  illustrated with real screenshots of the running app, plus a README
+  accuracy pass (the repository layout tree, test counts, and template
+  catalog had drifted behind the real codebase; one factually-reversed
+  "Known limitations" claim about MRP gain scaling was corrected).
+* **Version bumped** `1.0.0` -> `1.1.0` in `pyproject.toml`,
+  `missionstudio/__init__.py`, and both installers' version strings
+  (`packaging/windows/missionstudio.iss`'s `MyAppVersion`; the `.deb`
+  reads `missionstudio.__version__` directly, so it needed no change).
+  No schema version bump and no breaking changes -- every scenario file
+  valid under 1.0.0 is still valid, unmodified, under 1.1.0.
 
 ## Version 1.0.0
 
