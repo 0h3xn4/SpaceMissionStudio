@@ -36,6 +36,7 @@ from missionstudio.schema.scenario import (
     DispersionConfig,
     GravityConfig,
     GroundStationConfig,
+    MomentumDumpingConfig,
     MonteCarloConfig,
     OrbitIC,
     PhasingKeepingConfig,
@@ -571,6 +572,172 @@ def build_09_monte_carlo_dispersion_analysis() -> Scenario:
     )
 
 
+def build_10_gravity_gradient_torque() -> Scenario:
+    return Scenario(
+        name="10 - Gravity gradient torque (uncontrolled)",
+        description=(
+            "A spacecraft with NO attitude control (fsw_mode is None) and an elongated, non-spherical "
+            "inertia tensor (Ixx=Iyy=12.5, Izz=7.5 kg*m^2) with SpacecraftConfig.enable_gravity_gradient "
+            "set -- Basilisk's real GravityGradientEffector, the torque the central body's own gravity "
+            "exerts across a spacecraft's non-uniform mass distribution. With zero initial body rate "
+            "and no other torque source, a spacecraft normally stays frozen at its initial attitude for "
+            "the entire run (see '06'/'07' for what active control looks like); this one does NOT, "
+            "because gravity gradient torque is real physics, not a bug.\n\n"
+            "What to look at: this is a Basilisk-truth-level effect, not exposed as a named result "
+            "series when fsw_mode is None (see engine.service.SimulationService.run()'s own docstring) "
+            "-- the clearest way to see it is tests/test_gravity_gradient.py's own technique (reading "
+            "scStateOutMsg.sigma_BN directly), or simply watching the spacecraft's attitude indicator "
+            "drift in Vizard over the run instead of staying locked to its starting orientation. For a "
+            "spherically-symmetric inertia (Ixx=Iyy=Izz), this torque is identically zero -- try setting "
+            "all three equal and confirm it stays frozen again.\n\n"
+            "Try changing: the inertia spread (more elongated = stronger torque), the orbit altitude "
+            "(gravity gradient torque falls off as 1/r^3 -- much stronger effect in a very low orbit "
+            "than at GEO), or enable fsw_mode='inertial3D' with reaction wheels (see '07') to see an "
+            "active controller simply reject this as one more disturbance torque."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        # Point-mass gravity only, no third-body perturbers, no drag/SRP --
+        # isolates the gravity-gradient effect from every other torque/
+        # perturbation source, same "isolate the one concept" role as '01'/
+        # '06'/'09'.
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=0.5, dynamics_task_rate_s=5.0, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6778.0, eccentricity=0.0,
+                               inclination_deg=51.6, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=500.0,
+                inertia_kg_m2=list(_INERTIA_MEDIUM),
+                sigma_bn_init=[0.0, 0.0, 0.0],
+                omega_bn_b_init_rad_s=[0.0, 0.0, 0.0],
+                enable_gravity_gradient=True,
+            ),
+        ],
+    )
+
+
+def build_11_thruster_attitude_control() -> Scenario:
+    return Scenario(
+        name="11 - Attitude control via thrusters (no reaction wheels)",
+        description=(
+            "The thruster counterpart to '06'/'07': instead of reaction wheels or an idealized "
+            "actuator, this spacecraft points itself using eight real ACS thrusters (an 8-thruster "
+            "corner-mounted cube layout, the same real configuration "
+            "examples/scenarioAttitudeFeedback2T_TH.py/scenarioMomentumDumping.py ship) via Basilisk's "
+            "real thrForceMapping -> thrFiringSchmitt -> thrusterDynamicEffector chain (see "
+            "engine.fsw.build_thrusters/build_thruster_force_mapping). fsw_mode 'inertial3D' commands a "
+            "fixed inertial attitude; the spacecraft starts tipped away from it with a small initial "
+            "body rate.\n\n"
+            "What to look at: result series '{sat-1}.thruster_on_time' (one column per thruster, "
+            "seconds) shows which thrusters fired and for how long as the controller worked to null "
+            "the attitude error -- compare against '07''s '{sat-1}.rw_speeds' to see the equivalent "
+            "signal for the reaction-wheel case. In Vizard, thruster plumes render natively "
+            "(engine.vizard.enable_vizard's thr_effectors_by_spacecraft) when a thruster is firing.\n\n"
+            "Try changing: each actuator's MaxThrust (weaker thrusters take longer to null the same "
+            "attitude error), or the thruster layout itself (fewer than 6 well-placed thrusters cannot "
+            "produce a pure torque about all three axes -- thrForceMapping will report a degraded/"
+            "saturated solution)."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=0.01, dynamics_task_rate_s=0.5, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=100.0,
+                inertia_kg_m2=[10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0],
+                sigma_bn_init=[0.3, 0.2, -0.1],
+                omega_bn_b_init_rad_s=[0.0, 0.0, 0.0],
+                fsw_mode="inertial3D",
+                fsw_params={"sigma_R0N": [0.0, 0.0, 0.0]},
+                actuators=[
+                    ActuatorConfig(kind="thruster", name=f"thr-{i + 1}",
+                                     params={"r_B": pos, "tHat_B": direction, "MaxThrust": 1.0})
+                    for i, (pos, direction) in enumerate(zip(
+                        [[-1, -1, 1.28], [1, -1, -1.28], [1, -1, 1.28], [1, 1, -1.28],
+                         [1, 1, 1.28], [-1, 1, -1.28], [-1, 1, 1.28], [-1, -1, -1.28]],
+                        [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0],
+                         [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]],
+                    ))
+                ],
+            ),
+        ],
+    )
+
+
+def build_12_reaction_wheel_momentum_dumping() -> Scenario:
+    return Scenario(
+        name="12 - Reaction wheel momentum dumping",
+        description=(
+            "A spacecraft under normal reaction-wheel attitude control (fsw_mode 'inertial3D', same "
+            "control chain as '07') whose four wheels start out already heavily spun up (the same "
+            "pre-saturated Omega values as examples/scenarioMomentumDumping.py) -- MomentumDumpingConfig "
+            "(hs_max=80 N*m*s) fires an 8-thruster desaturation cluster via thrMomentumManagement -> "
+            "thrForceMapping -> thrMomentumDumping (engine.fsw.build_momentum_dumping) to bleed the "
+            "excess momentum off, while the SAME reaction wheels stay in control of attitude the whole "
+            "time -- the thrusters here never do attitude control, only desaturation. "
+            "engine.service.SimulationService.build() automatically primes one dynamics tick and "
+            "re-Resets the desaturation module before the real run starts, a real Basilisk requirement "
+            "confirmed against this checkout's own build (see engine.fsw.build_momentum_dumping's "
+            "docstring) -- nothing about that is visible here, it just works.\n\n"
+            "What to look at: result series '{sat-1}.rw_speeds' should show all four wheel speeds "
+            "dropping in sharp steps (each step is one desaturation firing) rather than staying flat or "
+            "climbing; '{sat-1}.thruster_on_time' shows exactly when the desaturation thrusters fired.\n\n"
+            "Try changing: momentum_dumping.hs_max (a lower threshold triggers desaturation sooner/more "
+            "often), the wheels' initial Omega (closer to maxMomentum = desaturates almost immediately), "
+            "or remove momentum_dumping entirely to see the wheel speeds never decrease on their own."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=0.01, dynamics_task_rate_s=1.0, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=2500.0,
+                inertia_kg_m2=[1700.0, 0.0, 0.0, 0.0, 1700.0, 0.0, 0.0, 0.0, 1800.0],
+                sigma_bn_init=[0.0, 0.0, 0.0],
+                omega_bn_b_init_rad_s=[0.0, 0.0, 0.0],
+                fsw_mode="inertial3D",
+                fsw_params={"sigma_R0N": [0.0, 0.0, 0.0]},
+                actuators=[
+                    ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                                     params={"gsHat_B": [0.7071, 0.0, 0.7071], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0, "Omega": 4000.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-2",
+                                     params={"gsHat_B": [0.0, 0.7071, 0.7071], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0, "Omega": 2000.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-3",
+                                     params={"gsHat_B": [-0.7071, 0.0, 0.7071], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0, "Omega": 3500.0}),
+                    ActuatorConfig(kind="reaction_wheel", name="rw-4",
+                                     params={"gsHat_B": [0.0, -0.7071, 0.7071], "rw_type": "Honeywell_HR16",
+                                             "maxMomentum": 100.0, "Omega": 0.0}),
+                    *[
+                        ActuatorConfig(kind="thruster", name=f"desat-{i + 1}",
+                                         params={"r_B": pos, "tHat_B": direction, "MaxThrust": 5.0,
+                                                 "thruster_type": "MOOG_Monarc_5"})
+                        for i, (pos, direction) in enumerate(zip(
+                            [[-1, -1, 1.28], [1, -1, -1.28], [1, -1, 1.28], [1, 1, -1.28],
+                             [1, 1, 1.28], [-1, 1, -1.28], [-1, 1, 1.28], [-1, -1, -1.28]],
+                            [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0],
+                             [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]],
+                        ))
+                    ],
+                ],
+                momentum_dumping=MomentumDumpingConfig(hs_max=80.0, thr_min_fire_time=0.02, max_counter_value=100),
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -582,6 +749,9 @@ def main() -> None:
     _save(build_07_attitude_pointing_with_adcs_hardware(), "07_attitude_pointing_with_adcs_hardware.json")
     _save(build_08_mission_sequence_orbit_raise(), "08_mission_sequence_orbit_raise.json")
     _save(build_09_monte_carlo_dispersion_analysis(), "09_monte_carlo_dispersion_analysis.json")
+    _save(build_10_gravity_gradient_torque(), "10_gravity_gradient_torque.json")
+    _save(build_11_thruster_attitude_control(), "11_thruster_attitude_control.json")
+    _save(build_12_reaction_wheel_momentum_dumping(), "12_reaction_wheel_momentum_dumping.json")
 
 
 if __name__ == "__main__":

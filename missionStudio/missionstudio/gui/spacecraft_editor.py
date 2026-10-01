@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 from ..schema.scenario import (
     ActuatorConfig,
     ConstantThrustConfig,
+    MomentumDumpingConfig,
     OrbitIC,
     PhasingKeepingConfig,
     PowerConfig,
@@ -525,6 +526,29 @@ class SpacecraftEditorDialog(QDialog):
                 self.pk_chief_combo.setCurrentIndex(self.pk_chief_combo.count() - 1)
         power_layout.addWidget(self.phasing_keeping_group)
 
+        # Requires BOTH a "reaction_wheel" AND a "thruster" actuator on this
+        # spacecraft (see schema.scenario.MomentumDumpingConfig's docstring
+        # for why mixing those two kinds is otherwise rejected) -- not
+        # cross-checked here against the Sensors/actuators tab's current
+        # contents, same as every other config on this tab (e.g. phasing
+        # -keeping's chief dropdown): SpacecraftConfig.validate() is the
+        # single source of truth, surfaced to the user via this dialog's
+        # live validity indicator rather than duplicated here.
+        md0 = config.momentum_dumping if config else None
+        self.momentum_dumping_group = QGroupBox("Momentum dumping (RW desaturation via thrusters)")
+        self.momentum_dumping_group.setCheckable(True)
+        self.momentum_dumping_group.setChecked(md0 is not None)
+        md_form = QFormLayout(self.momentum_dumping_group)
+        self.md_hs_max = _spin(1.0e-6, 1.0e6, decimals=3, step=1.0, value=md0.hs_max if md0 else 50.0)
+        md_form.addRow("Momentum threshold hs_max [N*m*s]", self.md_hs_max)
+        self.md_thr_min_fire_time = _spin(1.0e-4, 100.0, decimals=4, step=0.01,
+                                           value=md0.thr_min_fire_time if md0 else 0.02)
+        md_form.addRow("Thruster firing resolution [s]", self.md_thr_min_fire_time)
+        self.md_max_counter_value = _spin(1, 100000, decimals=0, step=10,
+                                           value=md0.max_counter_value if md0 else 100)
+        md_form.addRow("Control periods between firings [-]", self.md_max_counter_value)
+        power_layout.addWidget(self.momentum_dumping_group)
+
         rf_link0 = config.rf_link if config else None
         self.rf_link_group = QGroupBox("Downlink RF link budget (margin ESTIMATE only)")
         self.rf_link_group.setCheckable(True)
@@ -728,6 +752,7 @@ class SpacecraftEditorDialog(QDialog):
             station_keeping=self._station_keeping_to_dataclass(),
             phasing_keeping=self._phasing_keeping_to_dataclass(),
             constant_thrust=self._constant_thrust_to_dataclass(),
+            momentum_dumping=self._momentum_dumping_to_dataclass(),
             enable_drag=self.enable_drag_check.isChecked(),
             drag_coeff=self.drag_coeff.value(),
             drag_area_m2=self.drag_area_m2.value(),
@@ -776,6 +801,15 @@ class SpacecraftEditorDialog(QDialog):
             thrust_n=self.ct_thrust_n.value(),
             isp_s=self.ct_isp_s.value(),
             propellant_kg=self.ct_propellant_kg.value(),
+        )
+
+    def _momentum_dumping_to_dataclass(self) -> MomentumDumpingConfig | None:
+        if not self.momentum_dumping_group.isChecked():
+            return None
+        return MomentumDumpingConfig(
+            hs_max=self.md_hs_max.value(),
+            thr_min_fire_time=self.md_thr_min_fire_time.value(),
+            max_counter_value=int(self.md_max_counter_value.value()),
         )
 
     def _phasing_keeping_to_dataclass(self) -> PhasingKeepingConfig | None:

@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 9
+    assert len(_TEMPLATE_PATHS) >= 12
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -72,6 +72,39 @@ def test_monte_carlo_template_has_monte_carlo_enabled():
     scenario = load_scenario(_TEMPLATES_DIR / "09_monte_carlo_dispersion_analysis.json")
     assert scenario.monte_carlo.enabled
     assert len(scenario.monte_carlo.dispersions) >= 1
+
+
+def test_gravity_gradient_template_has_no_attitude_control_and_an_elongated_inertia():
+    """Regression guard for '10's own stated lesson: gravity-gradient
+    torque is identically zero for a spherically-symmetric inertia, and
+    invisible behind an active controller that just rejects it as one
+    more disturbance -- both conditions must hold for the template to
+    actually demonstrate the effect it claims to.
+    """
+    scenario = load_scenario(_TEMPLATES_DIR / "10_gravity_gradient_torque.json")
+    sat = scenario.spacecraft[0]
+    assert sat.fsw_mode is None
+    assert sat.enable_gravity_gradient is True
+    ixx, iyy, izz = sat.inertia_kg_m2[0], sat.inertia_kg_m2[4], sat.inertia_kg_m2[8]
+    assert not (ixx == iyy == izz)
+
+
+def test_thruster_attitude_control_template_has_only_thruster_actuators():
+    scenario = load_scenario(_TEMPLATES_DIR / "11_thruster_attitude_control.json")
+    sat = scenario.spacecraft[0]
+    kinds = {a.kind for a in sat.actuators}
+    assert kinds == {"thruster"}
+    assert len(sat.actuators) >= 6  # fewer cannot produce a pure 3-axis torque solution
+    assert sat.fsw_mode is not None
+
+
+def test_momentum_dumping_template_mixes_reaction_wheel_and_thruster_actuators():
+    scenario = load_scenario(_TEMPLATES_DIR / "12_reaction_wheel_momentum_dumping.json")
+    sat = scenario.spacecraft[0]
+    kinds = {a.kind for a in sat.actuators}
+    assert kinds == {"reaction_wheel", "thruster"}
+    assert sat.momentum_dumping is not None
+    assert sat.momentum_dumping.hs_max > 0
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

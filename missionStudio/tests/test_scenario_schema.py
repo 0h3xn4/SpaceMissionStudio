@@ -10,6 +10,7 @@ from missionstudio.schema import (
     DispersionConfig,
     GravityConfig,
     GroundStationConfig,
+    MomentumDumpingConfig,
     MonteCarloConfig,
     OrbitIC,
     PhasingKeepingConfig,
@@ -383,6 +384,72 @@ def test_mixing_reaction_wheel_and_thruster_actuators_rejected():
     ]
     with pytest.raises(ScenarioValidationError, match="mix 'reaction_wheel' and 'thruster'"):
         sc.validate()
+
+
+def test_momentum_dumping_allows_mixing_reaction_wheel_and_thruster():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    sc.validate()  # must not raise
+
+
+def test_momentum_dumping_requires_reaction_wheel_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'reaction_wheel' actuator"):
+        sc.validate()
+
+
+def test_momentum_dumping_requires_thruster_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'thruster' actuator"):
+        sc.validate()
+
+
+def test_momentum_dumping_requires_hs_max_positive():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=0.0)
+    with pytest.raises(ScenarioValidationError, match="hs_max must be > 0"):
+        sc.validate()
+
+
+def test_momentum_dumping_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=65.0, thr_min_fire_time=0.05,
+                                                                max_counter_value=50)
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].momentum_dumping.hs_max == 65.0
+    assert loaded.spacecraft[0].momentum_dumping.thr_min_fire_time == 0.05
+    assert loaded.spacecraft[0].momentum_dumping.max_counter_value == 50
 
 
 def test_unsupported_fsw_mode_rejected():

@@ -480,6 +480,11 @@ class SimulationService:
         self.mean_elements_req: Optional[float] = None
         self.mean_elements_j2: Optional[float] = None
         self._handles: Dict[str, _SpacecraftHandle] = {}
+        # thrMomentumManagement modules (one per spacecraft with
+        # momentum_dumping configured) that build() must re-Reset() after
+        # priming one real dynamics tick -- see build()'s own comment and
+        # engine.fsw.build_momentum_dumping's docstring for why.
+        self._desat_controls: List = []
         self._sun_state_out_msg = None
         self._ground_locations: Dict[str, object] = {}
         self._mag_field_model = None
@@ -1057,6 +1062,30 @@ class SimulationService:
                     handle.rw_speed_recorder = rw_state_effector.rwSpeedOutMsg.recorder()
                     self.scSim.AddModelToTask(dyn_task_name, handle.rw_speed_recorder)
                     rw_effector_for_viz = rw_state_effector
+
+                    # Reaction-wheel momentum desaturation via thrusters
+                    # (schema.scenario.MomentumDumpingConfig) -- a SEPARATE
+                    # actuation path from the "thruster" actuator kind's own
+                    # control chain (build_thruster_force_mapping), built
+                    # only here because reaction wheels remain the PRIMARY
+                    # control actuator; Scenario.validate() already
+                    # guarantees "thruster" actuators are present whenever
+                    # momentum_dumping is set.
+                    if sc_config.momentum_dumping is not None:
+                        desat_thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
+                        _, desat_thruster_effector, desat_thr_config_msg = fsw.build_thrusters(
+                            self.scSim, dyn_task_name, f"{sc_config.name}_desat", sc_object, desat_thruster_actuators
+                        )
+                        desat_control, _, desat_dumping = fsw.build_momentum_dumping(
+                            self.scSim, dyn_task_name, sc_config.name, rw_config_msg,
+                            rw_state_effector.rwSpeedOutMsg, desat_thr_config_msg, veh_config_msg,
+                            desat_thruster_effector, sc_config.momentum_dumping,
+                        )
+                        self._desat_controls.append(desat_control)
+                        thr_effector_for_viz = desat_thruster_effector
+                        handle.num_thrusters = len(desat_thruster_actuators)
+                        handle.thruster_on_time_recorder = desat_dumping.thrusterOnTimeOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
                 else:
                     thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
                     if thruster_actuators:
@@ -1181,6 +1210,28 @@ class SimulationService:
         if initialize:
             self.scSim.InitializeSimulation()
             stop_time_s = sim_settings.duration_days * 86400.0
+            if self._desat_controls:
+                # thrMomentumManagement needs a real (nonzero) rwSpeedsInMsg
+                # reading in place before its Reset() establishes anything
+                # meaningful -- confirmed directly against a real Basilisk
+                # build (not assumed from the shipped example's comment
+                # alone): without this extra Reset() call, desaturation
+                # never fires for the ENTIRE run, with no error of any
+                # kind, because InitializeSimulation()'s own automatic
+                # Reset() at t=0 runs before any module has ever produced
+                # output. Priming one dynamics tick and re-Reset()ing here
+                # (not just at t=0) is Basilisk's own documented pattern
+                # (examples/scenarioMomentumDumping.py's "cannot be run at
+                # simulation time t=0" comment); this makes it automatic
+                # rather than a thing every scenario author has to know to
+                # do -- see engine.fsw.build_momentum_dumping's docstring
+                # for the actual numbers this was confirmed against.
+                priming_time_s = min(sim_settings.dynamics_task_rate_s, stop_time_s)
+                priming_time_ns = macros.sec2nano(priming_time_s)
+                self.scSim.ConfigureStopTime(priming_time_ns)
+                self.scSim.ExecuteSimulation()
+                for desat_control in self._desat_controls:
+                    desat_control.Reset(priming_time_ns)
             self.scSim.ConfigureStopTime(macros.sec2nano(stop_time_s))
 
     def run(self) -> ResultSet:

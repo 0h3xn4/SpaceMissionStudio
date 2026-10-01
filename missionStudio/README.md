@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 729 tests
+  exercised either way -- `pytest tests/` runs and passes 755 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -300,7 +300,7 @@ it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
-nine complete example scenarios covering every major concept in
+twelve complete example scenarios covering every major concept in
 isolation (see "Template missions" below).
 
 **Safe cancellation** -- **Abort Simulation** cooperatively cancels an
@@ -392,6 +392,9 @@ missionStudio/
         07_attitude_pointing_with_adcs_hardware.json
         08_mission_sequence_orbit_raise.json
         09_monte_carlo_dispersion_analysis.json
+        10_gravity_gradient_torque.json
+        11_thruster_attitude_control.json
+        12_reaction_wheel_momentum_dumping.json
   scripts/
     _generate_templates.py            -- regenerates scenarios/templates/*.json from schema dataclasses (not installed/imported elsewhere)
   packaging/                          -- build_wheel.sh/.ps1, install.sh/.ps1, .desktop entry (Linux) -- see packaging/README.md
@@ -443,9 +446,9 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 729 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 755 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 105 whose premise is
+full PySide6 GUI, run headless) and skips 107 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
@@ -575,7 +578,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-nine built-in template missions (see "Template missions" below) or
+twelve built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -592,13 +595,15 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has nine ready-to-run scenario
+`missionstudio/scenarios/templates/` has twelve ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
 attitude pointing (idealized, then with real ADCS hardware), a Mission
-Sequence-based impulsive orbit raise, and a Monte Carlo dispersion
-analysis. See that directory's own `README.md` for the full catalog and
+Sequence-based impulsive orbit raise, a Monte Carlo dispersion
+analysis, uncontrolled gravity-gradient torque, thruster-only attitude
+control, and reaction-wheel momentum dumping via thrusters. See that
+directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -622,7 +627,7 @@ and hasn't been run for real.
 
 **Built into the GUI itself** (not just files you'd have to know the path
 to): the GUI's **Load Scenario** tab (`gui/load_scenario_widget.py`,
-see "Running the GUI" above) lists all nine by name with their
+see "Running the GUI" above) lists all twelve by name with their
 description shown on selection, no file-browsing needed -- "Open
 Template" or a double-click loads one and switches straight to the
 Scenario Editor tab. The same tab's "Browse for a file..." button covers

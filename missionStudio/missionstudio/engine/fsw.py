@@ -52,6 +52,15 @@ project's "never fabricate a Basilisk API" rule:
   ``thrForceMapping`` + ``thrFiringSchmitt`` (the "thruster" actuator kind's
   control-torque path, replacing ``rwMotorTorque``/
   ``reactionWheelStateEffector``): ``examples/scenarioAttitudeFeedback2T_TH.py``.
+* ``thrMomentumManagement`` + ``thrForceMapping`` (momentum-dump mode,
+  ``angErrThresh`` > pi) + ``thrMomentumDumping`` (RW desaturation via
+  thrusters, :func:`build_momentum_dumping`), including the "re-``Reset()``
+  after the first real tick" requirement that function's own docstring
+  documents: ``examples/scenarioMomentumDumping.py``, and confirmed
+  directly by running both with and without that extra ``Reset()`` call
+  against a real Basilisk build (not assumed from the example's comment
+  alone) -- see this feature's ``HISTORY.md`` entry for the actual
+  before/after numbers.
 
 Scoping decisions made explicit here (see ``engine/service.py``'s Phase 2
 docstring for the full list):
@@ -109,6 +118,8 @@ from Basilisk.fswAlgorithms import (
     sunSafePoint,
     thrFiringSchmitt,
     thrForceMapping,
+    thrMomentumDumping,
+    thrMomentumManagement,
     velocityPoint,
 )
 from Basilisk.simulation import (
@@ -437,6 +448,70 @@ def build_thruster_force_mapping(scSim, task_name: str, tag: str, mrp_feedback_m
 
     thruster_effector.cmdsInMsg.subscribeTo(firing_logic.onTimeOutMsg)
     return force_mapping, firing_logic
+
+
+def build_momentum_dumping(scSim, task_name: str, tag: str, rw_config_msg, rw_speed_out_msg, thr_config_msg,
+                            veh_config_msg, thruster_effector, config):
+    """Reaction-wheel momentum desaturation via thrusters --
+    ``thrMomentumManagement`` (how much momentum to dump) ->
+    ``thrForceMapping`` (momentum -> per-thruster impulse, ``angErrThresh``
+    set above pi to disable the torque-command scaling that module
+    normally does -- see its own docs, this is the documented way to reuse
+    it for an impulse rather than a torque) -> ``thrMomentumDumping``
+    (impulse -> thruster on-times), connected to the SAME thruster
+    hardware :func:`build_thrusters` already built. Matches
+    ``examples/scenarioMomentumDumping.py`` exactly (module names,
+    attribute names, message wiring).
+
+    This is a SEPARATE signal path from :func:`build_thruster_force_mapping`
+    -- the two are never built for the same spacecraft (one is for primary
+    attitude control via thrusters, this one is for desaturating reaction
+    wheels that remain in control via :func:`build_rw_motor_torque`; see
+    ``schema.scenario.MomentumDumpingConfig``'s docstring for why mixing
+    "reaction_wheel" and "thruster" actuators is otherwise rejected).
+
+    IMPORTANT -- caller must also re-``Reset()`` the returned
+    ``thrMomentumManagement`` module after the simulation has produced at
+    least one real dynamics tick (NOT at t=0, which is all
+    ``InitializeSimulation()`` itself does): confirmed by direct
+    experimentation against a real Basilisk build that without this,
+    ``thrMomentumManagement`` compares against a never-populated
+    ``rwSpeedsInMsg`` reading and desaturation never fires for the entire
+    run, with no error of any kind -- see ``engine.service.SimulationService
+    .build()``'s own handling of this.
+    """
+    desat_control = thrMomentumManagement.thrMomentumManagement()
+    desat_control.ModelTag = f"{tag}_thrMomentumManagement"
+    desat_control.hs_min = config.hs_max  # [N*m*s] -- Basilisk's own field name, despite the schema's hs_max
+    desat_control.rwSpeedsInMsg.subscribeTo(rw_speed_out_msg)
+    desat_control.rwConfigDataInMsg.subscribeTo(rw_config_msg)
+    scSim.AddModelToTask(task_name, desat_control)
+
+    force_mapping = thrForceMapping.thrForceMapping()
+    force_mapping.ModelTag = f"{tag}_desatThrForceMapping"
+    force_mapping.controlAxes_B = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    force_mapping.thrForceSign = 1
+    # > pi: disables thrForceMapping's torque-magnitude output scaling,
+    # the documented way to feed it an IMPULSE (from thrMomentumManagement)
+    # rather than a torque command -- see examples/scenarioMomentumDumping.py's
+    # own comment on this exact field for this exact reuse.
+    force_mapping.angErrThresh = 3.15
+    force_mapping.cmdTorqueInMsg.subscribeTo(desat_control.deltaHOutMsg)
+    force_mapping.thrConfigInMsg.subscribeTo(thr_config_msg)
+    force_mapping.vehConfigInMsg.subscribeTo(veh_config_msg)
+    scSim.AddModelToTask(task_name, force_mapping)
+
+    dumping = thrMomentumDumping.thrMomentumDumping()
+    dumping.ModelTag = f"{tag}_thrMomentumDumping"
+    dumping.maxCounterValue = config.max_counter_value
+    dumping.thrMinFireTime = config.thr_min_fire_time
+    dumping.thrusterConfInMsg.subscribeTo(thr_config_msg)
+    dumping.deltaHInMsg.subscribeTo(desat_control.deltaHOutMsg)
+    dumping.thrusterImpulseInMsg.subscribeTo(force_mapping.thrForceCmdOutMsg)
+    scSim.AddModelToTask(task_name, dumping)
+
+    thruster_effector.cmdsInMsg.subscribeTo(dumping.thrusterOnTimeOutMsg)
+    return desat_control, force_mapping, dumping
 
 
 def build_rw_motor_torque(scSim, task_name: str, tag: str, mrp_feedback_module, rw_config_msg, rw_state_effector):

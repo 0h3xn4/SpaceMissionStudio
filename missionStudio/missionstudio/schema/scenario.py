@@ -471,6 +471,47 @@ class PhasingKeepingConfig:
 
 
 @dataclass
+class MomentumDumpingConfig:
+    """Periodic reaction-wheel momentum desaturation via this spacecraft's
+    ``"thruster"`` actuators -- Basilisk's ``thrMomentumManagement`` +
+    ``thrForceMapping`` (momentum-dump mode) + ``thrMomentumDumping``,
+    firing thrusters ONLY to bleed off accumulated wheel momentum, never
+    for primary attitude control (that stays on ``"reaction_wheel"``
+    actuators via the existing control path -- see ``engine.fsw``'s
+    module docstring for why the two would otherwise need a control
+    -allocation module this app doesn't build).
+
+    Requires BOTH ``"reaction_wheel"`` actuators AND ``"thruster"``
+    actuators configured on this same spacecraft: reaction wheels for
+    the control they're already doing, thrusters as the desaturation
+    hardware. ``SpacecraftConfig.validate()`` otherwise REJECTS mixing
+    the two actuator kinds on one spacecraft (see that method) -- this
+    is the one case where mixing them is well-defined and required,
+    since the two are not competing for the same torque authority.
+
+    ``hs_max`` is the total reaction-wheel angular-momentum magnitude
+    [N*m*s] that triggers a desaturation burn; a spacecraft with
+    :class:`ActuatorConfig` ``"reaction_wheel"`` entries carrying
+    ``maxMomentum`` params should typically set this somewhat below the
+    sum of those wheels' capacities, so desaturation fires before any
+    wheel actually saturates, not after.
+
+    ``None`` (the default) means no desaturation is simulated -- reaction
+    wheels accumulate momentum indefinitely for the whole run, exactly as
+    before this feature existed.
+    """
+
+    hs_max: float  # [N*m*s] total RW angular momentum magnitude that triggers desaturation
+    thr_min_fire_time: float = 0.02  # [s] thruster firing pulse resolution
+    max_counter_value: int = 100  # [-] control periods to wait between desaturation firings
+
+    def validate(self, spacecraft_name: str) -> None:
+        _require(self.hs_max > 0, f"{spacecraft_name}: momentum_dumping.hs_max must be > 0")
+        _require(self.thr_min_fire_time > 0, f"{spacecraft_name}: momentum_dumping.thr_min_fire_time must be > 0")
+        _require(self.max_counter_value >= 1, f"{spacecraft_name}: momentum_dumping.max_counter_value must be >= 1")
+
+
+@dataclass
 class SpacecraftConfig:
     name: str
     orbit: OrbitIC
@@ -532,6 +573,7 @@ class SpacecraftConfig:
     station_keeping: Optional[StationKeepingConfig] = None
     phasing_keeping: Optional[PhasingKeepingConfig] = None
     constant_thrust: Optional[ConstantThrustConfig] = None
+    momentum_dumping: Optional[MomentumDumpingConfig] = None
 
     # Phase 5: PURELY COSMETIC Vizard display -- replaces this spacecraft's
     # default cube icon with a custom CAD model
@@ -604,17 +646,21 @@ class SpacecraftConfig:
                           "for a wiring bug rather than a deliberately tiny thruster, so this schema "
                           "requires it explicitly rather than silently falling back to it")
 
-        # engine.fsw/engine.service build exactly one control-torque path per
-        # spacecraft (reaction wheels via rwMotorTorque, OR thrusters via
-        # thrForceMapping/thrFiringSchmitt) -- mixing both would need a
-        # control-allocation module (e.g. Basilisk's torqueScheduler) this
-        # app does not build yet, so reject the mix early here rather than
-        # letting engine.service silently ignore one of them.
+        # engine.fsw/engine.service build exactly one PRIMARY control-torque
+        # path per spacecraft (reaction wheels via rwMotorTorque, OR
+        # thrusters via thrForceMapping/thrFiringSchmitt) -- mixing both for
+        # primary control would need a control-allocation module (e.g.
+        # Basilisk's torqueScheduler) this app does not build yet. The one
+        # exception is momentum_dumping (below), where thrusters have a
+        # DIFFERENT, non-competing job (bleeding off RW momentum, not
+        # attitude control) -- so the mix is required there, not rejected.
         actuator_kinds_present = {a.kind for a in self.actuators}
-        if "reaction_wheel" in actuator_kinds_present and "thruster" in actuator_kinds_present:
+        if (self.momentum_dumping is None
+                and "reaction_wheel" in actuator_kinds_present and "thruster" in actuator_kinds_present):
             _require(False,
                       f"{self.name}: actuators mix 'reaction_wheel' and 'thruster' kinds -- only one control "
-                      "-torque actuator type per spacecraft is simulated; remove one kind's actuators")
+                      "-torque actuator type per spacecraft is simulated (unless momentum_dumping is set, which "
+                      "requires exactly this mix); remove one kind's actuators, or set momentum_dumping")
 
         if self.power is not None:
             self.power.validate(self.name)
@@ -629,6 +675,14 @@ class SpacecraftConfig:
             self.phasing_keeping.validate(self.name)
         if self.constant_thrust is not None:
             self.constant_thrust.validate(self.name)
+        if self.momentum_dumping is not None:
+            _require("reaction_wheel" in actuator_kinds_present,
+                      f"{self.name}: momentum_dumping needs at least one 'reaction_wheel' actuator (momentum to "
+                      "dump) on this spacecraft")
+            _require("thruster" in actuator_kinds_present,
+                      f"{self.name}: momentum_dumping needs at least one 'thruster' actuator (desaturation "
+                      "hardware) on this spacecraft")
+            self.momentum_dumping.validate(self.name)
 
         if self.vizard_model_path is not None:
             _require(bool(self.vizard_model_path.strip()), f"{self.name}: vizard_model_path must not be blank")
@@ -1022,9 +1076,14 @@ class Scenario:
             phasing_keeping = PhasingKeepingConfig(**phasing_keeping_data) if phasing_keeping_data is not None else None
             constant_thrust_data = sc.pop("constant_thrust", None)
             constant_thrust = ConstantThrustConfig(**constant_thrust_data) if constant_thrust_data is not None else None
+            momentum_dumping_data = sc.pop("momentum_dumping", None)
+            momentum_dumping = (
+                MomentumDumpingConfig(**momentum_dumping_data) if momentum_dumping_data is not None else None
+            )
             spacecraft.append(SpacecraftConfig(orbit=orbit, sensors=sensors, actuators=actuators,
                                                 power=power, rf_link=rf_link, station_keeping=station_keeping,
                                                 phasing_keeping=phasing_keeping, constant_thrust=constant_thrust,
+                                                momentum_dumping=momentum_dumping,
                                                 **sc))
 
         mission_sequence = [Command.from_dict(c) for c in data.pop("mission_sequence", [])]

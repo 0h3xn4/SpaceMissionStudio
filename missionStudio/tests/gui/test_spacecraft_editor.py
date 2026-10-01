@@ -1284,3 +1284,68 @@ def test_list_widget_generate_phasing_formation_without_basilisk_reports_clear_e
     assert len(lw.to_list()) == 1
     assert len(critical_calls) == 1
     assert "Basilisk" in critical_calls[0][1]
+
+
+def test_dialog_momentum_dumping_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.momentum_dumping_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping is None
+
+
+def test_dialog_builds_momentum_dumping_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-md",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.momentum_dumping_group.setChecked(True)
+    dialog.md_hs_max.setValue(65.0)
+    dialog.md_thr_min_fire_time.setValue(0.03)
+    dialog.md_max_counter_value.setValue(50)
+
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping is not None
+    assert sc.momentum_dumping.hs_max == 65.0
+    assert sc.momentum_dumping.thr_min_fire_time == 0.03
+    assert sc.momentum_dumping.max_counter_value == 50
+
+
+def test_dialog_round_trips_momentum_dumping(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, MomentumDumpingConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-md",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+        momentum_dumping=MomentumDumpingConfig(hs_max=70.0, thr_min_fire_time=0.04, max_counter_value=80),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.momentum_dumping_group.isChecked()
+    assert dialog.md_hs_max.value() == 70.0
+    assert dialog.md_thr_min_fire_time.value() == 0.04
+    assert dialog.md_max_counter_value.value() == 80
+
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping.hs_max == 70.0

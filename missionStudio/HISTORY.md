@@ -3920,3 +3920,116 @@ script. Plus 5 new schema-validation tests (required `r_B`/`tHat_B`/
 while `tHat_B`'s keeps one) -- all real, all passing. Full
 Basilisk-independent suite: 729 passed, 105 skipped.
 
+### Reaction wheel momentum desaturation (task 3 of 19)
+
+Reaction wheels had no way to shed accumulated momentum at all -- a long
+-enough scenario would simply saturate them with no recourse, silently
+losing attitude control once that happened. Wired up Basilisk's real
+desaturation chain (`thrMomentumManagement` -> `thrForceMapping`,
+reused in "momentum-dump mode" via `angErrThresh` set above pi -- the
+module's own documented way to make it output an impulse instead of a
+torque -- -> `thrMomentumDumping`), firing a spacecraft's `"thruster"`
+actuators to bleed off reaction-wheel momentum while those SAME wheels
+stay in control of attitude the whole time -- a genuinely different job
+from task 2's thruster-as-primary-control path, built as a separate
+signal path (`engine.fsw.build_momentum_dumping`) that is never built
+for the same spacecraft as `build_thruster_force_mapping`.
+
+New `SpacecraftConfig.momentum_dumping` (`MomentumDumpingConfig`:
+`hs_max` [N*m*s] trigger threshold, firing-resolution/cooldown knobs).
+Mixing `"reaction_wheel"` and `"thruster"` actuators on one spacecraft
+-- previously flatly rejected by task 2's own validation -- is now
+allowed in EXACTLY this one case (`SpacecraftConfig.validate()` requires
+`momentum_dumping` to be set whenever both kinds are present, and still
+rejects the mix otherwise, since mixing them for primary control would
+need a control-allocation module this app doesn't build).
+
+**A real, non-obvious Basilisk requirement found by direct
+experimentation, not just reading the example's comment**: tried running
+`thrMomentumManagement` both with and against a real Basilisk build
+(`/tmp/bsk_venv4`) and found that calling its `Reset()` only at t=0 (all
+`InitializeSimulation()` itself ever does) means desaturation NEVER
+fires for the entire run -- no error, no warning, just silently nothing
+-- because `rwSpeedsInMsg` has no real data yet at that exact moment.
+Calling `Reset()` again after even ONE real dynamics tick fixes it
+completely, and the exact amount of extra time barely matters (confirmed
+both 1 s and 10 s delays work identically). `engine.service.SimulationService
+.build()` now does this automatically -- primes one dynamics tick,
+re-`Reset()`s every desaturation module, then continues to the
+scenario's real configured duration via the same documented
+"`ConfigureStopTime`/`ExecuteSimulation` resumes, never restarts"
+pattern `run_live()` already relied on -- so no scenario author needs to
+know this quirk exists.
+
+Added a GUI "Momentum dumping (RW desaturation via thrusters)" group
+(threshold + firing-resolution + cooldown fields) next to the spacecraft
+editor's other optional propulsion configs.
+
+**Verification**: like task 2, this feature's dynamics (no orbit
+propagation needed, just attitude + reaction wheels + thrusters) don't
+touch gravity or SPICE at all, so it was run for real against the real
+Basilisk build -- confirmed, with the EXACT Reset-timing experiment
+above, that a 4-wheel cluster starting pre-saturated (same real
+configuration as `examples/scenarioMomentumDumping.py`) genuinely sheds
+momentum (initial wheel-speed vector `[418.9, 209.4, 366.5, 0.0]` rad/s
+down to `[335.7, 99.0, 296.1, -43.3]` rad/s over 300 s, 3 real
+desaturation firings) when primed, and provably does nothing at all when
+not. Two new `requires_basilisk` tests in `tests/test_momentum_dumping.py`
+ACTUALLY PASS against that build (both the "it works when primed" case
+and a pinned regression test for the "does nothing without priming"
+case, so a future refactor that accidentally drops the priming step
+fails loudly instead of silently). Plus 5 new schema-validation tests
+and 3 new GUI round-trip tests, all passing.
+
+### Comprehensive, runnable template scenarios for every new feature
+
+**Real user request**, made explicit after task 2 landed: "for each one
+[feature on the 19-item backlog], please create a comprehensive
+template/example scenario that can be loaded and ran out of the box."
+Added to `scripts/_generate_templates.py` (the existing templates
+catalog's own generator -- schema dataclasses + `Scenario.validate()`,
+never hand-written JSON, per that script's own docstring) and
+regenerated the whole catalog (templates 01-09 picked up two new,
+purely-additive fields with their defaults -- `enable_gravity_gradient:
+false`, `momentum_dumping: null` -- confirmed via diff that nothing else
+in any of them changed):
+
+- **`10_gravity_gradient_torque.json`**: an uncontrolled, elongated
+  -inertia spacecraft with `enable_gravity_gradient` set -- its own
+  description explains why a spherically-symmetric inertia would make
+  the effect disappear entirely, and suggests that exact experiment.
+- **`11_thruster_attitude_control.json`**: the thruster counterpart to
+  '06'/'07' -- the same `inertial3D` pointing problem, actuated by eight
+  real ACS thrusters instead of reaction wheels, using the EXACT
+  configuration already confirmed to work in
+  `tests/test_thruster_control.py`.
+- **`12_reaction_wheel_momentum_dumping.json`**: four pre-saturated
+  reaction wheels plus an 8-thruster desaturation cluster, using the
+  EXACT configuration already confirmed to work in
+  `tests/test_momentum_dumping.py`.
+
+Every new template got the same treatment every existing one already
+has: a 200+ character `description` explaining the concept, what to
+look at in the results, and what to try changing; a specific regression
+test pinning its defining characteristic (`fsw_mode is None` + elongated
+inertia for '10', thruster-only actuators for '11', the required
+actuator mix for '12'); and a catalog row in both this directory's own
+`README.md` and the top-level `README.md`. The GUI's Load Scenario tab
+needed no code change at all to pick them up -- it already globs
+`scenarios/templates/*.json` dynamically (`gui/load_scenario_widget.py`),
+confirmed by rendering it headless and counting 12 listed templates.
+
+**Verification status**: schema-validated and round-trip tested (same
+generic parametrized tests every template goes through), and built from
+actuator/sensor configurations already confirmed to run correctly
+against real Basilisk in isolation (the exact `r_B`/`tHat_B`/`MaxThrust`/
+`gsHat_B`/`Omega` values from the passing `test_thruster_control.py`/
+`test_momentum_dumping.py` tests above) -- but NOT executed end-to-end
+through `SimulationService` in this sandbox: every scenario-level run
+needs SPICE kernels (`engine.service.SimulationService.build()` calls
+`build_spice_interface()` unconditionally), and this sandbox's network
+egress to fetch them is blocked (see task 1's entry above and
+`engine/kernels.py`'s own docstring) -- the same pre-existing limitation
+already true for all nine original templates, not something new to
+these three. Full suite: 755 passed, 107 skipped.
+

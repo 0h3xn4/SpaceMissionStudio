@@ -1,7 +1,7 @@
 {
-  "name": "09 - Monte Carlo dispersion analysis",
+  "name": "10 - Gravity gradient torque (uncontrolled)",
   "epoch_utc": "2030-01-01T00:00:00",
-  "simulation_mode": "orbit_only",
+  "simulation_mode": "full_attitude",
   "gravity": {
     "central_body": "earth",
     "central_body_degree": 0,
@@ -27,15 +27,15 @@
       },
       "dry_mass_kg": 500.0,
       "inertia_kg_m2": [
-        10.0,
+        12.5,
         0.0,
         0.0,
         0.0,
-        10.0,
+        12.5,
         0.0,
         0.0,
         0.0,
-        10.0
+        7.5
       ],
       "sigma_bn_init": [
         0.0,
@@ -53,7 +53,7 @@
       "enable_srp": false,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
-      "enable_gravity_gradient": false,
+      "enable_gravity_gradient": true,
       "sensors": [],
       "actuators": [],
       "fsw_mode": null,
@@ -93,27 +93,18 @@
     "activity_percentile": 95.0
   },
   "sim_settings": {
-    "duration_days": 1.0,
-    "dynamics_task_rate_s": 30.0,
+    "duration_days": 0.5,
+    "dynamics_task_rate_s": 5.0,
     "integrator": "rkf78"
   },
   "monte_carlo": {
-    "enabled": true,
-    "num_runs": 20,
+    "enabled": false,
+    "num_runs": 10,
     "thread_count": 1,
     "verbose": false,
-    "dispersions": [
-      {
-        "spacecraft": "sat-1",
-        "quantity": "dry_mass_kg",
-        "kind": "normal",
-        "bounds": null,
-        "mean": 500.0,
-        "std_deviation": 25.0
-      }
-    ]
+    "dispersions": []
   },
   "mission_sequence": [],
-  "description": "The same circular LEO orbit as '01', but run as a Monte Carlo batch of 20 cases instead of a single deterministic run: each case's dry_mass_kg is independently redrawn from a normal distribution (mean 500 kg, std deviation 25 kg -- a stand-in for, e.g., propellant -loading or manufacturing-tolerance uncertainty). This is the basic pattern behind real uncertainty-quantification questions: 'given that I don't know this spacecraft's exact mass to the kilogram, how much does that affect the outcome I care about?'\n\nWhat to look at: run via the GUI's 'Run Monte Carlo...' action (or 'missionstudio monte-carlo') and pick an archive directory -- each of the 20 runs is archived separately, so you can compare e.g. final position across cases to see how much (or how little) an 5% mass uncertainty actually perturbs the resulting orbit over a 1-day propagation (physically: not much, for pure two-body motion -- mass doesn't affect trajectory at all, only propellant-consuming maneuvers/drag/SRP would show sensitivity; try enabling one of those, or add an 'attitude_sigma_bn' dispersion, to see a case where it does matter).\n\nTry changing: num_runs (more runs = a smoother distribution of outcomes, at proportional runtime cost), std_deviation (a wider spread), or add a second DispersionConfig with quantity='attitude_sigma_bn'/kind='uniform_euler_mrp' for an initial-attitude dispersion instead (needs simulation_mode='full_attitude').",
+  "description": "A spacecraft with NO attitude control (fsw_mode is None) and an elongated, non-spherical inertia tensor (Ixx=Iyy=12.5, Izz=7.5 kg*m^2) with SpacecraftConfig.enable_gravity_gradient set -- Basilisk's real GravityGradientEffector, the torque the central body's own gravity exerts across a spacecraft's non-uniform mass distribution. With zero initial body rate and no other torque source, a spacecraft normally stays frozen at its initial attitude for the entire run (see '06'/'07' for what active control looks like); this one does NOT, because gravity gradient torque is real physics, not a bug.\n\nWhat to look at: this is a Basilisk-truth-level effect, not exposed as a named result series when fsw_mode is None (see engine.service.SimulationService.run()'s own docstring) -- the clearest way to see it is tests/test_gravity_gradient.py's own technique (reading scStateOutMsg.sigma_BN directly), or simply watching the spacecraft's attitude indicator drift in Vizard over the run instead of staying locked to its starting orientation. For a spherically-symmetric inertia (Ixx=Iyy=Izz), this torque is identically zero -- try setting all three equal and confirm it stays frozen again.\n\nTry changing: the inertia spread (more elongated = stronger torque), the orbit altitude (gravity gradient torque falls off as 1/r^3 -- much stronger effect in a very low orbit than at GEO), or enable fsw_mode='inertial3D' with reaction wheels (see '07') to see an active controller simply reject this as one more disturbance torque.",
   "schema_version": 1
 }
