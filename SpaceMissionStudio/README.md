@@ -7,7 +7,7 @@ Think "STK/FreeFlyer-lite" -- every capability maps to a specific
 Basilisk module, or is explicitly flagged as custom/out-of-scope, never
 fabricated.
 
-**Status: v1.1.0**. See "Version 1.1.0" below for what's new in this
+**Status: v2.0.0**. See "Version 2.0.0" below for what's new in this
 release, "Capabilities" for the full current feature set, and
 [`HISTORY.md`](HISTORY.md) for the full phase-by-phase development log
 this README used to carry inline (every feature's design rationale, every
@@ -25,20 +25,21 @@ assumed -- see [`USER_MANUAL.md`](USER_MANUAL.md).
 **Just want to use the app, not develop it?** There's a real installer
 for that -- no terminal, no typed `pip`/`venv` commands:
 
-* **Linux:** `packaging/build_deb.sh` produces `spacemissionstudio_1.1.0_all.deb`
-  -- install it with `sudo apt install ./spacemissionstudio_1.1.0_all.deb`
+* **Linux:** `packaging/build_deb.sh` produces `spacemissionstudio_2.0.0_all.deb`
+  -- install it with `sudo apt install ./spacemissionstudio_2.0.0_all.deb`
   (or double-click it in a file manager with package-install support) and
   get a normal application-menu entry. The build itself (this exact
   version string included) was re-run in this project's own development
-  sandbox for the 1.1.0 release and produces a valid `.deb` with
+  sandbox for the 2.0.0 release and produces a valid `.deb` with
   `dpkg-deb`; the full real-Basilisk end-to-end install (venv creation,
   `bsk[all]` from PyPI, a real `printBuildInfo()`) was confirmed at
-  1.0.0 against the same install logic, which 1.1.0 carries forward
-  unchanged -- see `packaging/README.md`'s "The real installers" section
-  for exactly what that confirmed and when.
+  1.0.0 against the same install logic, which 2.0.0 carries forward
+  unchanged (just under the renamed package/launcher -- see "Version
+  2.0.0" below) -- see `packaging/README.md`'s "The real installers"
+  section for exactly what that confirmed and when.
 * **Windows:** `packaging/windows/spacemissionstudio.iss` (built with
   [Inno Setup](https://jrsoftware.org/isinfo.php)) produces
-  `spacemissionstudio-1.1.0-setup.exe` -- a normal installer wizard, ending in
+  `spacemissionstudio-2.0.0-setup.exe` -- a normal installer wizard, ending in
   a Start Menu entry. New for 1.0.0; written carefully but still not run
   on a real Windows machine (this development sandbox has none) -- see
   `packaging/README.md` for the same honesty-first verification status
@@ -218,11 +219,11 @@ environment issue.
   postinst's or the Windows installer's own actual end user); if
   `spacemissionstudio gui` starts but the results plot stays blank, that is
   the first thing to check. Unrelated to that migration: `build_deb.sh`
-  itself was re-run for the 1.1.0 release and still produces a valid,
-  installable `spacemissionstudio_1.1.0_all.deb` via `dpkg-deb` (it reads
+  itself was re-run for the 2.0.0 release and still produces a valid,
+  installable `spacemissionstudio_2.0.0_all.deb` via `dpkg-deb` (it reads
   `spacemissionstudio.__version__` rather than hardcoding a version string),
   but the full real-Basilisk install chain this paragraph describes was
-  not independently re-run against that specific 1.1.0 artifact -- only
+  not independently re-run against that specific 2.0.0 artifact -- only
   the unchanged underlying install logic has been.
 
 ## Capabilities
@@ -437,7 +438,7 @@ SpaceMissionStudio/
     build_deb.sh                     -- builds the real, double-click Linux .deb installer
     deb/                              -- .deb package skeleton (DEBIAN/control.in + postinst/prerm/postrm, desktop entry, copyright)
     windows/                          -- the real Windows installer wizard
-      spacemissionstudio.iss              -- Inno Setup script -> spacemissionstudio-1.1.0-setup.exe
+      spacemissionstudio.iss              -- Inno Setup script -> spacemissionstudio-2.0.0-setup.exe
       bootstrap_env.ps1              -- venv + Basilisk + SpaceMissionStudio install step the installer runs
   tests/
     conftest.py                      -- requires_basilisk / requires_gui auto-skip markers
@@ -854,6 +855,72 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   access, has since run full multi-day simulations successfully (see
   "Verification status" above) -- kept in this list only because it's
   still true of THIS development sandbox specifically.
+
+## Version 2.0.0
+
+A **MAJOR** version bump under semver -- the only breaking change in
+this project's history so far, and the reason it's 2.0.0 and not 1.1.1:
+every scenario file, template, and simulation capability from 1.1.0
+carries over completely unchanged (see "Version 1.1.0" below for all of
+that); what breaks is anyone's own code that imports the old package
+name or invokes the old CLI command.
+
+* **Renamed from "missionStudio" to "SpaceMissionStudio"** (short form
+  "SMS" -- in prose only, never the CLI command or package name, since
+  that would collide confusingly with Short Message Service), requested
+  directly. A full technical rename, not just branding:
+  * Directory: `missionStudio/` -> `SpaceMissionStudio/`.
+  * Python package/import name: `missionstudio` -> `spacemissionstudio`.
+    **Migration**: change `import missionstudio` / `from missionstudio
+    import ...` to `import spacemissionstudio` / `from
+    spacemissionstudio import ...` anywhere you've scripted against this
+    project.
+  * CLI command: `missionstudio ...` -> `spacemissionstudio ...`
+    (`pyproject.toml`'s `[project.scripts]` entry point).
+  * PyPI/`.deb` package name: `missionstudio` -> `spacemissionstudio`.
+  * Windows installer: app name/publisher/install directory/Start Menu
+    group/output filename all updated, plus a freshly-regenerated
+    `AppId` GUID (the field's own comment says not to reuse a GUID for a
+    different application identity, and this is one -- no end user has
+    ever installed the old build via this installer, which has still
+    never been run on a real Windows machine).
+  * Desktop entry (`packaging/spacemissionstudio.desktop.in` and the
+    packaged `.desktop`): `Name=`/`Exec=`/`Icon=`/`StartupWMClass=` all
+    updated, files themselves renamed.
+  * Every in-app GUI string (window title, About dialog, Load Scenario
+    tab text, ...) -- confirmed with a real headless render, not just
+    grep.
+  * All 120 files referencing the old name in any case form
+    (`missionstudio`, `missionStudio`, `Missionstudio`,
+    `MISSIONSTUDIO` -- all four variants genuinely appeared somewhere,
+    including a PowerShell PascalCase parameter name and an
+    env-var-style all-caps pair in a template's own description field)
+    updated consistently.
+  * Deliberately NOT touched: `HISTORY.md`'s development log keeps
+    saying "missionStudio"/"missionstudio" throughout, since it's an
+    honest record of what was actually true when each entry was written
+    -- the same "nothing below was deleted or altered" discipline that
+    file already states about itself. One note near the top explains
+    the rename instead of rewriting history.
+* **Removed `missionAnalysis`**, a standalone, one-off constellation
+  mission-design case study that predates this project and was never
+  run end-to-end in this development sandbox (its own README said so).
+  Not imported or depended on anywhere -- the only references elsewhere
+  were prose provenance comments ("ported directly from
+  `../missionAnalysis`'s X"), left as historical design-rationale notes,
+  not functional dependencies. This project has since absorbed and
+  generalized essentially everything it did (constellation generation,
+  station-keeping/phasing controllers, power budget, link-margin
+  estimate, Vizard comm-ring visualization) with far more capability
+  than the one fixed case study ever covered.
+* **Version bumped** `1.1.0` -> `2.0.0` in `pyproject.toml`,
+  `spacemissionstudio/__init__.py`, and
+  `packaging/windows/spacemissionstudio.iss`'s `MyAppVersion` (the
+  `.deb` reads `spacemissionstudio.__version__` directly, no change
+  needed there). No scenario schema version bump -- `
+  CURRENT_SCHEMA_VERSION` is still `1`, every scenario file valid under
+  1.1.0 is still valid, unmodified, under 2.0.0; the breaking surface is
+  entirely the package/CLI identity above, not the scenario format.
 
 ## Version 1.1.0
 
