@@ -1,0 +1,154 @@
+{
+  "name": "16 - Lambert transfer: solving for a point-to-point delta-V",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "orbit_only",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 0,
+    "third_body_perturbers": []
+  },
+  "spacecraft": [
+    {
+      "name": "sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 10000.0,
+        "eccentricity": 0.001,
+        "inclination_deg": 5.0,
+        "raan_deg": 10.0,
+        "arg_periapsis_deg": 10.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 10.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 330.0,
+      "inertia_kg_m2": [
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0
+      ],
+      "sigma_bn_init": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [],
+      "fsw_mode": null,
+      "fsw_params": {},
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 0.2,
+    "dynamics_task_rate_s": 10.0,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [
+    {
+      "kind": "report",
+      "label": "Before transfer",
+      "params": {
+        "series": []
+      },
+      "children": []
+    },
+    {
+      "kind": "lambert_transfer",
+      "label": "Lambert transfer burn",
+      "params": {
+        "spacecraft": "sat-1",
+        "target_position_m": [
+          -6578000.0,
+          0.0,
+          0.0
+        ],
+        "time_of_flight_s": 2490.0,
+        "max_distance_target_m": 500.0,
+        "min_orbit_radius_m": 6378000.0
+      },
+      "children": []
+    },
+    {
+      "kind": "propagate",
+      "label": "Coast to arrival",
+      "params": {
+        "stop_condition": "duration",
+        "duration_days": 0.028819444444444446
+      },
+      "children": []
+    },
+    {
+      "kind": "report",
+      "label": "After transfer (should match target_position_m)",
+      "params": {
+        "series": []
+      },
+      "children": []
+    }
+  ],
+  "description": "A new Mission Sequence command kind: 'lambert_transfer' solves for whatever impulsive delta-V takes the spacecraft from its CURRENT state to target_position_m after time_of_flight_s, via Basilisk's own lambertPlanner -> lambertSolver -> lambertValidator chain (engine.mission_engine.MissionEngine._run_lambert_transfer), then applies it immediately -- unlike '08's 'maneuver' command, you specify WHERE you want to end up, not the delta-V itself. Same underlying 3 Basilisk modules, same validation/reporting philosophy as Basilisk's own examples/scenarioLambertSolver.py.\n\nThis exact configuration (orbit, target_position_m, time_of_flight_s) was confirmed directly against a real Basilisk build to land within floating-point noise (sub-millimeter) of target_position_m when the resulting delta-V is propagated forward by time_of_flight_s -- not a hand-picked-to-look-plausible example.\n\nWhat to look at: the 'Mission Output' tab's two 'report' commands snapshot sat-1.position_N before and after the transfer -- after propagating for time_of_flight_s, the 'after' position should sit almost exactly at target_position_m ([-6578000, 0, 0] m here).\n\nTry changing: target_position_m (any reachable point works, not just ones near the current orbit), time_of_flight_s (very short times need very large, often rejected, delta-Vs -- try making it unreasonably small to see lambert_transfer raise a clear 'lambertValidator reported' error instead of silently doing nothing), or min_orbit_radius_m (set it to the central body's own radius to reject any transfer trajectory that would dip through the surface).",
+  "schema_version": 1
+}

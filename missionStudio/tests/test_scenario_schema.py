@@ -8,8 +8,11 @@ from missionstudio.schema import (
     ActuatorConfig,
     ConstantThrustConfig,
     DispersionConfig,
+    FuelTankConfig,
     GravityConfig,
     GroundStationConfig,
+    MagneticMomentumManagementConfig,
+    MomentumDumpingConfig,
     MonteCarloConfig,
     OrbitIC,
     PhasingKeepingConfig,
@@ -204,6 +207,52 @@ def test_space_weather_local_file_requires_path():
         sc.validate()
 
 
+def test_space_weather_defaults_to_nrlmsise00_nominal():
+    sc = _minimal_scenario()
+    assert sc.space_weather.atmosphere_model == "nrlmsise00"
+    assert sc.space_weather.activity_level == "nominal"
+    assert sc.space_weather.activity_percentile == 95.0
+    sc.validate()  # defaults must themselves be valid
+
+
+def test_space_weather_rejects_unknown_atmosphere_model():
+    sc = _minimal_scenario()
+    sc.space_weather.atmosphere_model = "jacchia_roberts"  # not implemented in Basilisk -- see schema docstring
+    with pytest.raises(ScenarioValidationError, match="atmosphere_model"):
+        sc.validate()
+
+
+def test_space_weather_rejects_unknown_activity_level():
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "extreme"
+    with pytest.raises(ScenarioValidationError, match="activity_level"):
+        sc.validate()
+
+
+def test_space_weather_conservative_accepts_valid_percentile():
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "conservative"
+    sc.space_weather.activity_percentile = 97.7  # a mean+2-sigma-style figure, not just 95
+    sc.validate()
+
+
+@pytest.mark.parametrize("percentile", [10.0, 49.9, 100.0, 150.0])
+def test_space_weather_conservative_rejects_out_of_range_percentile(percentile):
+    sc = _minimal_scenario()
+    sc.space_weather.activity_level = "conservative"
+    sc.space_weather.activity_percentile = percentile
+    with pytest.raises(ScenarioValidationError, match="activity_percentile"):
+        sc.validate()
+
+
+def test_space_weather_exponential_model_round_trips_through_save_load(tmp_path):
+    sc = _minimal_scenario()
+    sc.space_weather.atmosphere_model = "exponential"
+    sc.save(tmp_path / "s.json")
+    loaded = load_scenario(tmp_path / "s.json")
+    assert loaded.space_weather.atmosphere_model == "exponential"
+
+
 def test_load_scenario_missing_file_gives_clear_error(tmp_path):
     with pytest.raises(ScenarioValidationError, match="could not read file"):
         load_scenario(tmp_path / "does_not_exist.json")
@@ -270,7 +319,7 @@ def test_duplicate_sensor_names_rejected():
 def test_duplicate_actuator_names_rejected():
     sc = _minimal_scenario()
     sc.spacecraft[0].actuators = [
-        ActuatorConfig(kind="reaction_wheel", name="dup", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="reaction_wheel", name="dup", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
         ActuatorConfig(kind="thruster", name="dup"),
     ]
     with pytest.raises(ScenarioValidationError, match="actuator names must be unique"):
@@ -288,6 +337,396 @@ def test_reaction_wheel_requires_gsHat_B():
     sc = _minimal_scenario()
     sc.spacecraft[0].actuators = [ActuatorConfig(kind="reaction_wheel", name="rw-1")]
     with pytest.raises(ScenarioValidationError, match="gsHat_B"):
+        sc.validate()
+
+
+def test_custom_reaction_wheel_requires_u_max_or_useMaxTorque_false():
+    # rwFactory.create() hard-exits the whole process (not a catchable
+    # error) on a non-positive u_max for rw_type="custom" (the default) --
+    # this schema check exists specifically to never reach that call.
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                        params={"gsHat_B": [1, 0, 0], "Js": 0.01})
+    ]
+    with pytest.raises(ScenarioValidationError, match="u_max"):
+        sc.validate()
+
+
+def test_custom_reaction_wheel_requires_inertia():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                        params={"gsHat_B": [1, 0, 0], "u_max": 0.2})
+    ]
+    with pytest.raises(ScenarioValidationError, match="Js"):
+        sc.validate()
+
+
+def test_custom_reaction_wheel_with_u_max_and_Js_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                        params={"gsHat_B": [1, 0, 0], "u_max": 0.2, "Js": 0.01})
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.validate()  # must not raise
+
+
+def test_named_hardware_reaction_wheel_type_skips_custom_requirements():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1",
+                        params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"})
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.validate()  # must not raise -- named types have their own built-in defaults
+
+
+def test_sunSafePoint_use_css_estimation_requires_a_coarse_sun_sensor():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fsw_params = {"use_css_estimation": True}
+    with pytest.raises(ScenarioValidationError, match="use_css_estimation"):
+        sc.validate()
+
+
+def test_sunSafePoint_use_css_estimation_with_a_coarse_sun_sensor_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fsw_params = {"use_css_estimation": True}
+    sc.spacecraft[0].sensors = [SensorConfig(kind="coarse_sun_sensor", name="css-1", params={"nHat_B": [0, 0, 1]})]
+    sc.validate()  # must not raise
+
+
+def test_thruster_requires_r_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"tHat_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    with pytest.raises(ScenarioValidationError, match="r_B"):
+        sc.validate()
+
+
+def test_thruster_requires_tHat_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"r_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    with pytest.raises(ScenarioValidationError, match="tHat_B"):
+        sc.validate()
+
+
+def test_thruster_requires_MaxThrust():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1", params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0]})
+    ]
+    with pytest.raises(ScenarioValidationError, match="MaxThrust"):
+        sc.validate()
+
+
+def test_thruster_with_all_required_params_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 1.28], "tHat_B": [1, 0, 0], "MaxThrust": 1.0})
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.validate()  # must not raise
+
+
+def test_mixing_reaction_wheel_and_thruster_actuators_rejected():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    with pytest.raises(ScenarioValidationError, match="mix 'reaction_wheel' and 'thruster'"):
+        sc.validate()
+
+
+def test_momentum_dumping_allows_mixing_reaction_wheel_and_thruster():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    sc.validate()  # must not raise
+
+
+def test_momentum_dumping_requires_reaction_wheel_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'reaction_wheel' actuator"):
+        sc.validate()
+
+
+def test_momentum_dumping_requires_thruster_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'thruster' actuator"):
+        sc.validate()
+
+
+def test_momentum_dumping_requires_hs_max_positive():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=0.0)
+    with pytest.raises(ScenarioValidationError, match="hs_max must be > 0"):
+        sc.validate()
+
+
+def test_momentum_dumping_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=65.0, thr_min_fire_time=0.05,
+                                                                max_counter_value=50)
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].momentum_dumping.hs_max == 65.0
+    assert loaded.spacecraft[0].momentum_dumping.thr_min_fire_time == 0.05
+    assert loaded.spacecraft[0].momentum_dumping.max_counter_value == 50
+
+
+def test_magnetic_torque_rod_requires_gtHat_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1", params={"max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="gtHat_B"):
+        sc.validate()
+
+
+def test_magnetic_torque_rod_requires_max_dipole_a_m2():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1", params={"gtHat_B": [1, 0, 0]}),
+    ]
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="max_dipole_a_m2"):
+        sc.validate()
+
+
+def test_magnetic_torque_rod_without_magnetic_momentum_management_rejected():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    with pytest.raises(ScenarioValidationError, match="magnetic_momentum_management"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_reaction_wheel_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'reaction_wheel' actuator"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_magnetic_torque_rod_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[0.0])
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'magnetic_torque_rod' actuator"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_one_bias_per_reaction_wheel():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(
+        wheel_speed_biases_rad_s=[10.0]  # only 1 entry for 2 reaction wheels
+    )
+    with pytest.raises(ScenarioValidationError, match="needs exactly 2 entries"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_with_all_required_params_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[10.0])
+    sc.validate()  # must not raise
+
+
+def test_fuel_tank_requires_a_thruster_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=20.0, max_propellant_mass_kg=25.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'thruster' actuator"):
+        sc.validate()
+
+
+def test_fuel_tank_propellant_mass_must_not_exceed_capacity():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=30.0, max_propellant_mass_kg=25.0)
+    with pytest.raises(ScenarioValidationError, match="between 0 and max_propellant_mass_kg"):
+        sc.validate()
+
+
+def test_fuel_tank_requires_positive_capacity():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=0.0, max_propellant_mass_kg=0.0)
+    with pytest.raises(ScenarioValidationError, match="max_propellant_mass_kg must be > 0"):
+        sc.validate()
+
+
+def test_fuel_tank_with_thruster_actuator_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=20.0, max_propellant_mass_kg=25.0)
+    sc.validate()  # must not raise
+
+
+def test_fuel_tank_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(
+        propellant_mass_kg=20.0, max_propellant_mass_kg=25.0, tank_position_b_m=[0.1, 0.0, -0.2],
+    )
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].fuel_tank.propellant_mass_kg == 20.0
+    assert loaded.spacecraft[0].fuel_tank.max_propellant_mass_kg == 25.0
+    assert loaded.spacecraft[0].fuel_tank.tank_position_b_m == [0.1, 0.0, -0.2]
+
+
+def test_mixing_reaction_wheel_and_magnetic_torque_rod_without_config_rejected():
+    """Unlike the thruster case, mixing reaction_wheel with
+    magnetic_torque_rod isn't caught by the generic "mix rejected" rule
+    (that rule only fires for reaction_wheel+thruster) -- it's caught
+    instead by magnetic_torque_rod's own "needs magnetic_momentum_management"
+    requirement, which fires regardless of what else is on the spacecraft.
+    """
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    with pytest.raises(ScenarioValidationError, match="magnetic_momentum_management"):
+        sc.validate()
+
+
+def test_momentum_dumping_and_magnetic_momentum_management_are_mutually_exclusive():
+    """Both independently require 'reaction_wheel' actuators and both get
+    built as SEPARATE, independent desaturation control paths in
+    engine.service (confirmed by audit: two independent `if` blocks, not
+    elif) -- setting both on one spacecraft would silently have two
+    controllers fighting over the same wheels. A spacecraft can be pushed
+    into exactly this combination: momentum_dumping is REQUIRED whenever
+    'reaction_wheel'+'thruster' are mixed (e.g. for a fuel_tank, which
+    needs 'thruster'), while a 'magnetic_torque_rod' actuator independently
+    REQUIRES magnetic_momentum_management.
+    """
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].momentum_dumping = MomentumDumpingConfig(hs_max=50.0)
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[0.0])
+    with pytest.raises(ScenarioValidationError, match="mutually exclusive"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(
+        wheel_speed_biases_rad_s=[12.5], c_gain=0.01,
+    )
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].magnetic_momentum_management.wheel_speed_biases_rad_s == [12.5]
+    assert loaded.spacecraft[0].magnetic_momentum_management.c_gain == 0.01
+
+
+@pytest.mark.parametrize("field_name", ["drag_coeff", "drag_area_m2", "srp_coeff", "srp_area_m2"])
+@pytest.mark.parametrize("bad_value", [0.0, -1.0])
+def test_non_positive_drag_or_srp_coefficient_or_area_rejected(field_name, bad_value):
+    """engine.service feeds these straight into Basilisk's drag/SRP
+    effectors as a physical projected area/coefficient -- neither effector
+    itself rejects a non-positive value, so this would otherwise silently
+    produce a reversed or zero-magnitude force instead of a clear error.
+    """
+    sc = _minimal_scenario()
+    setattr(sc.spacecraft[0], field_name, bad_value)
+    with pytest.raises(ScenarioValidationError, match=field_name):
         sc.validate()
 
 
@@ -374,12 +813,25 @@ def test_location_pointing_with_existing_ground_station_validates():
     sc.validate()  # must not raise
 
 
-def test_location_pointing_with_target_body_validates_structurally():
-    # Schema-valid (exactly one target given); engine.fsw is what rejects
-    # target_body as not-yet-wired-up at run time, not schema validation.
+def test_location_pointing_target_body_requires_spice_tracking():
     sc = _minimal_scenario()
     sc.spacecraft[0].fsw_mode = "locationPointing"
-    sc.spacecraft[0].fsw_params = {"target_body": "sun"}
+    sc.spacecraft[0].fsw_params = {"target_body": "sun"}  # not in gravity.third_body_perturbers
+    with pytest.raises(ScenarioValidationError, match="needs a real SPICE ephemeris"):
+        sc.validate()
+
+
+def test_location_pointing_with_spice_tracked_target_body_validates():
+    sc = _minimal_scenario(gravity=GravityConfig(central_body="earth", third_body_perturbers=["moon"]))
+    sc.spacecraft[0].fsw_mode = "locationPointing"
+    sc.spacecraft[0].fsw_params = {"target_body": "moon"}
+    sc.validate()  # must not raise
+
+
+def test_location_pointing_target_body_can_be_the_central_body():
+    sc = _minimal_scenario(gravity=GravityConfig(central_body="earth"))
+    sc.spacecraft[0].fsw_mode = "locationPointing"
+    sc.spacecraft[0].fsw_params = {"target_body": "earth"}
     sc.validate()  # must not raise
 
 
@@ -502,7 +954,7 @@ def test_old_scenario_file_without_monte_carlo_key_still_loads(tmp_path):
 def test_phase2_fields_round_trip_through_save_load(tmp_path):
     sc = _minimal_scenario()
     sc.spacecraft[0].sensors = [SensorConfig(kind="coarse_sun_sensor", name="css-1", params={"nHat_B": [1, 0, 0]})]
-    sc.spacecraft[0].actuators = [ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [0, 1, 0]})]
+    sc.spacecraft[0].actuators = [ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [0, 1, 0], "rw_type": "Honeywell_HR16"})]
     sc.spacecraft[0].fsw_mode = "hillPoint"
     sc.spacecraft[0].control_params = {"K": 4.0, "P": 25.0}
 
@@ -802,7 +1254,7 @@ def test_orbit_only_mode_rejects_sensors():
 
 def test_orbit_only_mode_rejects_actuators():
     sc = _minimal_scenario(simulation_mode="orbit_only")
-    sc.spacecraft[0].actuators = [ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]})]
+    sc.spacecraft[0].actuators = [ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"})]
     with pytest.raises(ScenarioValidationError, match="actuators"):
         sc.validate()
 

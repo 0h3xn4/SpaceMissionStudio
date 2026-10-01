@@ -76,6 +76,43 @@ def test_maneuver_rejects_missing_spacecraft(qtbot):
         dialog.to_dataclass()
 
 
+def test_lambert_transfer_round_trips(qtbot):
+    dialog = _dialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("lambert_transfer")
+    dialog.kind_combo.setCurrentIndex(index)
+    sc_index = dialog.lambert_spacecraft_combo.findText("sat-1")
+    dialog.lambert_spacecraft_combo.setCurrentIndex(sc_index)
+    dialog.lambert_target_x_spin.setValue(-6578000.0)
+    dialog.lambert_target_y_spin.setValue(0.0)
+    dialog.lambert_target_z_spin.setValue(0.0)
+    dialog.lambert_tof_spin.setValue(2490.0)
+    dialog.lambert_num_rev_spin.setValue(1)
+    dialog.lambert_max_dist_spin.setValue(500.0)
+    dialog.lambert_min_radius_spin.setValue(6378000.0)
+
+    command = dialog.to_dataclass()
+    assert command.kind == "lambert_transfer"
+    assert command.params == {
+        "spacecraft": "sat-1",
+        "target_position_m": [-6578000.0, 0.0, 0.0],
+        "time_of_flight_s": 2490.0,
+        "num_revolutions": 1,
+        "max_distance_target_m": 500.0,
+        "min_orbit_radius_m": 6378000.0,
+    }
+
+
+def test_lambert_transfer_rejects_missing_spacecraft(qtbot):
+    dialog = _dialog(spacecraft_names=[])  # no spacecraft defined yet -- combo stays empty
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("lambert_transfer")
+    dialog.kind_combo.setCurrentIndex(index)
+
+    with pytest.raises(ValueError, match="spacecraft"):
+        dialog.to_dataclass()
+
+
 def test_assignment_round_trips(qtbot):
     dialog = _dialog(spacecraft_names=["sat-1"])
     qtbot.addWidget(dialog)
@@ -184,6 +221,32 @@ def test_kind_combo_disabled_when_editing_existing_command(qtbot):
     dialog = _dialog(command=Command(kind="propagate", params={"duration_days": 1.0}))
     qtbot.addWidget(dialog)
     assert not dialog.kind_combo.isEnabled()
+
+
+def test_widget_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.mission_sequence_editor import MissionSequenceEditorWidget, _CommandEditorDialog
+
+    widget = MissionSequenceEditorWidget()
+    qtbot.addWidget(widget)
+    widget.set_spacecraft_names_provider(lambda: ["sat-1"])
+
+    def fake_exec(self):
+        self.duration_days_spin.setValue(1.5)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_CommandEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("propagate" in t.text() for t in toasts)
+
+    widget.tree.setCurrentItem(widget.tree.topLevelItem(0))
+    widget._on_remove()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("Removed" in t.text() for t in toasts)
 
 
 def test_widget_add_edit_remove_top_level(qtbot, monkeypatch):
@@ -371,3 +434,11 @@ def test_editing_child_does_not_stale_parent_children_field(qtbot, monkeypatch):
 
     got = widget.to_command_list()
     assert got[0].children[0].label == "after"
+
+
+def test_command_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    dialog = _dialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

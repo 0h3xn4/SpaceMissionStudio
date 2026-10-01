@@ -1,0 +1,323 @@
+{
+  "name": "12 - Reaction wheel momentum dumping",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "full_attitude",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 0,
+    "third_body_perturbers": []
+  },
+  "spacecraft": [
+    {
+      "name": "sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6928.0,
+        "eccentricity": 0.0,
+        "inclination_deg": 45.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 2500.0,
+      "inertia_kg_m2": [
+        1700.0,
+        0.0,
+        0.0,
+        0.0,
+        1700.0,
+        0.0,
+        0.0,
+        0.0,
+        1800.0
+      ],
+      "sigma_bn_init": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-1",
+          "params": {
+            "gsHat_B": [
+              0.7071,
+              0.0,
+              0.7071
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0,
+            "Omega": 4000.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-2",
+          "params": {
+            "gsHat_B": [
+              0.0,
+              0.7071,
+              0.7071
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0,
+            "Omega": 2000.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-3",
+          "params": {
+            "gsHat_B": [
+              -0.7071,
+              0.0,
+              0.7071
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0,
+            "Omega": 3500.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-4",
+          "params": {
+            "gsHat_B": [
+              0.0,
+              -0.7071,
+              0.7071
+            ],
+            "rw_type": "Honeywell_HR16",
+            "maxMomentum": 100.0,
+            "Omega": 0.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-1",
+          "params": {
+            "r_B": [
+              -1,
+              -1,
+              1.28
+            ],
+            "tHat_B": [
+              1,
+              0,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-2",
+          "params": {
+            "r_B": [
+              1,
+              -1,
+              -1.28
+            ],
+            "tHat_B": [
+              -1,
+              0,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-3",
+          "params": {
+            "r_B": [
+              1,
+              -1,
+              1.28
+            ],
+            "tHat_B": [
+              0,
+              1,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-4",
+          "params": {
+            "r_B": [
+              1,
+              1,
+              -1.28
+            ],
+            "tHat_B": [
+              0,
+              -1,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-5",
+          "params": {
+            "r_B": [
+              1,
+              1,
+              1.28
+            ],
+            "tHat_B": [
+              -1,
+              0,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-6",
+          "params": {
+            "r_B": [
+              -1,
+              1,
+              -1.28
+            ],
+            "tHat_B": [
+              1,
+              0,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-7",
+          "params": {
+            "r_B": [
+              -1,
+              1,
+              1.28
+            ],
+            "tHat_B": [
+              0,
+              -1,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "desat-8",
+          "params": {
+            "r_B": [
+              -1,
+              -1,
+              -1.28
+            ],
+            "tHat_B": [
+              0,
+              1,
+              0
+            ],
+            "MaxThrust": 5.0,
+            "thruster_type": "MOOG_Monarc_5"
+          }
+        }
+      ],
+      "fsw_mode": "inertial3D",
+      "fsw_params": {
+        "sigma_R0N": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": {
+        "hs_max": 80.0,
+        "thr_min_fire_time": 0.02,
+        "max_counter_value": 100
+      },
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 0.01,
+    "dynamics_task_rate_s": 1.0,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "A spacecraft under normal reaction-wheel attitude control (fsw_mode 'inertial3D', same control chain as '07') whose four wheels start out already heavily spun up (the same pre-saturated Omega values as examples/scenarioMomentumDumping.py) -- MomentumDumpingConfig (hs_max=80 N*m*s) fires an 8-thruster desaturation cluster via thrMomentumManagement -> thrForceMapping -> thrMomentumDumping (engine.fsw.build_momentum_dumping) to bleed the excess momentum off, while the SAME reaction wheels stay in control of attitude the whole time -- the thrusters here never do attitude control, only desaturation. engine.service.SimulationService.build() automatically primes one dynamics tick and re-Resets the desaturation module before the real run starts, a real Basilisk requirement confirmed against this checkout's own build (see engine.fsw.build_momentum_dumping's docstring) -- nothing about that is visible here, it just works.\n\nWhat to look at: result series '{sat-1}.rw_speeds' should show all four wheel speeds dropping in sharp steps (each step is one desaturation firing) rather than staying flat or climbing; '{sat-1}.thruster_on_time' shows exactly when the desaturation thrusters fired.\n\nTry changing: momentum_dumping.hs_max (a lower threshold triggers desaturation sooner/more often), the wheels' initial Omega (closer to maxMomentum = desaturates almost immediately), or remove momentum_dumping entirely to see the wheel speeds never decrease on their own.",
+  "schema_version": 1
+}

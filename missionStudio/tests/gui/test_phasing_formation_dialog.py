@@ -11,6 +11,33 @@ import pytest
 pytestmark = pytest.mark.requires_gui
 
 
+def test_description_label_wraps_instead_of_blowing_up_dialog_width(qtbot):
+    """Regression guard for a real bug, found via an actual user
+    screenshot: the top description QLabel had no setWordWrap(True), so
+    Qt sized it (and the whole dialog) to fit its entire paragraph on
+    ONE line -- thousands of pixels wide. The window manager then
+    centered that oversized dialog, pushing most of it (including every
+    row's own label) off the left edge of the screen. The width bound
+    below is loose (not pixel-exact) -- it just needs to catch "the
+    dialog is absurdly wide again", not pin an exact layout.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+
+    dialog = PhasingFormationDialog(["chief-1", "follower-1"], central_body="earth")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+
+    description_labels = [
+        w for w in dialog.findChildren(QLabel) if len(w.text()) > 100
+    ]
+    assert description_labels, "expected to find the long top description QLabel"
+    assert all(w.wordWrap() for w in description_labels)
+    assert dialog.sizeHint().width() < 900
+
+
 def test_defaults_produce_a_valid_request(qtbot):
     from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
 
@@ -88,3 +115,16 @@ def test_accept_blocked_when_follower_name_equals_chief_name(qtbot, monkeypatch)
     dialog.follower_name_edit.setText("chief-1")
     dialog._on_accept()
     assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why --
+    measured directly for THIS dialog before the fix: 497x545 vs its own
+    497x601 sizeHint().
+    """
+    from missionstudio.gui.phasing_formation_dialog import PhasingFormationDialog
+
+    dialog = PhasingFormationDialog(["chief-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

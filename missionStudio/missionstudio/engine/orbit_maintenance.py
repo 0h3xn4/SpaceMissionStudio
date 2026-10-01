@@ -96,18 +96,38 @@ subtract only the propellant mass it ITSELF burns that tick. This
 composes correctly no matter how many other controllers or an external
 dispersion are also adjusting the same ``hub.mHub`` -- each one's edit is
 a self-contained delta, order-independent by construction, rather than a
-snapshot that can stomp on someone else's. It also makes each
-controller's OWN delta-V bookkeeping marginally more physically accurate
-as a side effect: ``currentMass`` is now the spacecraft's real total mass
-(dry + every tank currently aboard), not just this one controller's own
-belief about it.
+snapshot that can stomp on someone else's.
+
+A second, related audit finding fixed alongside the above: the
+acceleration/delta-V math (``thrustMag / currentMass``) used to read that
+same ``hub.mHub`` value too -- which is NOT the spacecraft's true total
+mass whenever a ``schema.scenario.FuelTankConfig`` "fuel_tank" state
+effector is also configured on the same spacecraft. Basilisk's
+``fuelTank`` effector tracks its own mass via ``effProps.mEff``, which
+contributes to the vehicle's real dynamics but is NEVER added into
+``hub.mHub`` (confirmed directly in ``fuelTank.cpp``) -- so a
+station-keeping/phasing/constant-thrust burn running alongside a
+fuel-tank-equipped thruster would silently undercount the true mass,
+inflating the estimated acceleration and ending the burn early (an
+achieved-delta-V undershoot), while the actual simulated dynamics (driven
+by Basilisk's own integrator, which DOES sum every state effector's mass
+correctly) stayed physically correct throughout. Each controller's
+acceleration/delta-V estimate now reads ``scObject.scMassOutMsg.read()
+.massSC`` instead -- Basilisk's own hub+state-effector mass aggregate,
+confirmed by direct experimentation to be fresh every tick regardless of
+this controller's ``AddModelToTask`` priority relative to the
+spacecraft's. The propellant-burn WRITE-BACK above still reads/writes
+``hub.mHub`` specifically, never ``scMassOutMsg`` -- using the aggregate
+there would double-count a coexisting fuel tank's mass (once in the
+tank's own state, once baked into ``hub.mHub``).
 
 Verification status: the burn/bookkeeping logic is copied from
 ``../missionAnalysis``'s already-reviewed controller, not written from
 memory (the shared-mass-bookkeeping fix above is this project's own,
 found and fixed after a full codebase audit). This whole module's
 ``requires_basilisk``-marked tests (``tests/test_orbit_maintenance.py``)
--- including the ``deltaVOutMsg``/``separationOutMsg`` telemetry this
+-- including the ``deltaVOutMsg``/``separationRadialOutMsg``/
+``separationTransverseOutMsg``/``separationNormalOutMsg`` telemetry this
 docstring describes above -- have been run for real against a genuine
 ``pip install "bsk[all]"`` Basilisk build (this project's own "vendoring"
 discovery -- see ``missionStudio/README.md``'s "Getting started"), not
@@ -138,6 +158,37 @@ _LOGGER = logging.getLogger(__name__)
 def _wrap_pm_pi(angle_rad: float) -> float:
     """Wrap an angle [rad] to (-pi, pi]."""
     return (angle_rad + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _clamp_magnitude(value: float, limit: float) -> float:
+    """Return ``abs(value)`` clamped to ``[0, limit]`` -- used for a live
+    Vizard GenericStorage panel's ``storageLevel`` (see
+    ``PhasingKeepingController.UpdateState``'s own comment).
+
+    GenericStorage's own field comments -- both
+    ``vizStructures.h``'s (``"current/maximum absolute value of the
+    storage device"``) and the wire-format ``vizMessage.proto``'s
+    (identical wording) -- document ``currentValue``/``maxValue`` as a
+    non-negative gauge, e.g. a battery charge or a propellant tank level.
+    An earlier revision of this function (``_clamp_symmetric``) clamped
+    to ``[-limit, limit]`` instead, to preserve "ahead of"/"behind the
+    chief" sign -- a real user screenshot then showed exactly the panels
+    that were negative at that moment (Radial, Normal) rendering
+    "Unavailable" in Vizard, while the one that happened to be positive
+    (Transverse) rendered normally.
+
+    CONFIRMED, not just inferred from the field comments: the ``0h3xn4/
+    vizard`` Unity project's own source --
+    ``VizardUnityProject/Assets/Scripts/MainScene/MainSceneGUI/
+    GenericStoragePanel/GenericStorageUnitMethods.cs``,
+    ``UpdateCurrentValue()`` -- branches on ``value >= 0`` with no
+    tolerance whatsoever: ``value < 0`` unconditionally sets
+    ``hoverText``/``verboseText`` to ``"Unavailable"`` (``"Stale"`` in
+    VR), grays the bar, and zeroes its width, regardless of
+    ``maxValue``/color thresholds/anything else. See this class's own
+    docstring for the full reasoning.
+    """
+    return min(abs(value), limit)
 
 
 def _eclipse_illumination_fraction(eclipse_payload) -> float:
@@ -301,15 +352,37 @@ class StationKeepingController(sysModel.SysModel):
             thrustMag = 0.0
             self.bskLogger.warning(f"{self.ModelTag}: propellant depleted, reboost inhibited")
 
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + this controller's own propellant -- see
-        # this module's "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
+        # Achieved acceleration/delta-v depends on the spacecraft's TRUE
+        # total mass -- hub.mHub ALONE undercounts it whenever a
+        # schema.scenario.FuelTankConfig "fuel_tank" state effector is
+        # also configured (Basilisk's fuelTank tracks its own mass via
+        # effProps.mEff, never touching hub.mHub -- confirmed directly in
+        # fuelTank.cpp), which silently shrinks this controller's
+        # estimated/accumulated delta-V and can end a burn early. See
+        # this module's "Shared mass bookkeeping" docstring note:
+        # scMassOutMsg.massSC is Basilisk's own aggregate (hub + every
+        # state effector's mass contribution), fresh every tick regardless
+        # of this controller's own AddModelToTask priority relative to the
+        # spacecraft's (confirmed by direct experimentation).
+        trueTotalMass = (
+            self.scObject.scMassOutMsg.read().massSC if self.scObject is not None
+            else (self.dryMass + self.propellant)
+        )
         if thrustMag > 0.0:
-            self._cumulativeDv += (thrustMag / currentMass) * dt  # [m/s]
+            self._cumulativeDv += (thrustMag / trueTotalMass) * dt  # [m/s]
 
+        # The burn bookkeeping write-back, in contrast, must stay a
+        # self-contained delta against hub.mHub specifically (NOT
+        # trueTotalMass) -- apply_propellant_burn's returned
+        # new_total_mass_kg is written straight back to hub.mHub below, so
+        # feeding it trueTotalMass would double-count a coexisting
+        # fuel_tank's own mass (once in the tank's own state, once baked
+        # into hub.mHub). See this module's "Shared mass bookkeeping"
+        # docstring note for why hub.mHub (not an absolute recomputed
+        # value) is the correct base for this part.
+        hubMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
         newMass, self.propellant, _burnedKg, mDot = apply_propellant_burn(
-            currentMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObject is not None:
             self.scObject.hub.mHub = newMass
 
@@ -418,13 +491,43 @@ class PhasingKeepingController(sysModel.SysModel):
       deliberately, so a user can see the propellant cost of altitude
       -keeping and phasing-keeping separately, even though both draw from
       the one shared tank).
-    * ``separationOutMsg`` -- the actual, LIVE along-track separation from
-      the chief (``storageLevel``, km) against the currently-scheduled
-      target (``storageCapacity``, km) -- both re-derived every tick from
-      the same osculating mean-anomaly difference the control law itself
-      uses (not smoothed, unlike the control law's own ``error``, so this
-      reads as the real instantaneous separation, short-period noise
-      included).
+    * ``separationRadialOutMsg``/``separationTransverseOutMsg``/
+      ``separationNormalOutMsg`` -- the actual, LIVE chief/follower offset
+      in the chief's own Hill (RTN) frame (``storageLevel``, km each),
+      via ``orbitalMotion.rv2hill`` -- the exact same function
+      ``engine.formation``'s wizard itself uses to place a follower, so
+      these numbers are directly comparable to what a user typed into
+      that wizard's Radial/Along-track/Cross-track fields. Real user
+      feedback: a single scalar "separation" number wasn't interpretable
+      ("vague") -- three real distances in a named, familiar frame is
+      the fix. All three share ONE ``storageCapacity`` (2x the
+      currently-scheduled along-track target, km -- NOT the raw target
+      itself; see UpdateState's own comment: a target-sized max leaves a
+      normal, on-target transverse reading pegged at ~100% fill with no
+      room for an ordinary correction transient, which is what a real
+      Vizard screenshot caught overflowing the panel). ``storageLevel``
+      is ``abs(...)`` CLAMPED to ``[0, storageCapacity]`` (see
+      :func:`_clamp_magnitude`'s own docstring for why NOT signed --
+      GenericStorage is a non-negative gauge widget, and a real user
+      screenshot showed a signed, negative ``storageLevel`` rendering as
+      "Unavailable" rather than a bar). Live Vizard panels therefore show
+      MAGNITUDE only, not "ahead of"/"behind the chief" direction; the
+      true, signed numbers are ``self.lastRadialKm``/
+      ``self.lastTransverseKm``/``self.lastNormalKm``/
+      ``self.lastTargetSeparationKm`` (plain Python attributes, for
+      anything that needs the exact signed geometry -- nothing in this
+      codebase currently reads them, same as before this round's fix;
+      not fed into the exported CSV/results plots either, see this
+      module's own "None of this feeds back into simulated physics..."
+      note in ``engine.vizard``).
+    * ``chiefName`` -- the chief spacecraft's own ``ModelTag`` (a plain
+      ``str`` attribute, not a message), wired by :func:`build_phasing_keeping`
+      so ``engine.vizard`` can label each panel with WHICH chief the
+      number is measured against (e.g. ``"R vs chief-1"``) -- real user
+      feedback that "Radial (R)"/etc. alone didn't say whose offset it
+      was. Defaults to ``""`` (falls back to a generic "vs chief" label)
+      when constructed directly, e.g. in a unit test, rather than via
+      :func:`build_phasing_keeping`.
     """
 
     IDLE, BURN_OUT, DRIFT, BURN_RESTORE = range(4)
@@ -454,7 +557,9 @@ class PhasingKeepingController(sysModel.SysModel):
         self.scStateInMsgB = messaging.SCStatesMsgReader()  # follower (maneuvered)
         self.eclipseInMsgB = messaging.EclipseMsgReader()
         self.deltaVOutMsg = messaging.DataStorageStatusMsg()
-        self.separationOutMsg = messaging.DataStorageStatusMsg()
+        self.separationRadialOutMsg = messaging.DataStorageStatusMsg()
+        self.separationTransverseOutMsg = messaging.DataStorageStatusMsg()
+        self.separationNormalOutMsg = messaging.DataStorageStatusMsg()
 
         # Wired up externally (see build_phasing_keeping): the follower's
         # extForceTorque effector and hub, and the co-located
@@ -463,6 +568,12 @@ class PhasingKeepingController(sysModel.SysModel):
         self.extForceEffectorB = None
         self.scObjectB = None
         self.altitudeControllerB = None
+        # The chief spacecraft's own ModelTag -- plain str, not a message
+        # -- so engine.vizard can label the RTN panels with WHOSE offset
+        # they show (see this class's own docstring). "" (the default
+        # for a controller built directly, e.g. in a unit test, rather
+        # than via build_phasing_keeping) falls back to a generic label.
+        self.chiefName = ""
 
         self.mu = mu  # [m^3/s^2]
         self.aNom = nominal_a_m  # [m]
@@ -488,6 +599,14 @@ class PhasingKeepingController(sysModel.SysModel):
         # is defensive, not the normal path.
         self.propellant = 0.0  # [kg]
         self.sunlitThreshold = eclipse_sunlit_threshold  # [-]
+        # Unclamped RTN separation telemetry -- see UpdateState's own
+        # comment on why these (not the separation*OutMsg messages' own,
+        # possibly-clamped storageLevel) are the true numbers. Zero here
+        # only as a before-the-first-tick default.
+        self.lastRadialKm = 0.0  # [km]
+        self.lastTransverseKm = 0.0  # [km]
+        self.lastNormalKm = 0.0  # [km]
+        self.lastTargetSeparationKm = 0.0  # [km]
 
         semi_major_axis_m = nominal_a_m  # already the chief/follower shared SMA
         self.smoothingWindowS = float(2.0 * np.pi * np.sqrt(semi_major_axis_m ** 3 / mu))  # [s] orbit period
@@ -586,21 +705,69 @@ class PhasingKeepingController(sysModel.SysModel):
             self._errorHistory.pop(0)
         error = self._circular_mean(np.array([e for _, e in self._errorHistory]))  # [rad]
 
-        # Live separation-from-chief telemetry, for Vizard's GenericStorage
-        # "separation" panel -- see this class's own docstring. Deliberately
-        # the RAW (unsmoothed, un-arbitrated) instantaneous separation --
-        # (mB - mA), not referenceTargetRad + error -- so this reads as the
-        # real current geometry, independent of which state the control law
-        # itself happens to be in this tick.
-        separationMsg = messaging.DataStorageStatusMsgPayload()
-        # abs(): a GenericStorage bar reads as a magnitude, and a target
-        # separation is always positive by schema (PhasingKeepingConfig.
-        # target_separation_km entries must all be > 0) -- the SIGNED
-        # value (ahead of/behind the chief) is still available in
-        # errorDegLog/this class's own telemetry for anyone who needs it.
-        separationMsg.storageLevel = abs(_wrap_pm_pi(mB - mA)) * self.aNom / 1000.0  # [km]
-        separationMsg.storageCapacity = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
-        self.separationOutMsg.write(separationMsg, CurrentSimNanos, self.moduleID)
+        # Live RTN separation-from-chief telemetry, for Vizard's
+        # GenericStorage "Radial"/"Transverse"/"Normal" panels -- see this
+        # class's own docstring. The REAL geometric offset in the chief's
+        # own Hill (RTN) frame, via ``orbitalMotion.rv2hill`` -- the exact
+        # same function (and axis convention) ``engine.formation``'s
+        # wizard itself uses to PLACE a follower, so these numbers are
+        # directly comparable to what a user typed into that wizard's R/T/N
+        # fields. Deliberately NOT derived from mB - mA (the control law's
+        # own mean-anomaly-difference approximation, still what actually
+        # drives burns below, unchanged) -- real user feedback: a single,
+        # abstract "separation" scalar wasn't interpretable ("vague");
+        # three real distances in a named, familiar frame are.
+        rhoH, _rhoPrimeH = orbitalMotion.rv2hill(rA, vA, rB, vB)
+        radialKm = float(rhoH[0]) / 1000.0  # [km]
+        transverseKm = float(rhoH[1]) / 1000.0  # [km]
+        normalKm = float(rhoH[2]) / 1000.0  # [km]
+        targetKm = abs(scheduledTargetRad) * self.aNom / 1000.0  # [km]
+        self.lastRadialKm = radialKm
+        self.lastTransverseKm = transverseKm
+        self.lastNormalKm = normalKm
+        self.lastTargetSeparationKm = targetKm
+
+        # Real bug found against a real running Vizard instance (screenshot
+        # from an actual user): a GenericStorage bar with storageLevel
+        # outside [-storageCapacity, storageCapacity] renders broken
+        # (overflowing its own panel, full window width) rather than
+        # clamping itself -- and storageCapacity == targetKm means NORMAL,
+        # on-target transverse holding already sits at ~100% fill (the
+        # opposite of the usual "full bar == bad" gauge convention),
+        # leaving no headroom before an ordinary correction transient (a
+        # fresh phasing error, right after a reconfiguration) pushes
+        # storageLevel past it. All three R/T/N panels share ONE capacity
+        # (2x the along-track target -- generous headroom for the
+        # actively-held T axis, and a common scale so the three bars'
+        # relative fill is directly comparable).
+        capacityKm = 2.0 * targetKm  # [km]
+
+        # A SECOND real bug found against a real running Vizard instance,
+        # a later screenshot: storageLevel was clamped SYMMETRICALLY at
+        # this point (preserving sign, so "ahead of"/"behind the chief"
+        # would still read correctly) -- but the Radial/Normal panels,
+        # negative at that moment, rendered "Unavailable" instead of a
+        # bar, while Transverse (positive at that moment) rendered fine.
+        # GenericStorage's own field comments document currentValue/
+        # maxValue as a non-negative gauge ("absolute value of the
+        # storage device") -- see _clamp_magnitude's own docstring for
+        # the full reasoning. Fixed by publishing magnitude, not signed
+        # value; the true signed numbers stay available as this
+        # instance's own lastRadialKm/lastTransverseKm/lastNormalKm.
+        radialMsg = messaging.DataStorageStatusMsgPayload()
+        radialMsg.storageCapacity = capacityKm
+        radialMsg.storageLevel = _clamp_magnitude(radialKm, capacityKm)
+        self.separationRadialOutMsg.write(radialMsg, CurrentSimNanos, self.moduleID)
+
+        transverseMsg = messaging.DataStorageStatusMsgPayload()
+        transverseMsg.storageCapacity = capacityKm
+        transverseMsg.storageLevel = _clamp_magnitude(transverseKm, capacityKm)
+        self.separationTransverseOutMsg.write(transverseMsg, CurrentSimNanos, self.moduleID)
+
+        normalMsg = messaging.DataStorageStatusMsgPayload()
+        normalMsg.storageCapacity = capacityKm
+        normalMsg.storageLevel = _clamp_magnitude(normalKm, capacityKm)
+        self.separationNormalOutMsg.write(normalMsg, CurrentSimNanos, self.moduleID)
 
         # Also written here (not only in the final block below, which the
         # thrusterHeldByAltCtrl arbitration branch just below returns
@@ -687,18 +854,29 @@ class PhasingKeepingController(sysModel.SysModel):
                 thrustMag = 0.0
 
         tracker = self._propellant_tracker()
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + tracker.propellant -- see this module's
-        # "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObjectB.hub.mHub if self.scObjectB is not None else (self.dryMass + tracker.propellant)
+        # Achieved acceleration/delta-v needs the spacecraft's TRUE total
+        # mass (scMassOutMsg.massSC, Basilisk's own hub+state-effector
+        # aggregate), not just hub.mHub -- see
+        # StationKeepingController.UpdateState's identical comment for why
+        # (a coexisting fuel_tank state effector's mass would otherwise be
+        # silently missed, ending a burn early).
+        trueTotalMass = (
+            self.scObjectB.scMassOutMsg.read().massSC if self.scObjectB is not None
+            else (self.dryMass + tracker.propellant)
+        )
 
         if thrustMag > 0.0:
-            accel = thrustMag / currentMass  # [m/s^2]
+            accel = thrustMag / trueTotalMass  # [m/s^2]
             self._accumDv += accel * dt
             self._cumulativeDv += accel * dt
 
+        # The burn bookkeeping write-back stays against hub.mHub
+        # specifically, NOT trueTotalMass -- see
+        # StationKeepingController.UpdateState's identical comment (would
+        # otherwise double-count a coexisting fuel_tank's own mass).
+        hubMass = self.scObjectB.hub.mHub if self.scObjectB is not None else (self.dryMass + tracker.propellant)
         newMass, tracker.propellant, _burnedKg, _mDot = apply_propellant_burn(
-            currentMass, tracker.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, tracker.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObjectB is not None:
             self.scObjectB.hub.mHub = newMass
 
@@ -773,6 +951,7 @@ def build_phasing_keeping(scSim, task_name: str, tag: str, mu: float, chief_sc_o
         controller.eclipseInMsgB.subscribeTo(follower_eclipse_out_msg)
     controller.extForceEffectorB = follower_station_keeping_controller.extForceEffector
     controller.scObjectB = follower_sc_object
+    controller.chiefName = chief_sc_object.ModelTag
     # Thruster-arbitration link: phasing pauses while the follower's own
     # altitude controller is actively reboosting (see UpdateState).
     controller.altitudeControllerB = follower_station_keeping_controller
@@ -904,16 +1083,27 @@ class ConstantFrameThrustController(sysModel.SysModel):
         dirHat_N = self.direction[0] * axis1 + self.direction[1] * axis2 + self.direction[2] * axis3
 
         thrustMag = self.thrustN if self.propellant > 1e-9 else 0.0  # [N]
-        # Read the spacecraft's CURRENT total mass rather than
-        # recomputing dryMass + this controller's own propellant -- see
-        # this module's "Shared mass bookkeeping" docstring note for why.
-        currentMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
+        # Achieved acceleration/delta-v needs the spacecraft's TRUE total
+        # mass (scMassOutMsg.massSC, Basilisk's own hub+state-effector
+        # aggregate), not just hub.mHub -- see
+        # StationKeepingController.UpdateState's identical comment for why
+        # (a coexisting fuel_tank state effector's mass would otherwise be
+        # silently missed, ending a burn early).
+        trueTotalMass = (
+            self.scObject.scMassOutMsg.read().massSC if self.scObject is not None
+            else (self.dryMass + self.propellant)
+        )
 
         if thrustMag > 0.0:
-            self._cumulativeDv += (thrustMag / currentMass) * dt  # [m/s]
+            self._cumulativeDv += (thrustMag / trueTotalMass) * dt  # [m/s]
 
+        # The burn bookkeeping write-back stays against hub.mHub
+        # specifically, NOT trueTotalMass -- see
+        # StationKeepingController.UpdateState's identical comment (would
+        # otherwise double-count a coexisting fuel_tank's own mass).
+        hubMass = self.scObject.hub.mHub if self.scObject is not None else (self.dryMass + self.propellant)
         newMass, self.propellant, _burnedKg, mDot = apply_propellant_burn(
-            currentMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
+            hubMass, self.propellant, thrustMag, self.ispS, dt, self.g0)
         if self.scObject is not None:
             self.scObject.hub.mHub = newMass
 

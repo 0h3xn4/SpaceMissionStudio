@@ -17,16 +17,46 @@
 #
 
 """The application icon -- drawn procedurally with :class:`QPainter`
-(a central body + an inclined orbit ellipse + a satellite dot on it,
-matching ``theme.py``'s accent color) rather than shipped as a bitmap
-asset, so there is no binary file to keep in sync with the theme and no
-new packaging step (``packaging/build_wheel.sh``/the installer's
-``.desktop`` entry already just point at whatever
-:func:`app_icon`/:func:`window_icon_path` produce). Used as both the
-``QApplication``/``QMainWindow`` window icon (see ``app.py``) and, cached
-to a PNG on disk, the ``.desktop`` entry's ``Icon=`` target (see
-``packaging/``) -- a ``.desktop`` file needs a real file path, not an
-in-memory ``QIcon``.
+(a satellite glyph: a gold body between two blue solar panels, plus an
+antenna at larger sizes, matching ``theme.py``'s accent color for the
+panels) rather than shipped as a bitmap asset, so there is no binary
+file to keep in sync with the theme and no new packaging step
+(``packaging/build_wheel.sh``/the installer's ``.desktop`` entry already
+just point at whatever :func:`app_icon`/:func:`window_icon_path`
+produce). Used as both the ``QApplication``/``QMainWindow`` window icon
+(see ``app.py``) and, cached to a PNG on disk, the ``.desktop`` entry's
+``Icon=`` target (see ``packaging/``) -- a ``.desktop`` file needs a
+real file path, not an in-memory ``QIcon``.
+
+Real user feedback, with a rendered side-by-side comparison, on the
+FIRST design this module drew (a dark central body inside a thin
+inclined orbit ellipse, with a small dot on the ring): "refine it to
+read clearer at small sizes" -- at 16-32px (window titlebar/taskbar,
+where this icon is actually seen most) it read as a cartoon eye, not
+an orbit. Root cause, confirmed by rendering variants and comparing
+them side by side rather than guessing: "a filled circle centered
+inside a surrounding ring" is essentially the universal flat-icon glyph
+for an eye (pupil + iris), and no amount of stroke-width/dot-size
+tuning on that same structure fixed it -- several tuning passes made it
+read MORE eye-like, not less (a bigger, lighter dot became an
+eye-catchlight). Fixing it needed a structurally different silhouette,
+not parameter tweaks on the same one.
+
+Replaced with an angular satellite glyph (body + two solar-panel
+wings), which stays legible at every size tested (256 down to 16px)
+specifically because it has no closed ring-around-a-disc shape to be
+mistaken for an eye, and reads clearly as spacecraft hardware instead --
+also a better thematic fit for a *mission-analysis* tool than a single
+orbit-and-dot, which only depicts one specific orbit rather than the
+domain generally. The body's gold color is not arbitrary: real
+satellites commonly use gold-foil (multi-layer insulation) thermal
+blankets, so a gold body next to blue solar panels is representationally
+accurate, not just decorative -- and it was ALSO found (by rendering the
+icon against both light and dark backgrounds, not assumed) to be the
+fix for a real contrast bug the first gold-free attempt had: this
+module's original near-black body color is nearly invisible against a
+dark-mode taskbar, where a gold body stays clearly visible against both
+light and dark surfaces.
 """
 
 from __future__ import annotations
@@ -36,9 +66,17 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 
-_ACCENT = "#3457D5"
-_ACCENT_DARK = "#243C99"
-_BODY = "#1F2530"
+_ACCENT = "#3457D5"  # solar panels -- theme.py's own accent color
+_ACCENT_DARK = "#243C99"  # antenna + panel grid lines
+_GOLD = "#CFB87C"  # satellite body -- see module docstring for why gold, not decorative
+_GOLD_DARK = "#A88F53"  # body centerline detail
+
+# Below these sizes the corresponding detail is omitted entirely rather
+# than drawn illegibly thin -- confirmed by rendering both thresholds
+# and comparing (the antenna line/dot were already invisible by 24px;
+# the panel grid lines by 40px), not guessed.
+_ANTENNA_MIN_SIZE = 40
+_GRID_MIN_SIZE = 56
 
 
 def _ensure_application() -> None:
@@ -60,6 +98,15 @@ def _ensure_application() -> None:
 
 
 def _render(size: int) -> QPixmap:
+    """See module docstring for why this is a satellite glyph (body +
+    two solar panels + an antenna at larger sizes) and not the earlier
+    orbit-ellipse design. ``scale``/rotation/proportions below were
+    tuned by rendering actual candidates side by side at 256 down to
+    16px and comparing them, not picked once and trusted -- an earlier
+    tuning pass that only adjusted the old design's stroke width/dot
+    size made it read MORE like an eye, not less, which is why this is
+    a different silhouette entirely rather than a parameter change.
+    """
     _ensure_application()
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -67,39 +114,55 @@ def _render(size: int) -> QPixmap:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    center = QPointF(size / 2.0, size / 2.0)
+    painter.translate(size / 2.0, size / 2.0)
+    painter.rotate(-32.0)
 
-    # Central body.
-    body_radius = size * 0.20
+    # s: a 256px design grid, scaled to the actual requested size, with
+    # an extra 1.22x so the glyph fills more of the icon's canvas than a
+    # literal 256-grid mapping would -- confirmed by rendering both and
+    # comparing that the larger one reads better at 16-24px, where every
+    # extra pixel of actual shape matters.
+    s = (size / 256.0) * 1.22
+
+    panel_w, panel_h = 58 * s, 96 * s
+    gap = 7 * s
+    body_w, body_h = 46 * s, 46 * s
+    left_panel = QRectF(-body_w / 2 - gap - panel_w, -panel_h / 2, panel_w, panel_h)
+    right_panel = QRectF(body_w / 2 + gap, -panel_h / 2, panel_w, panel_h)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(_BODY))
-    painter.drawEllipse(center, body_radius, body_radius)
+    painter.setBrush(QColor(_ACCENT))
+    painter.drawRoundedRect(left_panel, 5 * s, 5 * s)
+    painter.drawRoundedRect(right_panel, 5 * s, 5 * s)
 
-    # Inclined orbit ellipse (rotated ~20 degrees for a dynamic, "in
-    # motion" look rather than a flat static ring).
-    painter.save()
-    painter.translate(center)
-    painter.rotate(-20.0)
-    orbit_rect = QRectF(-size * 0.44, -size * 0.24, size * 0.88, size * 0.48)
-    # A fresh QPen, not painter.pen() -- that would inherit NoPen's style
-    # from the central-body fill above (setColor()/setWidthF() only
-    # change a pen's color/width, never its style, so the ring drew
-    # nothing at all until this was caught by actually rendering the icon
-    # and looking at it rather than trusting the code alone).
-    pen = QPen(QColor(_ACCENT))
-    pen.setWidthF(size * 0.045)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawEllipse(orbit_rect)
+    if size >= _GRID_MIN_SIZE:
+        grid_pen = QPen(QColor(_ACCENT_DARK))
+        grid_pen.setWidthF(max(1.0, 1.5 * s))
+        painter.setPen(grid_pen)
+        for panel in (left_panel, right_panel):
+            for frac in (0.33, 0.66):
+                y = panel.top() + panel.height() * frac
+                painter.drawLine(QPointF(panel.left() + 2 * s, y), QPointF(panel.right() - 2 * s, y))
 
-    # Satellite dot, on the orbit ellipse.
-    sat_radius = size * 0.075
-    sat_point = QPointF(orbit_rect.right(), 0.0)
+    body_rect = QRectF(-body_w / 2, -body_h / 2, body_w, body_h)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(_ACCENT_DARK))
-    painter.drawEllipse(sat_point, sat_radius, sat_radius)
-    painter.restore()
+    painter.setBrush(QColor(_GOLD))
+    painter.drawRoundedRect(body_rect, 9 * s, 9 * s)
+    if size >= _GRID_MIN_SIZE:
+        centerline_pen = QPen(QColor(_GOLD_DARK))
+        centerline_pen.setWidthF(max(1.0, 1.4 * s))
+        painter.setPen(centerline_pen)
+        painter.drawLine(QPointF(-body_w / 2 + 3 * s, 0), QPointF(body_w / 2 - 3 * s, 0))
+
+    if size >= _ANTENNA_MIN_SIZE:
+        antenna_pen = QPen(QColor(_ACCENT_DARK))
+        antenna_pen.setWidthF(max(4 * s, 1.8))
+        antenna_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(antenna_pen)
+        antenna_tip = QPointF(0, -body_h / 2 - 22 * s)
+        painter.drawLine(QPointF(0, -body_h / 2), antenna_tip)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(_ACCENT_DARK))
+        painter.drawEllipse(antenna_tip, max(5 * s, 2.2), max(5 * s, 2.2))
 
     painter.end()
     return pixmap

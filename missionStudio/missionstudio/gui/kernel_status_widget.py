@@ -73,7 +73,17 @@ class KernelStatusWidget(QWidget):
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Kernel", "Available", "Path", "Cache last modified (UTC)"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # A blanket Stretch on every column (the original setting) forces
+        # all 4 to the SAME width regardless of content -- found by
+        # actually rendering this widget and looking at it: "Cache last
+        # modified (UTC)" (by far the longest header) came out truncated
+        # on both ends ("ache last modified (UTC"), while "Kernel" sat in
+        # a column much wider than it needed. Only "Path" (arbitrarily
+        # long filesystem paths) benefits from claiming the remaining
+        # width -- the other three size to fit their own header/content.
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # "Path"
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
@@ -110,8 +120,29 @@ class KernelStatusWidget(QWidget):
         self.table.setRowCount(len(statuses))
         for row, status in enumerate(statuses):
             self.table.setItem(row, 0, QTableWidgetItem(status.filename))
-            self.table.setItem(row, 1, QTableWidgetItem("yes" if status.available else f"NO: {status.error}"))
-            self.table.setItem(row, 2, QTableWidgetItem(str(status.path) if status.path else ""))
+            # "NO" alone, not "NO: {error}" -- a real rendering bug, found
+            # by actually populating this table and looking at it: the
+            # "Available" column's ResizeToContents sizing had to grow to
+            # fit the longest error message in the whole table, stealing
+            # width from the "Path" column (the more important one to
+            # keep readable -- a real filesystem path, not a diagnostic).
+            # The error is still one hover away, just via setToolTip()
+            # instead of inline text, matching the "short status at a
+            # glance, detail on demand" pattern already used elsewhere in
+            # this app (e.g. gui.feedback's inline-validation tooltips).
+            available_item = QTableWidgetItem("yes" if status.available else "NO")
+            if not status.available and status.error:
+                available_item.setToolTip(status.error)
+            self.table.setItem(row, 1, available_item)
+            # A real cached path can still be longer than even the
+            # Stretch-mode "Path" column's share of the window (Stretch
+            # sections can't be interactively widened by the user to
+            # compensate, unlike Interactive ones) -- a tooltip with the
+            # full, untruncated path is a hover away either way.
+            path_item = QTableWidgetItem(str(status.path) if status.path else "")
+            if status.path:
+                path_item.setToolTip(str(status.path))
+            self.table.setItem(row, 2, path_item)
             self.table.setItem(row, 3, QTableWidgetItem(status.modified_utc or ""))
 
     def _on_failed(self, message: str) -> None:

@@ -69,8 +69,11 @@ from ..schema.scenario import (
 )
 
 # Matches gui.sensor_actuator_editor._KIND_PARAM_SPECS["reaction_wheel"]'s
-# own example values -- see this module's docstring.
-_RW_EXAMPLE_PARAMS = {"rw_type": "custom", "Omega_max": 6000.0, "u_max": 0.2, "maxMomentum": 50.0, "Js": 0.028}
+# own example values -- see this module's docstring. Js and maxMomentum are
+# mutually exclusive for rw_type="custom" (rwFactory.create() hard-exits
+# the whole process if both are given -- confirmed directly against a real
+# Basilisk build), so only Js (not maxMomentum) is included here.
+_RW_EXAMPLE_PARAMS = {"rw_type": "custom", "Omega_max": 6000.0, "u_max": 0.2, "Js": 0.028}
 
 
 def _placeholder_orbit() -> OrbitIC:

@@ -165,9 +165,21 @@ class ScenarioEditorWidget(QWidget):
 
         group = QGroupBox("Propagation setup")
         layout = QVBoxLayout(group)
-        self.propagation_summary_label = QLabel()
-        self.propagation_summary_label.setWordWrap(True)
-        layout.addWidget(self.propagation_summary_label)
+        # A labeled form (field name -> value), not a single free-text
+        # line -- real user feedback, with a screenshot: three
+        # pipe-joined, unlabeled lines ("earth | spherical harmonics
+        # (degree 10) | +sun, moon") read as "cluttered" and "doesn't
+        # help the user understand what those values stand for". Every
+        # row label below is copied VERBATIM from PropagationSetupDialog's
+        # own field labels (propagation_setup_dialog.py's form.addRow()
+        # calls) -- this summary and the dialog that edits it now use
+        # identical terminology, and the row/value-label QFormLayout
+        # shape matches every other settings panel in this app
+        # (spacecraft_editor.py, ground_station_editor.py, the dialog
+        # itself), instead of being the one place that looked different.
+        self._propagation_form = QFormLayout()
+        self._propagation_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        layout.addLayout(self._propagation_form)
         edit_button = QPushButton("Edit Propagation Setup...")
         edit_button.clicked.connect(self._on_edit_propagation_setup)
         layout.addWidget(edit_button)
@@ -187,18 +199,38 @@ class ScenarioEditorWidget(QWidget):
 
     def _refresh_propagation_summary(self) -> None:
         gravity, sim, sw = self._gravity, self._sim_settings, self._space_weather
-        gravity_bits = [gravity.central_body]
-        gravity_bits.append(
-            f"spherical harmonics (degree {gravity.central_body_degree})"
-            if gravity.central_body_degree > 0 else "point-mass"
+
+        while self._propagation_form.rowCount():
+            self._propagation_form.removeRow(0)
+
+        def add_row(label: str, value: str) -> None:
+            value_label = QLabel(value)
+            value_label.setWordWrap(True)
+            self._propagation_form.addRow(label, value_label)
+
+        add_row("Central body", gravity.central_body)
+        add_row(
+            "Gravity model",
+            f"Spherical harmonics (degree {gravity.central_body_degree})"
+            if gravity.central_body_degree > 0 else "Point-mass",
         )
         if gravity.third_body_perturbers:
-            gravity_bits.append("+" + ", ".join(gravity.third_body_perturbers))
-        self.propagation_summary_label.setText(
-            f"{' | '.join(gravity_bits)}\n"
-            f"{sim.integrator}, {sim.dynamics_task_rate_s:g} s step, {sim.duration_days:g} day(s)\n"
-            f"space weather: {sw.source}"
-        )
+            add_row("Third-body perturbers", ", ".join(gravity.third_body_perturbers))
+
+        add_row("Integrator", sim.integrator)
+        add_row("Dynamics task rate [s]", f"{sim.dynamics_task_rate_s:g}")
+        add_row("Duration [days]", f"{sim.duration_days:g}")
+
+        if sw.atmosphere_model == "exponential":
+            add_row("Atmosphere model", "Exponential (no space weather)")
+        else:
+            add_row("Atmosphere model", "NRLMSISE-00")
+            add_row("Space weather source", sw.source)
+            add_row(
+                "Drag margin",
+                f"Conservative (P{sw.activity_percentile:g} historical worst-case)"
+                if sw.activity_level == "conservative" else "Nominal",
+            )
 
     def _build_spacecraft_group(self) -> QGroupBox:
         group = QGroupBox("Spacecraft")

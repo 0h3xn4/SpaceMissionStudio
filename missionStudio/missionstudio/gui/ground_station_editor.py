@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..schema.scenario import GroundStationConfig, ScenarioValidationError
+from .feedback import clear_invalid, mark_invalid, show_toast
 
 
 def _spin(minimum: float, maximum: float, decimals: int = 4, step: float = 1.0, value: float = 0.0) -> QDoubleSpinBox:
@@ -57,13 +58,16 @@ def _spin(minimum: float, maximum: float, decimals: int = 4, step: float = 1.0, 
 
 
 class GroundStationEditorDialog(QDialog):
-    def __init__(self, config: GroundStationConfig | None = None, parent: QWidget | None = None):
+    def __init__(self, config: GroundStationConfig | None = None, parent: QWidget | None = None,
+                 other_names: list[str] | None = None):
         super().__init__(parent)
+        self._other_names = other_names or []
         self.setWindowTitle("Ground station" if config is None else f"Ground station: {config.name}")
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name_edit = QLineEdit(config.name if config else "gs-1")
+        self.name_edit.textChanged.connect(self._on_name_changed)
         form.addRow("Name", self.name_edit)
         self.lat_deg = _spin(-90.0, 90.0, decimals=6, step=1.0, value=config.latitude_deg if config else 0.0)
         form.addRow("Latitude [deg]", self.lat_deg)
@@ -90,7 +94,35 @@ class GroundStationEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
+
+    def _on_name_changed(self, text: str) -> None:
+        name = text.strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+        elif name in self._other_names:
+            mark_invalid(self.name_edit, f"A ground station named {name!r} already exists")
+        else:
+            clear_invalid(self.name_edit)
+
     def _on_accept(self) -> None:
+        # Same data-loss bug/fix as SpacecraftEditorDialog._on_accept --
+        # see that method's own docstring. Checked here, before
+        # to_dataclass()/accept(), so a duplicate/empty name keeps this
+        # dialog open instead of discarding the user's edits.
+        name = self.name_edit.text().strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+            self.name_edit.setFocus()
+            return
+        if name in self._other_names:
+            mark_invalid(self.name_edit, f"A ground station named {name!r} already exists")
+            self.name_edit.setFocus()
+            return
         try:
             self.to_dataclass()
         except ScenarioValidationError as exc:
@@ -145,7 +177,7 @@ class GroundStationListWidget(QWidget):
 
     def _on_add(self) -> None:
         existing_names = {c.name for c in self._configs}
-        dialog = GroundStationEditorDialog(parent=self)
+        dialog = GroundStationEditorDialog(parent=self, other_names=sorted(existing_names))
         base_name = dialog.name_edit.text()
         candidate, n = base_name, 1
         while candidate in existing_names:
@@ -159,30 +191,36 @@ class GroundStationListWidget(QWidget):
                 return
             self._configs.append(config)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._configs) - 1)
+            show_toast(self.window(), f"Added ground station {config.name!r}")
             self.changed.emit()
 
     def _on_edit(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
-        dialog = GroundStationEditorDialog(config=self._configs[row], parent=self)
+        other_names = sorted(c.name for i, c in enumerate(self._configs) if i != row)
+        dialog = GroundStationEditorDialog(config=self._configs[row], parent=self, other_names=other_names)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_config = dialog.to_dataclass()
-            other_names = {c.name for i, c in enumerate(self._configs) if i != row}
-            if new_config.name in other_names:
+            if new_config.name in set(other_names):
                 QMessageBox.critical(self, "Duplicate name",
                                       f"A ground station named {new_config.name!r} already exists.")
                 return
             self._configs[row] = new_config
             self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated ground station {new_config.name!r}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
+        name = self._configs[row].name
         del self._configs[row]
         self._refresh_list()
+        show_toast(self.window(), f"Removed ground station {name!r}", kind="info")
         self.changed.emit()
 
     def to_list(self) -> list[GroundStationConfig]:

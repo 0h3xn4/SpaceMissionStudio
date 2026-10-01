@@ -70,3 +70,61 @@ def test_list_widget_add_via_dialog(qtbot, monkeypatch):
     lw._on_add()
     assert lw.to_list()[0].name == "boulder"
     assert lw.to_list()[0].latitude_deg == 40.0
+    assert lw.list_widget.currentRow() == 0
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("boulder" in t.text() for t in toasts)
+
+
+def test_dialog_name_field_shows_inline_error_on_duplicate(qtbot):
+    from missionstudio.gui.ground_station_editor import GroundStationEditorDialog
+
+    dialog = GroundStationEditorDialog(other_names=["gs-1", "gs-2"])
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("gs-2")
+    assert dialog.name_edit.property("state") == "error"
+
+    dialog.name_edit.setText("gs-3")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_dialog_accept_blocks_and_keeps_dialog_open_on_duplicate_name(qtbot):
+    """Regression guard for the same data-loss UX bug fixed in
+    SpacecraftEditorDialog -- see that dialog's own test of the same
+    name for the full explanation.
+    """
+    from missionstudio.gui.ground_station_editor import GroundStationEditorDialog
+
+    dialog = GroundStationEditorDialog(other_names=["gs-1"])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("gs-1")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0
+    assert dialog.name_edit.property("state") == "error"
+
+
+def test_list_widget_remove_shows_a_toast(qtbot):
+    from missionstudio.gui.ground_station_editor import GroundStationListWidget
+    from missionstudio.schema.scenario import GroundStationConfig
+
+    lw = GroundStationListWidget()
+    qtbot.addWidget(lw)
+    lw.from_list([GroundStationConfig(name="svalbard", latitude_deg=78.23, longitude_deg=15.38)])
+    lw.list_widget.setCurrentRow(0)
+
+    lw._on_remove()
+
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("svalbard" in t.text() and "Removed" in t.text() for t in toasts)
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.ground_station_editor import GroundStationEditorDialog
+
+    dialog = GroundStationEditorDialog()
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

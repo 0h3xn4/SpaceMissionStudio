@@ -48,6 +48,102 @@ def test_no_selection_disables_open_button_and_clears_description(qtbot):
     assert widget.description_label.text() == ""
 
 
+def _customize_button(widget, name_substring: str):
+    """Finds the standalone "Customize: <template name>..." button for a
+    given template -- see _build_customize_buttons's own docstring for
+    why these are separate, always-enabled buttons rather than one
+    shared, selection-dependent button.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    matches = [b for b in widget.findChildren(QPushButton) if name_substring in b.text()]
+    assert len(matches) == 1, f"expected exactly one Customize button matching {name_substring!r}, got {matches}"
+    return matches[0]
+
+
+def test_customize_button_exists_for_every_template_with_a_registered_wizard_spec(qtbot):
+    """Every bundled template has a registered spec now (see
+    gui.template_wizard's own docstring for the rollout history), so this
+    confirms the button LIST tracks the spec registry -- not that some
+    templates are excluded (there's a dedicated unit test for that,
+    gui.template_wizard's own test_get_wizard_spec_returns_none_for_an
+    _unregistered_template).
+    """
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import get_wizard_spec
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+
+    for scenario_name, path in widget._template_paths.items():
+        if get_wizard_spec(path.name) is None:
+            continue
+        # Has one, and it's enabled without any prior list selection --
+        # these buttons are standalone actions, not gated on
+        # widget.list_widget.currentItem().
+        button = _customize_button(widget, scenario_name)
+        assert button.isEnabled()
+
+
+def test_customize_clicked_emits_scenario_customized_on_accept(qtbot, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import TemplateCustomizeWizard
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(TemplateCustomizeWizard, "exec",
+                         lambda self: TemplateCustomizeWizard.DialogCode.Accepted)
+
+    emitted = []
+    widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
+    _customize_button(widget, "03 - GEO station-keeping").click()
+
+    assert len(emitted) == 1
+    assert emitted[0].name == "03 - GEO station-keeping"
+
+
+def test_customize_clicked_emits_nothing_on_cancel(qtbot, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import TemplateCustomizeWizard
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(TemplateCustomizeWizard, "exec",
+                         lambda self: TemplateCustomizeWizard.DialogCode.Rejected)
+
+    emitted = []
+    widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
+    _customize_button(widget, "03 - GEO station-keeping").click()
+
+    assert emitted == []
+
+
+def test_customize_clicked_is_independent_of_the_lists_current_selection(qtbot, monkeypatch):
+    """Regression test for the earlier (replaced) design, where a single
+    shared "Customize..." button only worked for whatever template was
+    currently selected in the list above -- these standalone buttons
+    must work regardless of that selection.
+    """
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import TemplateCustomizeWizard
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+    widget.list_widget.setCurrentRow(0)  # "01 - Two-body circular orbit" -- unrelated to '18'
+
+    monkeypatch.setattr(TemplateCustomizeWizard, "exec",
+                         lambda self: TemplateCustomizeWizard.DialogCode.Accepted)
+
+    emitted = []
+    widget.scenario_customized.connect(lambda scenario: emitted.append(scenario))
+    _customize_button(widget, "18 - LEO station-keeping").click()
+
+    assert len(emitted) == 1
+    assert emitted[0].name == "18 - LEO station-keeping"
+
+
 def test_selecting_an_item_enables_open_and_shows_its_description(qtbot):
     from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
 
@@ -130,6 +226,65 @@ def test_browse_cancelled_emits_nothing(qtbot, monkeypatch):
     widget._on_browse_clicked()
 
     assert emitted == []
+
+
+def test_content_is_wrapped_in_a_resizable_scroll_area(qtbot):
+    """Regression guard for a real bug, found from a user screenshot
+    taken while resizing/maximizing the main window: this tab's content
+    (18 template rows, the description label, and one standalone
+    "Customize: <template name>..." button per template -- see
+    _build_customize_buttons) is tall enough to exceed a real window's
+    available height. Before this fix, everything was added straight to
+    this widget's own top-level layout with no QScrollArea, so squeezing
+    it into less height than it needed didn't clip cleanly -- QLabel
+    does not clip wrapped text to its own allocated rect, so
+    description_label's text painted past its own boundary and visibly
+    overlapped the list widget above it. Matches the same pattern
+    scenario_editor.ScenarioEditorWidget and spacecraft_editor.py's
+    _scrollable() already use for this exact reason.
+    """
+    from PySide6.QtWidgets import QScrollArea
+
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+
+    scroll_areas = widget.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+    assert scroll_areas[0].widgetResizable()
+    # description_label must live inside the scroll area's own content
+    # widget, not directly on widget's top-level layout.
+    content = scroll_areas[0].widget()
+    assert widget.description_label in content.findChildren(type(widget.description_label))
+
+
+def test_description_label_is_never_squeezed_below_its_needed_height(qtbot):
+    """A real window resized/maximized smaller than this tab's natural
+    content height must not reproduce the overlapping-text bug: the
+    QScrollArea should scroll instead of shrinking description_label
+    below what it needs to render without clipping/overlap -- same
+    verification approach as
+    test_propagation_setup_dialog.test_srp_pointer_label_gets_its_full_wrapped_height_not_clipped,
+    which caught a real instance of this same QLabel-overflow failure
+    mode elsewhere in this app.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+
+    widget = LoadScenarioWidget()
+    qtbot.addWidget(widget)
+    widget.list_widget.setCurrentRow(0)  # gives description_label real, long text to wrap
+
+    widget.resize(500, 150)  # far shorter than this tab's natural content height
+    widget.show()
+    for _ in range(3):
+        QApplication.processEvents()
+
+    label = widget.description_label
+    needed_height = label.heightForWidth(label.geometry().width())
+    assert label.geometry().height() >= needed_height
 
 
 def test_a_malformed_template_is_skipped_not_crashed_on(qtbot, monkeypatch, tmp_path):

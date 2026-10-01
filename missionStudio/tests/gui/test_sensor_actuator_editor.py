@@ -127,6 +127,59 @@ def test_item_editor_dialog_rejects_empty_name(qtbot):
         dialog.to_dataclass()
 
 
+def test_item_editor_dialog_name_field_shows_inline_error_on_duplicate(qtbot):
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS, other_names=["st-1"])
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("st-1")
+    assert dialog.name_edit.property("state") == "error"
+
+    dialog.name_edit.setText("st-2")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_item_editor_dialog_accept_blocks_and_keeps_dialog_open_on_duplicate_name(qtbot):
+    """Regression guard for the same data-loss UX bug fixed in
+    SpacecraftEditorDialog -- see that dialog's own test of the same
+    name for the full explanation.
+    """
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS, other_names=["st-1"])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("st-1")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0
+    assert dialog.name_edit.property("state") == "error"
+
+
+def test_add_via_dialog_shows_a_toast_and_selects_the_row(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.sensor_actuator_editor import SensorActuatorListWidget, _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    widget = SensorActuatorListWidget(SensorConfig, SUPPORTED_SENSOR_KINDS)
+    qtbot.addWidget(widget)
+
+    def fake_exec(self):
+        self.name_edit.setText("st-toast")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_ItemEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    assert widget.list_widget.currentRow() == 0
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("st-toast" in t.text() for t in toasts)
+
+
 def test_new_item_dialog_prefills_params_with_kind_template(qtbot):
     """Regression test: a brand-new sensor/actuator used to start with an
     empty ``{}`` params box no matter the kind, forcing a beginner to
@@ -245,7 +298,33 @@ def test_reset_to_template_button_overwrites_params(qtbot):
     assert "stale" not in config.params
 
 
-def test_unimplemented_actuator_kind_shows_warning_hint(qtbot):
+def test_magnetic_torque_rod_shows_a_conditional_requirement_note(qtbot):
+    """Regression guard: "magnetic_torque_rod" used to be in
+    _UNIMPLEMENTED_ACTUATOR_KINDS (engine.service rejected it outright).
+    It's wired up now, but ONLY for magnetic momentum management -- this
+    checks the hint explains that extra requirement rather than either
+    claiming it's unsimulated (false now) or saying nothing about the
+    requirement at all (which would silently surprise a user at Run
+    Simulation time).
+    """
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
+
+    dialog = _ItemEditorDialog(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("magnetic_torque_rod")
+    dialog.kind_combo.setCurrentIndex(index)
+    assert "not simulated yet" not in dialog.hint_label.text()
+    assert "magnetic_momentum_management" in dialog.hint_label.text()
+
+
+def test_thruster_kind_is_implemented_and_round_trips(qtbot):
+    """Regression guard: "thruster" used to be in _UNIMPLEMENTED_ACTUATOR_KINDS
+    (engine.service rejected it at run time). Now that engine.fsw/
+    engine.service build a real thrusterDynamicEffector control path for
+    it, this kind must no longer show the "not simulated yet" warning, and
+    its vector params (r_B, tHat_B) must round-trip through to_dataclass().
+    """
     from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
     from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
 
@@ -253,4 +332,46 @@ def test_unimplemented_actuator_kind_shows_warning_hint(qtbot):
     qtbot.addWidget(dialog)
     index = dialog.kind_combo.findText("thruster")
     dialog.kind_combo.setCurrentIndex(index)
-    assert "not simulated yet" in dialog.hint_label.text()
+    assert "not simulated yet" not in dialog.hint_label.text()
+
+    dialog.name_edit.setText("thr-1")
+    dialog._on_reset_template()
+    config = dialog.to_dataclass()
+    assert config.params["r_B"] == [1.0, 0.0, 0.0]
+    assert config.params["tHat_B"] == [1.0, 0.0, 0.0]
+    assert config.params["MaxThrust"] == 1.0
+
+
+def test_thruster_position_vector_row_has_no_normalize_button(qtbot):
+    """Regression guard for a real bug caught while adding "thruster":
+    every 3-element vector param used to get a "Normalize" button
+    unconditionally, which is correct for a direction (tHat_B) but would
+    silently corrupt a thruster's actual body-frame location (r_B, in
+    meters) if clicked. Also protects magnetometer's noise_std_tesla,
+    which had the same latent bug.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
+
+    dialog = _ItemEditorDialog(ActuatorConfig, SUPPORTED_ACTUATOR_KINDS)
+    qtbot.addWidget(dialog)
+    index = dialog.kind_combo.findText("thruster")
+    dialog.kind_combo.setCurrentIndex(index)
+
+    r_b_row_widget = dialog._vector_form.itemAt(0, dialog._vector_form.ItemRole.FieldRole).widget()
+    t_hat_row_widget = dialog._vector_form.itemAt(1, dialog._vector_form.ItemRole.FieldRole).widget()
+    assert not r_b_row_widget.findChildren(QPushButton), "r_B (a position, not a direction) must have no Normalize button"
+    assert len(t_hat_row_widget.findChildren(QPushButton)) == 1, "tHat_B (a direction) must keep its Normalize button"
+
+
+def test_item_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
+    from missionstudio.schema.scenario import SUPPORTED_SENSOR_KINDS, SensorConfig
+
+    dialog = _ItemEditorDialog(SensorConfig, SUPPORTED_SENSOR_KINDS)
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

@@ -55,10 +55,15 @@ class VizardDialog(QDialog):
         self.setWindowTitle("Vizard visualization")
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Vizard is a separate application and cannot be embedded here -- pick how this run "
             "feeds it. See missionStudio/README.md for how to open Vizard itself."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         self.disabled_radio = QRadioButton("Disabled (no Vizard output this run)")
         self.save_file_radio = QRadioButton("Write a .bin playback file to open in Vizard afterward")
@@ -97,6 +102,12 @@ class VizardDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
 
     def _on_browse(self) -> None:
         path_str, _selected_filter = QFileDialog.getSaveFileName(self, "Vizard playback file", "", "Vizard playback (*.bin)")

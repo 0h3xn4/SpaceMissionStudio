@@ -58,8 +58,10 @@ that implements it): drag, SRP, space weather. The Phase 1 GUI (see
 same reason: a control that looks like it configures simulated behavior
 but silently doesn't is worse than not offering it yet. (Phase 4, below,
 is where this gap closes: ``SpacecraftConfig.enable_drag``/``enable_srp``
-are wired up there via ``engine/spaceweather.py``'s resolver -> MSIS
-atmosphere -> ``dragDynamicEffector``/``radiationPressure``.)
+are wired up there via ``engine/spaceweather.py``'s resolver -> MSIS or
+exponential atmosphere (``SpaceWeatherConfig.atmosphere_model`` -- a later
+addition; see that schema class's own docstring) -> ``dragDynamicEffector``/
+``radiationPressure``.)
 
 Phase 2 scope
 -------------
@@ -384,6 +386,58 @@ def _osculating_elements(mu: float, r_bn_n: np.ndarray, v_bn_n: np.ndarray) -> D
     return {"a": a, "e": e, "i": i, "raan": raan, "argp": argp, "true_anomaly": true_anomaly}
 
 
+def _mean_elements(oe: Dict[str, np.ndarray], req: float, j2: float) -> Dict[str, np.ndarray]:
+    """First-order J2 MEAN classical orbital elements, mapped pointwise
+    from the already-computed OSCULATING elements (``_osculating_elements``
+    above) via Basilisk's own ``orbitalMotion.clMeanOscMap`` (sign=-1:
+    osculating -> mean) -- the exact same analytic short-period-removal
+    Basilisk's own ``meanOEFeedback`` FSW module uses for closed-loop mean
+    -element control, not a bespoke implementation written for this app.
+    Conceptually the same idea as e.g. STK's "Brouwer-Lyddane Mean
+    (Short)" data provider the user pointed at when asking for this: strip
+    the once-per-orbit J2 wobble from the true (osculating) elements so a
+    plot shows how the orbit is actually drifting, not that wobble on top
+    of it. Real per-user-request feature, not speculative -- see
+    ``SimulationService``'s own gating below for when ``req``/``j2`` are
+    even set (only once a real J2 term is actually being modeled).
+
+    Known limitation, inherited directly from the underlying first-order
+    J2 theory (documented in ``clMeanOscMap``'s own reference, Schaub &
+    Junkins' "Analytical Mechanics of Space Systems"), not introduced
+    here: this mapping has a genuine mathematical singularity at the
+    critical inclination (~63.4 deg / ~116.6 deg, where ``1 - 5*cos(i)^2
+    == 0``) and degrades near i=0/180 deg -- the same well-known caveat
+    STK's own Brouwer-Lyddane-based "Mean" elements carry. A scenario
+    whose inclination sits at/near either value can show NaN/spiky mean
+    -element samples; Plotly simply leaves a gap for a NaN sample rather
+    than erroring, so this is a visible plot artifact, not a crash.
+    """
+    n = oe["a"].shape[0]
+    a = np.empty(n)
+    e = np.empty(n)
+    i = np.empty(n)
+    raan = np.empty(n)
+    argp = np.empty(n)
+    true_anomaly = np.empty(n)
+    osc = orbitalMotion.ClassicElements()
+    mean = orbitalMotion.ClassicElements()
+    for k in range(n):
+        osc.a = oe["a"][k]
+        osc.e = oe["e"][k]
+        osc.i = oe["i"][k]
+        osc.Omega = oe["raan"][k]
+        osc.omega = oe["argp"][k]
+        osc.f = oe["true_anomaly"][k]
+        orbitalMotion.clMeanOscMap(req, j2, osc, mean, -1)
+        a[k] = mean.a
+        e[k] = mean.e
+        i[k] = mean.i
+        raan[k] = mean.Omega
+        argp[k] = mean.omega
+        true_anomaly[k] = mean.f
+    return {"a": a, "e": e, "i": i, "raan": raan, "argp": argp, "true_anomaly": true_anomaly}
+
+
 @dataclass
 class _SpacecraftHandle:
     name: str
@@ -394,6 +448,13 @@ class _SpacecraftHandle:
     control_torque_recorder: Optional[object] = None
     rw_speed_recorder: Optional[object] = None
     num_rw: int = 0
+    thruster_on_time_recorder: Optional[object] = None
+    num_thrusters: int = 0
+    css_sun_estimate_recorder: Optional[object] = None
+    fuel_tank_recorder: Optional[object] = None
+    fuel_tank_effector: Optional[object] = None  # Phase 2: the fuelTank.FuelTank() itself, for engine.vizard's propellant panel
+    mtb_dipole_recorder: Optional[object] = None  # Phase 2: only set if sc_config.magnetic_momentum_management was configured
+    num_mtb: int = 0
     sensor_recorders: Dict[str, object] = field(default_factory=dict)  # sensor.name -> (kind, recorder)
     battery_recorder: Optional[object] = None  # Phase 4: only set if sc_config.power was configured
     battery_module: Optional[object] = None  # Phase 4: the simpleBattery.SimpleBattery itself, for engine.vizard
@@ -415,7 +476,28 @@ class SimulationService:
         self.vizard_request = vizard_request
         self.scSim: Optional[SimulationBaseClass.SimBaseClass] = None
         self.mu: Optional[float] = None
+        # Set below, during gravity setup, only when a real J2 term is
+        # actually being modeled for the central body -- see that
+        # assignment's own comment and _mean_elements()'s docstring for
+        # why mean-element series are skipped entirely otherwise (None
+        # here means "don't compute/publish .orbit_elements_mean.* for
+        # this run").
+        self.mean_elements_req: Optional[float] = None
+        self.mean_elements_j2: Optional[float] = None
         self._handles: Dict[str, _SpacecraftHandle] = {}
+        # thrMomentumManagement modules (one per spacecraft with
+        # momentum_dumping configured) that build() must re-Reset() after
+        # priming one real dynamics tick -- see build()'s own comment and
+        # engine.fsw.build_momentum_dumping's docstring for why.
+        self._desat_controls: List = []
+        # Real, reproduced-against-a-real-build requirement: CSSConstellation
+        # does not own the CoarseSunSensor Python objects assigned to its
+        # sensorList, only a reference -- if nothing keeps them alive past
+        # build(), Basilisk segfaults inside InitializeSimulation() on a
+        # dangling reference (see engine.fsw.build_css_sun_estimation's own
+        # docstring). Same lifetime-retention pattern as Vizard's
+        # access_indicator_bridges/generic_storage_list/generic_sensor_list.
+        self._css_estimation_devices: List = []
         self._sun_state_out_msg = None
         self._ground_locations: Dict[str, object] = {}
         self._mag_field_model = None
@@ -538,6 +620,24 @@ class SimulationService:
         self.mu = mu
         self.grav_factory = grav_factory
 
+        if gravity.central_body == "earth" and gravity.central_body_degree >= 2:
+            # A real J2 (degree-2 zonal) term is only actually present in
+            # the propagated dynamics once spherical-harmonics gravity is
+            # active with degree >= 2 (Phase 0's Earth-only GGM03S field,
+            # enforced above to be Earth-only already) -- a point-mass-only
+            # central body has no J2 short-period oscillation in its
+            # simulated motion for clMeanOscMap to remove, so computing
+            # "mean elements" there would inject an artificial correction
+            # rather than strip out a real one. central_body.radEquator is
+            # the exact equatorial radius this run's own gravity model
+            # uses (not a separately-looked-up constant, so it can never
+            # drift out of sync with it); J2_EARTH is Basilisk's own
+            # standard constant (orbitalMotion.py), matching the standard
+            # value (~1.08263e-3) to the precision this first-order theory
+            # needs.
+            self.mean_elements_req = central_body.radEquator
+            self.mean_elements_j2 = orbitalMotion.J2_EARTH
+
         spice_time_string = time_system.utc_iso_to_spice_string(scenario.epoch_utc)
         self.spice_object = kernels.build_spice_interface(grav_factory, spice_time_string, epoch_in_msg=True)
         # Re-zero every SPICE ephemeris output on the central body (SPICE's
@@ -575,6 +675,17 @@ class SimulationService:
         if "sun" in body_names:
             self._sun_state_out_msg = self.spice_object.planetStateOutMsgs[body_names.index("sun")]
 
+        # Every SPICE-tracked body's own SpicePlanetStateMsg, by name -- the
+        # general form of the sun-specific message above, used by
+        # fsw_params['target_body'] (any of gravity.central_body/
+        # third_body_perturbers) to build a dedicated
+        # fsw.build_ephemeris_converter() for direct celestial-body
+        # pointing. Scenario.validate() already guarantees target_body is
+        # one of body_names whenever it's set.
+        self._planet_state_out_msgs: Dict[str, object] = {
+            name: self.spice_object.planetStateOutMsgs[idx] for idx, name in enumerate(body_names)
+        }
+
         central_body_state_out_msg = self.spice_object.planetStateOutMsgs[body_names.index(gravity.central_body)]
 
         # Phase 3: every ground station is built (used as both a possible
@@ -590,7 +701,7 @@ class SimulationService:
 
         needs_magnetometer = any(
             sensor.kind == "magnetometer" for sc in scenario.spacecraft for sensor in sc.sensors
-        )
+        ) or any(sc.magnetic_momentum_management is not None for sc in scenario.spacecraft)
         if needs_magnetometer and gravity.central_body == "earth":
             self._mag_field_model = fsw.build_magnetic_field_wmm(
                 self.scSim, dyn_task_name, central_body_state_out_msg, central_body.radEquator
@@ -641,46 +752,88 @@ class SimulationService:
         if needs_drag:
             if gravity.central_body != "earth":
                 raise SimulationServiceError(
-                    "atmospheric drag (enable_drag) is only wired up for 'earth' (NRLMSISE-00 has no "
-                    f"non-Earth atmosphere model here); {gravity.central_body!r} needs enable_drag=False "
+                    "atmospheric drag (enable_drag) is only wired up for 'earth' (neither atmosphere model "
+                    f"here has a non-Earth data set); {gravity.central_body!r} needs enable_drag=False "
                     "on every spacecraft."
                 )
-            from Basilisk.simulation import msisAtmosphere, spaceWeatherData, zeroWindModel
-
-            from . import spaceweather as sw
-
-            start_utc = datetime.fromisoformat(scenario.epoch_utc)
-            end_utc = start_utc + timedelta(days=sim_settings.duration_days)
-            try:
-                resolved_sw = sw.resolve(
-                    scenario.space_weather.source, start_utc, end_utc,
-                    local_file_path=scenario.space_weather.local_file_path,
-                    cache_dir=scenario.space_weather.cache_dir,
-                )
-            except sw.SpaceWeatherError as exc:
-                raise SimulationServiceError(f"could not resolve space weather for atmospheric drag: {exc}") from exc
-
-            sw_module = spaceWeatherData.SpaceWeatherData()
-            sw_module.ModelTag = "spaceWeatherData"
-            sw_module.loadSpaceWeatherFile(str(resolved_sw.path))
-            sw_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
-            self.scSim.AddModelToTask(dyn_task_name, sw_module, 400)
-
-            atmo_module = msisAtmosphere.MsisAtmosphere()
-            atmo_module.ModelTag = "msisAtmosphere"
-            atmo_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
-            atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
-            for msg_index in range(23):  # fixed count of space-weather sub-messages msisAtmosphere reads
-                atmo_module.swDataInMsgs[msg_index].subscribeTo(sw_module.swDataOutMsgs[msg_index])
-            self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            from Basilisk.simulation import zeroWindModel
 
             wind_model = zeroWindModel.ZeroWindModel()
             wind_model.ModelTag = "zeroWind"
             wind_model.planetPosInMsg.subscribeTo(central_body_state_out_msg)
             self.scSim.AddModelToTask(dyn_task_name, wind_model, 380)
 
+            # Two atmosphere models, per schema.scenario.SpaceWeatherConfig's
+            # own docstring on why exactly these two (Basilisk has no
+            # Jacchia-Roberts model at all, checked directly against its
+            # source tree -- not guessed): "nrlmsise00" (the original,
+            # only model this project used to wire up) needs the full
+            # space-weather resolution chain below; "exponential" is a
+            # simple per-planet scale-height model with no F10.7/Ap
+            # dependence, configured via Basilisk's own
+            # simSetPlanetEnvironment.exponentialAtmosphere() helper (the
+            # same one a real shipped Basilisk example --
+            # examples/scenarioDragDeorbit.py -- uses, not hand-picked
+            # constants). Both plug into the SAME addSpacecraftToModel()/
+            # envOutMsgs[] pattern below (both inherit Basilisk's common
+            # AtmosphereBase), so the per-spacecraft wiring further down
+            # this function needs no atmosphere_model branch of its own.
+            if scenario.space_weather.atmosphere_model == "exponential":
+                from Basilisk.simulation import exponentialAtmosphere
+                from Basilisk.utilities import simSetPlanetEnvironment
+
+                atmo_module = exponentialAtmosphere.ExponentialAtmosphere()
+                atmo_module.ModelTag = "exponentialAtmosphere"
+                simSetPlanetEnvironment.exponentialAtmosphere(atmo_module, "earth")
+                # Optional per AtmosphereBase's own read logic (an
+                # unlinked planetPosInMsg defaults to planet-at-origin,
+                # confirmed directly against atmosphereBase.cpp) -- wired
+                # explicitly anyway, matching msisAtmosphere's own
+                # already-verified wiring below rather than relying on
+                # this project's central body always sitting exactly at
+                # the inertial origin.
+                atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
+                self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            elif scenario.space_weather.atmosphere_model == "nrlmsise00":
+                from Basilisk.simulation import msisAtmosphere, spaceWeatherData
+
+                from . import spaceweather as sw
+
+                start_utc = datetime.fromisoformat(scenario.epoch_utc)
+                end_utc = start_utc + timedelta(days=sim_settings.duration_days)
+                try:
+                    resolved_sw = sw.resolve(
+                        scenario.space_weather.source, start_utc, end_utc,
+                        local_file_path=scenario.space_weather.local_file_path,
+                        cache_dir=scenario.space_weather.cache_dir,
+                        activity_level=scenario.space_weather.activity_level,
+                        activity_percentile=scenario.space_weather.activity_percentile,
+                    )
+                except sw.SpaceWeatherError as exc:
+                    raise SimulationServiceError(
+                        f"could not resolve space weather for atmospheric drag: {exc}") from exc
+
+                sw_module = spaceWeatherData.SpaceWeatherData()
+                sw_module.ModelTag = "spaceWeatherData"
+                sw_module.loadSpaceWeatherFile(str(resolved_sw.path))
+                sw_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
+                self.scSim.AddModelToTask(dyn_task_name, sw_module, 400)
+
+                atmo_module = msisAtmosphere.MsisAtmosphere()
+                atmo_module.ModelTag = "msisAtmosphere"
+                atmo_module.epochInMsg.subscribeTo(grav_factory.epochMsg)
+                atmo_module.planetPosInMsg.subscribeTo(central_body_state_out_msg)
+                for msg_index in range(23):  # fixed count of space-weather sub-messages msisAtmosphere reads
+                    atmo_module.swDataInMsgs[msg_index].subscribeTo(sw_module.swDataOutMsgs[msg_index])
+                self.scSim.AddModelToTask(dyn_task_name, atmo_module, 390)
+            else:
+                raise SimulationServiceError(
+                    f"unknown space_weather.atmosphere_model {scenario.space_weather.atmosphere_model!r}"
+                )
+
         sc_objects_in_order: List = []
         rw_effectors_in_order: List = []
+        thr_effectors_in_order: List = []
         eclipse_index = 0  # only incremented for spacecraft that actually have power/station_keeping/enable_srp
         drag_index = 0  # only incremented for spacecraft that actually have enable_drag
 
@@ -846,6 +999,47 @@ class SimulationService:
                 srp_effector.sunEclipseInMsg.subscribeTo(sc_eclipse_out_msg)
                 self.scSim.AddModelToTask(dyn_task_name, srp_effector, 100)
 
+            # -- gravity gradient torque (schema.scenario.SpacecraftConfig
+            # .enable_gravity_gradient) -- reads the spacecraft's own
+            # hub state (inertia/position/attitude) directly out of the
+            # DynParamManager once attached, same as every other
+            # DynamicEffector here; only needs the central body's own
+            # already-registered planet properties (grav_factory.addBodiesTo()
+            # above already put them there for every spacecraft), so no
+            # extra message wiring -- confirmed against
+            # GravityGradientEffector/_UnitTest/test_gravityGradient.py's
+            # own call sequence (addPlanetName() + addDynamicEffector()),
+            # not guessed; class/attribute names additionally confirmed to
+            # exist against a real built Basilisk module directly (not
+            # just the test source). Same verification status as the rest
+            # of this file (see kernels.py's own docstring): a full
+            # dynamics RUN could not be exercised in this development
+            # sandbox, because every scenario's build() needs SPICE
+            # kernels (see build_spice_interface() above) and this
+            # sandbox's network egress to naif.jpl.nasa.gov/the
+            # hanspeterschaub.info backup mirror is blocked -- confirmed
+            # this is the exact same pre-existing limitation, not
+            # something new (an already-passing test elsewhere in this
+            # suite, test_service_run_live.py, fails with the identical
+            # blocked-kernel-download error when re-run here). See
+            # tests/test_gravity_gradient.py for the regression test this
+            # would run given SPICE kernel access.
+            # Only the CENTRAL body's contribution is added:
+            # a third-body perturber's gravity-gradient torque is smaller
+            # than the central body's by roughly (central body's distance /
+            # third body's distance)^3 -- negligible for every perturber
+            # this schema supports (sun/moon/planets at real mission
+            # distances), so adding it would cost an extra import per
+            # third body for no measurable effect.
+            if sc_config.enable_gravity_gradient:
+                from Basilisk.simulation import GravityGradientEffector
+
+                gg_effector = GravityGradientEffector.GravityGradientEffector()
+                gg_effector.ModelTag = f"{sc_config.name}GravityGradient"
+                gg_effector.addPlanetName(central_body.planetName)
+                sc_object.addDynamicEffector(gg_effector)
+                self.scSim.AddModelToTask(dyn_task_name, gg_effector, 100)
+
             if sc_config.actuators and sc_config.fsw_mode is None:
                 raise SimulationServiceError(
                     f"{sc_config.name}: actuators are configured but fsw_mode is None -- an actuator needs a "
@@ -854,24 +1048,64 @@ class SimulationService:
                 )
 
             rw_effector_for_viz = None
+            thr_effector_for_viz = None
             if sc_config.fsw_mode is not None:
-                unsupported_kinds = sorted({
-                    a.kind for a in sc_config.actuators if a.kind in ("thruster", "magnetic_torque_rod")
-                })
-                if unsupported_kinds:
+                if sc_config.magnetic_momentum_management is not None and self._mag_field_model is None:
                     raise SimulationServiceError(
-                        f"{sc_config.name}: actuator kind(s) {unsupported_kinds} are schema-valid but not "
-                        "wired up by engine.service in Phase 2 (see engine.fsw's module docstring)"
+                        f"{sc_config.name}: magnetic_momentum_management needs an Earth central body -- "
+                        "magneticFieldWMM (Basilisk's WMM magnetic field model) is only wired up for "
+                        "gravity.central_body == 'earth', same restriction as a 'magnetometer' sensor"
                     )
 
                 nav = fsw.build_simple_nav(
                     self.scSim, dyn_task_name, sc_config.name, sc_object, sun_state_out_msg=self._sun_state_out_msg
                 )
                 veh_config_msg = fsw.build_vehicle_config_msg(sc_config.inertia_kg_m2)
+
+                # Real sun-heading ESTIMATION (schema.scenario's
+                # fsw_params['use_css_estimation']) instead of reading
+                # simpleNav's truth vehSunPntBdy -- Scenario.validate()
+                # already guarantees a coarse_sun_sensor sensor is present
+                # whenever this is set. Built BEFORE build_guidance() so its
+                # output message can be passed straight in, rather than
+                # re-subscribing sunSafePoint's input after the fact (the
+                # pattern build_mtb_desaturation uses for rwMotorCmdInMsg,
+                # not needed here since nothing else has already subscribed
+                # to sunDirectionInMsg yet at this point).
+                sun_direction_override_msg = None
+                if sc_config.fsw_mode == "sunSafePoint" and sc_config.fsw_params.get("use_css_estimation"):
+                    if self._sun_state_out_msg is None:
+                        raise SimulationServiceError(
+                            f"{sc_config.name}: fsw_params['use_css_estimation'] needs 'sun' to be SPICE-tracked "
+                            "-- add 'sun' to gravity.third_body_perturbers (or set it as gravity.central_body)"
+                        )
+                    css_sensors = [s for s in sc_config.sensors if s.kind == "coarse_sun_sensor"]
+                    sun_direction_override_msg, css_devices = fsw.build_css_sun_estimation(
+                        self.scSim, dyn_task_name, sc_config.name, sc_object, css_sensors, self._sun_state_out_msg
+                    )
+                    # Must outlive build() -- see engine.fsw.build_css_sun_estimation's
+                    # docstring and self._css_estimation_devices's own comment.
+                    self._css_estimation_devices.append(css_devices)
+                    handle.css_sun_estimate_recorder = sun_direction_override_msg.recorder()
+                    self.scSim.AddModelToTask(dyn_task_name, handle.css_sun_estimate_recorder)
+
+                target_body_eph_msg = None
+                target_body_name = sc_config.fsw_params.get("target_body")
+                if sc_config.fsw_mode == "locationPointing" and target_body_name:
+                    # Scenario.validate() already guarantees target_body_name
+                    # is one of self._planet_state_out_msgs's keys (gravity
+                    # .central_body or a third_body_perturbers entry).
+                    target_body_eph_msg = fsw.build_ephemeris_converter(
+                        self.scSim, dyn_task_name, sc_config.name, target_body_name,
+                        self._planet_state_out_msgs[target_body_name],
+                    )
+
                 try:
                     guid_msg = fsw.build_guidance(
                         self.scSim, dyn_task_name, sc_config.name, sc_config.fsw_mode, sc_config.fsw_params,
                         nav, mu, self._ground_locations,
+                        sun_direction_override_msg=sun_direction_override_msg,
+                        target_body_eph_msg=target_body_eph_msg,
                     )
                 except fsw.FswError as exc:
                     raise SimulationServiceError(str(exc)) from exc
@@ -885,17 +1119,96 @@ class SimulationService:
                     mrp = fsw.build_mrp_feedback(
                         self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg, sc_config.control_params,
                         rw_config_msg=rw_config_msg, rw_speed_out_msg=rw_state_effector.rwSpeedOutMsg,
+                        inertia_kg_m2=sc_config.inertia_kg_m2,
                     )
-                    fsw.build_rw_motor_torque(self.scSim, dyn_task_name, sc_config.name, mrp, rw_config_msg,
-                                               rw_state_effector)
+                    rw_motor_torque_mod = fsw.build_rw_motor_torque(
+                        self.scSim, dyn_task_name, sc_config.name, mrp, rw_config_msg, rw_state_effector
+                    )
                     handle.rw_speed_recorder = rw_state_effector.rwSpeedOutMsg.recorder()
                     self.scSim.AddModelToTask(dyn_task_name, handle.rw_speed_recorder)
                     rw_effector_for_viz = rw_state_effector
+
+                    # Reaction-wheel momentum desaturation via thrusters
+                    # (schema.scenario.MomentumDumpingConfig) -- a SEPARATE
+                    # actuation path from the "thruster" actuator kind's own
+                    # control chain (build_thruster_force_mapping), built
+                    # only here because reaction wheels remain the PRIMARY
+                    # control actuator; Scenario.validate() already
+                    # guarantees "thruster" actuators are present whenever
+                    # momentum_dumping is set.
+                    if sc_config.momentum_dumping is not None:
+                        desat_thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
+                        _, desat_thruster_effector, desat_thr_config_msg = fsw.build_thrusters(
+                            self.scSim, dyn_task_name, f"{sc_config.name}_desat", sc_object, desat_thruster_actuators
+                        )
+                        desat_control, _, desat_dumping = fsw.build_momentum_dumping(
+                            self.scSim, dyn_task_name, sc_config.name, rw_config_msg,
+                            rw_state_effector.rwSpeedOutMsg, desat_thr_config_msg, veh_config_msg,
+                            desat_thruster_effector, sc_config.momentum_dumping,
+                        )
+                        self._desat_controls.append(desat_control)
+                        thr_effector_for_viz = desat_thruster_effector
+                        handle.num_thrusters = len(desat_thruster_actuators)
+                        handle.thruster_on_time_recorder = desat_dumping.thrusterOnTimeOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
+                        if sc_config.fuel_tank is not None:
+                            fuel_tank_effector = fsw.build_fuel_tank(
+                                self.scSim, dyn_task_name, sc_config.name, sc_object, desat_thruster_effector,
+                                sc_config.fuel_tank,
+                            )
+                            handle.fuel_tank_effector = fuel_tank_effector
+                            handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
+                            self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
+
+                    # Reaction-wheel momentum management via magnetic torque
+                    # rods (schema.scenario.MagneticMomentumManagementConfig)
+                    # -- the alternative desaturation hardware to
+                    # momentum_dumping's thrusters above; Scenario.validate()
+                    # guarantees these are mutually exclusive and that
+                    # "magnetic_torque_rod" actuators are present whenever
+                    # this is set.
+                    if sc_config.magnetic_momentum_management is not None:
+                        mtb_actuators = [a for a in sc_config.actuators if a.kind == "magnetic_torque_rod"]
+                        mtb_effector, mtb_management = fsw.build_mtb_desaturation(
+                            self.scSim, dyn_task_name, sc_config.name, sc_object, mtb_actuators,
+                            rw_motor_torque_mod, rw_config_msg, rw_state_effector, self._mag_field_model,
+                            sc_config.magnetic_momentum_management,
+                        )
+                        handle.num_mtb = len(mtb_actuators)
+                        handle.mtb_dipole_recorder = mtb_management.mtbCmdOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.mtb_dipole_recorder)
                 else:
-                    mrp = fsw.build_mrp_feedback(
-                        self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg, sc_config.control_params
-                    )
-                    fsw.build_idealized_actuation(self.scSim, dyn_task_name, sc_config.name, sc_object, mrp)
+                    thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
+                    if thruster_actuators:
+                        mrp = fsw.build_mrp_feedback(
+                            self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
+                            sc_config.control_params, inertia_kg_m2=sc_config.inertia_kg_m2,
+                        )
+                        _, thruster_effector, thr_config_msg = fsw.build_thrusters(
+                            self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_actuators
+                        )
+                        handle.num_thrusters = len(thruster_actuators)
+                        _, firing_logic = fsw.build_thruster_force_mapping(
+                            self.scSim, dyn_task_name, sc_config.name, mrp, thr_config_msg, veh_config_msg,
+                            thruster_effector,
+                        )
+                        handle.thruster_on_time_recorder = firing_logic.onTimeOutMsg.recorder()
+                        self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
+                        thr_effector_for_viz = thruster_effector
+                        if sc_config.fuel_tank is not None:
+                            fuel_tank_effector = fsw.build_fuel_tank(
+                                self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_effector,
+                                sc_config.fuel_tank,
+                            )
+                            handle.fuel_tank_effector = fuel_tank_effector
+                            handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
+                            self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
+                    else:
+                        mrp = fsw.build_mrp_feedback(
+                            self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
+                            sc_config.control_params, inertia_kg_m2=sc_config.inertia_kg_m2,
+                        )
+                        fsw.build_idealized_actuation(self.scSim, dyn_task_name, sc_config.name, sc_object, mrp)
 
                 handle.nav_recorder = nav.attOutMsg.recorder()
                 handle.control_torque_recorder = mrp.cmdTorqueOutMsg.recorder()
@@ -903,6 +1216,7 @@ class SimulationService:
                 self.scSim.AddModelToTask(dyn_task_name, handle.control_torque_recorder)
 
             rw_effectors_in_order.append(rw_effector_for_viz)
+            thr_effectors_in_order.append(thr_effector_for_viz)
             self._handles[sc_config.name] = handle
 
         # Phase 4: constellation phasing-keeping (schema.scenario.PhasingKeepingConfig)
@@ -962,6 +1276,10 @@ class SimulationService:
                 name: handle.phasing_keeping_controller for name, handle in self._handles.items()
                 if handle.phasing_keeping_controller is not None
             }
+            fuel_tank_by_spacecraft = {
+                name: handle.fuel_tank_effector for name, handle in self._handles.items()
+                if handle.fuel_tank_effector is not None
+            }
             custom_models_by_spacecraft = {
                 sc_config.name: {
                     "path": sc_config.vizard_model_path,
@@ -980,10 +1298,12 @@ class SimulationService:
                 ) = vizard.enable_vizard(
                     self.scSim, dyn_task_name, sc_objects_in_order, self.vizard_request,
                     rw_effectors_by_spacecraft=rw_effectors_in_order,
+                    thr_effectors_by_spacecraft=thr_effectors_in_order,
                     ground_stations=self._ground_locations, central_body_name=gravity.central_body,
                     battery_by_spacecraft=battery_by_spacecraft,
                     station_keeping_by_spacecraft=station_keeping_by_spacecraft,
                     phasing_keeping_by_spacecraft=phasing_keeping_by_spacecraft,
+                    fuel_tank_by_spacecraft=fuel_tank_by_spacecraft,
                     access_out_msgs=self._access_out_msgs,
                     custom_models_by_spacecraft=custom_models_by_spacecraft,
                 )
@@ -994,6 +1314,28 @@ class SimulationService:
         if initialize:
             self.scSim.InitializeSimulation()
             stop_time_s = sim_settings.duration_days * 86400.0
+            if self._desat_controls:
+                # thrMomentumManagement needs a real (nonzero) rwSpeedsInMsg
+                # reading in place before its Reset() establishes anything
+                # meaningful -- confirmed directly against a real Basilisk
+                # build (not assumed from the shipped example's comment
+                # alone): without this extra Reset() call, desaturation
+                # never fires for the ENTIRE run, with no error of any
+                # kind, because InitializeSimulation()'s own automatic
+                # Reset() at t=0 runs before any module has ever produced
+                # output. Priming one dynamics tick and re-Reset()ing here
+                # (not just at t=0) is Basilisk's own documented pattern
+                # (examples/scenarioMomentumDumping.py's "cannot be run at
+                # simulation time t=0" comment); this makes it automatic
+                # rather than a thing every scenario author has to know to
+                # do -- see engine.fsw.build_momentum_dumping's docstring
+                # for the actual numbers this was confirmed against.
+                priming_time_s = min(sim_settings.dynamics_task_rate_s, stop_time_s)
+                priming_time_ns = macros.sec2nano(priming_time_s)
+                self.scSim.ConfigureStopTime(priming_time_ns)
+                self.scSim.ExecuteSimulation()
+                for desat_control in self._desat_controls:
+                    desat_control.Reset(priming_time_ns)
             self.scSim.ConfigureStopTime(macros.sec2nano(stop_time_s))
 
     def run(self) -> ResultSet:
@@ -1002,10 +1344,11 @@ class SimulationService:
         :class:`~missionstudio.engine.results.ResultSet`: always
         position/velocity plus osculating Keplerian elements (semi-major
         axis, eccentricity, inclination, RAAN, argument of periapsis, true
-        anomaly -- see :func:`_osculating_elements`), plus (Phase 2, only
-        for a spacecraft that actually has them configured) attitude/
+        anomaly -- see :func:`_osculating_elements`), plus (only for a
+        spacecraft that actually has them configured) attitude/
         body-rate/sun-heading, commanded control torque, reaction wheel
-        speeds, and one series per attached sensor.
+        speeds or per-thruster on-times (whichever actuator kind the
+        spacecraft uses), and one series per attached sensor.
 
         See :meth:`run_live` for a variant that streams intermediate
         results back while the simulation is still running (e.g. to drive
@@ -1158,6 +1501,27 @@ class SimulationService:
             result.add(TimeSeries(f"{name}.orbit_elements.true_anomaly", t_s, ("true_anomaly",),
                                    oe["true_anomaly"], units="rad"))
 
+            # Mean (first-order J2, osc -> mean) elements alongside the
+            # osculating ones above -- see _mean_elements()'s own
+            # docstring for what this is/isn't, and self.mean_elements_req's
+            # assignment above for when it's actually computed. Per-user
+            # request: "plots of averaged orbital elements, not only the
+            # 'true' ones".
+            if self.mean_elements_req is not None:
+                mean_oe = _mean_elements(oe, self.mean_elements_req, self.mean_elements_j2)
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.semi_major_axis", t_s, ("a",),
+                                       mean_oe["a"], units="m"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.eccentricity", t_s, ("e",),
+                                       mean_oe["e"], units="-"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.inclination", t_s, ("i",),
+                                       mean_oe["i"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.raan", t_s, ("raan",),
+                                       mean_oe["raan"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.arg_periapsis", t_s, ("argp",),
+                                       mean_oe["argp"], units="rad"))
+                result.add(TimeSeries(f"{name}.orbit_elements_mean.true_anomaly", t_s, ("true_anomaly",),
+                                       mean_oe["true_anomaly"], units="rad"))
+
             if handle.nav_recorder is not None:
                 nav_t_s = handle.nav_recorder.times() * macros.NANO2SEC
                 result.add(TimeSeries(f"{name}.attitude_sigma_BN", nav_t_s, ("s1", "s2", "s3"),
@@ -1166,6 +1530,10 @@ class SimulationService:
                                        handle.nav_recorder.omega_BN_B, units="rad/s"))
                 result.add(TimeSeries(f"{name}.sun_heading_body", nav_t_s, ("x", "y", "z"),
                                        handle.nav_recorder.vehSunPntBdy, units="-"))
+            if handle.css_sun_estimate_recorder is not None:
+                css_t_s = handle.css_sun_estimate_recorder.times() * macros.NANO2SEC
+                result.add(TimeSeries(f"{name}.sun_heading_body_estimated", css_t_s, ("x", "y", "z"),
+                                       handle.css_sun_estimate_recorder.vehSunPntBdy, units="-"))
             if handle.control_torque_recorder is not None:
                 ctrl_t_s = handle.control_torque_recorder.times() * macros.NANO2SEC
                 result.add(TimeSeries(f"{name}.control_torque", ctrl_t_s, ("x", "y", "z"),
@@ -1175,6 +1543,20 @@ class SimulationService:
                 wheel_speeds = np.asarray(handle.rw_speed_recorder.wheelSpeeds)[:, :handle.num_rw]
                 columns = tuple(f"wheel_{i}" for i in range(handle.num_rw))
                 result.add(TimeSeries(f"{name}.rw_speeds", rw_t_s, columns, wheel_speeds, units="rad/s"))
+            if handle.thruster_on_time_recorder is not None:
+                thr_t_s = handle.thruster_on_time_recorder.times() * macros.NANO2SEC
+                on_times = np.asarray(handle.thruster_on_time_recorder.OnTimeRequest)[:, :handle.num_thrusters]
+                columns = tuple(f"thruster_{i}" for i in range(handle.num_thrusters))
+                result.add(TimeSeries(f"{name}.thruster_on_time", thr_t_s, columns, on_times, units="s"))
+            if handle.fuel_tank_recorder is not None:
+                fuel_t_s = handle.fuel_tank_recorder.times() * macros.NANO2SEC
+                result.add(TimeSeries(f"{name}.fuel_mass_remaining", fuel_t_s, ("fuel_mass_remaining",),
+                                       handle.fuel_tank_recorder.fuelMass, units="kg"))
+            if handle.mtb_dipole_recorder is not None:
+                mtb_t_s = handle.mtb_dipole_recorder.times() * macros.NANO2SEC
+                dipoles = np.asarray(handle.mtb_dipole_recorder.mtbDipoleCmds)[:, :handle.num_mtb]
+                columns = tuple(f"mtb_{i}" for i in range(handle.num_mtb))
+                result.add(TimeSeries(f"{name}.mtb_dipole_commanded", mtb_t_s, columns, dipoles, units="A*m^2"))
 
             for sensor_name, (kind, recorder) in handle.sensor_recorders.items():
                 sensor_t_s = recorder.times() * macros.NANO2SEC

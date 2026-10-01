@@ -4,7 +4,7 @@
   "simulation_mode": "orbit_only",
   "gravity": {
     "central_body": "earth",
-    "central_body_degree": 8,
+    "central_body_degree": 10,
     "third_body_perturbers": [
       "sun",
       "moon"
@@ -56,6 +56,7 @@
       "enable_srp": false,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
       "sensors": [],
       "actuators": [],
       "fsw_mode": null,
@@ -66,6 +67,9 @@
       "station_keeping": null,
       "phasing_keeping": null,
       "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -88,7 +92,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 3.0,
@@ -103,6 +110,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "A geostationary transfer orbit (GTO)-like eccentric orbit, with Earth's oblateness (J2, via 8th-degree spherical harmonics) and third-body gravity from the Sun and Moon all switched on. dynamics_task_rate_s is deliberately fine (1.0 s) here: coarser rates introduce real truncation error into the spherical-harmonics gravity term itself (see this project's own HISTORY.md, 'What Phase 6 (Mission Sequence architecture) adds', for the measured effect of this on a real Basilisk run) -- always use a fine rate together with central_body_degree > 0, not just for point-mass orbits.\n\nWhat to look at: plot 'sat-1.position_N' and watch the orbit visibly precess over the 3-day run -- J2 causes the right ascension of the ascending node (RAAN) to regress and the argument of periapsis to rotate, effects a pure two-body orbit ('01') never shows. Compare 'sat-1.velocity_N' magnitude at periapsis vs. apoapsis to see orbital speed vary with a large eccentricity (0.7) -- much faster near Earth, much slower far away.\n\nTry changing: central_body_degree back to 0 to see the perturbation-free case for comparison, or third_body_perturbers to just [\"moon\"] or [\"sun\"] to isolate each effect.",
+  "description": "A geostationary transfer orbit (GTO)-like eccentric orbit, with Earth's oblateness (J2 and higher-order terms, via 10th-degree spherical harmonics) and third-body gravity from the Sun and Moon all switched on. Drag is deliberately NOT enabled here (unlike other templates updated for full perturbations) -- this one's whole point is isolating J2 + third-body precession cleanly (see 'What to look at' below); a third perturbation source would muddy that specific visual lesson. dynamics_task_rate_s is deliberately fine (1.0 s) here: coarser rates introduce real truncation error into the spherical-harmonics gravity term itself (see this project's own HISTORY.md, 'What Phase 6 (Mission Sequence architecture) adds', for the measured effect of this on a real Basilisk run) -- always use a fine rate together with central_body_degree > 0, not just for point-mass orbits.\n\nWhat to look at: plot 'sat-1.position_N' and watch the orbit visibly precess over the 3-day run -- J2 causes the right ascension of the ascending node (RAAN) to regress and the argument of periapsis to rotate, effects a pure two-body orbit ('01') never shows. Compare 'sat-1.velocity_N' magnitude at periapsis vs. apoapsis to see orbital speed vary with a large eccentricity (0.7) -- much faster near Earth, much slower far away.\n\nTry changing: central_body_degree back to 0 to see the perturbation-free case for comparison, or third_body_perturbers to just [\"moon\"] or [\"sun\"] to isolate each effect.",
   "schema_version": 1
 }

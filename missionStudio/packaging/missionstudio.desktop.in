@@ -7,3 +7,4 @@ Icon=missionstudio
 Terminal=false
 Categories=Science;Education;
 StartupNotify=true
+StartupWMClass=missionstudio

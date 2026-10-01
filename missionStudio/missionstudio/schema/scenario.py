@@ -82,17 +82,24 @@ ORBIT_IC_TYPES = ("classical_elements", "cartesian", "tle")
 ANOMALY_TYPES = ("true", "mean")
 
 # Sensor/actuator/FSW-mode kinds engine.service.SimulationService actually
-# wires up as of Phase 2 -- see that module's docstring for the exact
-# Basilisk module each one maps to and for engine.fsw's guidance-chain
-# construction. "thruster" and "magnetic_torque_rod" are intentionally
-# accepted as ActuatorConfig.kind values (schema-valid, so a scenario file
-# referencing them still loads and round-trips) but NOT wired up here --
-# engine.service raises a specific SimulationServiceError if one is
-# actually present on a spacecraft being run, rather than silently
-# skipping it (see that module's ACTUATOR_BUILDERS for why: unlike Phase 0's
-# drag/SRP flags, which stayed inert booleans, an actuator kind that
-# silently did nothing would be a live foot-gun -- a spacecraft configured
-# to detumble on magnetic torque rods that simply never fire).
+# wires up -- see that module's docstring for the exact Basilisk module
+# each one maps to and for engine.fsw's guidance-chain construction.
+# "reaction_wheel" (mrpFeedback + rwMotorTorque + reactionWheelStateEffector)
+# and "thruster" (mrpFeedback + thrForceMapping + thrFiringSchmitt +
+# thrusterDynamicEffector) are both real control-torque actuation paths --
+# see SpacecraftConfig.validate() for why a spacecraft may use one or the
+# other but not both. "magnetic_torque_rod" (MtbEffector + tamComm +
+# mtbMomentumManagement) is wired up too, but ONLY for continuous
+# reaction-wheel momentum management (see MagneticMomentumManagementConfig)
+# -- there is no standalone attitude-control/detumble mode built on
+# magnetic torque rods alone (Basilisk ships no ready-made B-dot-style
+# controller for it), so a "magnetic_torque_rod" actuator with
+# magnetic_momentum_management unset would simply never receive a
+# command; SpacecraftConfig.validate() rejects that combination early
+# rather than silently building a dead actuator (unlike Phase 0's drag/SRP
+# flags, which stayed inert booleans, an actuator kind that silently did
+# nothing would be a live foot-gun -- a spacecraft configured to detumble
+# on magnetic torque rods that simply never fire).
 SUPPORTED_SENSOR_KINDS = ("star_tracker", "imu", "coarse_sun_sensor", "magnetometer")
 SUPPORTED_ACTUATOR_KINDS = ("reaction_wheel", "thruster", "magnetic_torque_rod")
 SUPPORTED_FSW_MODES = ("inertial3D", "hillPoint", "velocityPoint", "sunSafePoint", "locationPointing")
@@ -467,6 +474,143 @@ class PhasingKeepingConfig:
 
 
 @dataclass
+class MomentumDumpingConfig:
+    """Periodic reaction-wheel momentum desaturation via this spacecraft's
+    ``"thruster"`` actuators -- Basilisk's ``thrMomentumManagement`` +
+    ``thrForceMapping`` (momentum-dump mode) + ``thrMomentumDumping``,
+    firing thrusters ONLY to bleed off accumulated wheel momentum, never
+    for primary attitude control (that stays on ``"reaction_wheel"``
+    actuators via the existing control path -- see ``engine.fsw``'s
+    module docstring for why the two would otherwise need a control
+    -allocation module this app doesn't build).
+
+    Requires BOTH ``"reaction_wheel"`` actuators AND ``"thruster"``
+    actuators configured on this same spacecraft: reaction wheels for
+    the control they're already doing, thrusters as the desaturation
+    hardware. ``SpacecraftConfig.validate()`` otherwise REJECTS mixing
+    the two actuator kinds on one spacecraft (see that method) -- this
+    is the one case where mixing them is well-defined and required,
+    since the two are not competing for the same torque authority.
+
+    ``hs_max`` is the total reaction-wheel angular-momentum magnitude
+    [N*m*s] that triggers a desaturation burn; a spacecraft with
+    :class:`ActuatorConfig` ``"reaction_wheel"`` entries carrying
+    ``maxMomentum`` params should typically set this somewhat below the
+    sum of those wheels' capacities, so desaturation fires before any
+    wheel actually saturates, not after.
+
+    ``None`` (the default) means no desaturation is simulated -- reaction
+    wheels accumulate momentum indefinitely for the whole run, exactly as
+    before this feature existed.
+    """
+
+    hs_max: float  # [N*m*s] total RW angular momentum magnitude that triggers desaturation
+    thr_min_fire_time: float = 0.02  # [s] thruster firing pulse resolution
+    max_counter_value: int = 100  # [-] control periods to wait between desaturation firings
+
+    def validate(self, spacecraft_name: str) -> None:
+        _require(self.hs_max > 0, f"{spacecraft_name}: momentum_dumping.hs_max must be > 0")
+        _require(self.thr_min_fire_time > 0, f"{spacecraft_name}: momentum_dumping.thr_min_fire_time must be > 0")
+        _require(self.max_counter_value >= 1, f"{spacecraft_name}: momentum_dumping.max_counter_value must be >= 1")
+
+
+@dataclass
+class MagneticMomentumManagementConfig:
+    """Continuous reaction-wheel momentum management via this
+    spacecraft's ``"magnetic_torque_rod"`` actuators -- Basilisk's
+    ``mtbMomentumManagement``, a materially different strategy from
+    :class:`MomentumDumpingConfig`'s thruster-based threshold-and-burst
+    approach: rather than waiting for total momentum to cross a
+    threshold and firing a discrete pulse, this continuously biases the
+    commanded RW motor torque (sitting between ``rwMotorTorque`` and the
+    RW hardware) so each wheel's speed is driven toward its own entry in
+    ``wheel_speed_biases_rad_s``, using whatever magnetic torque the
+    real geomagnetic field (Basilisk's WMM model) allows at the
+    spacecraft's current position -- see ``examples/scenarioMtbMomentumManagement.py``,
+    the real, shipped example this is built from.
+
+    The two desaturation strategies are mutually exclusive alternatives
+    (different actuator hardware, different control law) -- a spacecraft
+    uses one or the other, never both.
+
+    Requires BOTH ``"reaction_wheel"`` actuators AND
+    ``"magnetic_torque_rod"`` actuators configured on this same
+    spacecraft (mirroring :class:`MomentumDumpingConfig`'s own
+    requirement), and ``gravity.central_body == "earth"`` (Basilisk's
+    WMM magnetic field model is Earth-only, same restriction as a
+    ``"magnetometer"`` sensor -- see ``engine.fsw``'s module docstring).
+    That central-body check happens at the engine layer when the
+    scenario actually runs (not here), matching this schema's existing
+    precedent for the same Earth-only WMM restriction on magnetometer
+    sensors.
+
+    ``wheel_speed_biases_rad_s`` needs exactly one entry per
+    ``"reaction_wheel"`` actuator on this spacecraft, in the same order
+    those actuators are listed -- Basilisk's ``mtbMomentumManagement``
+    maps them positionally, not by name. ``None`` (the default) means no
+    magnetic momentum management is simulated -- reaction wheels
+    accumulate momentum indefinitely, exactly as before this feature
+    existed.
+    """
+
+    wheel_speed_biases_rad_s: list  # [rad/s] one entry per reaction_wheel actuator, in listed order
+    c_gain: float = 0.003  # [-] control gain mapping wheel speed error to desired magnetic torque
+
+    def validate(self, spacecraft_name: str, num_reaction_wheels: int) -> None:
+        _require(len(self.wheel_speed_biases_rad_s) == num_reaction_wheels,
+                  f"{spacecraft_name}: magnetic_momentum_management.wheel_speed_biases_rad_s needs exactly "
+                  f"{num_reaction_wheels} entries (one per reaction_wheel actuator), got "
+                  f"{len(self.wheel_speed_biases_rad_s)}")
+        _require(self.c_gain > 0, f"{spacecraft_name}: magnetic_momentum_management.c_gain must be > 0")
+
+
+@dataclass
+class FuelTankConfig:
+    """Real propellant depletion for this spacecraft's ``"thruster"``
+    actuators -- Basilisk's ``fuelTank`` state effector
+    (``FuelTankModelUniformBurn``) tied to the thruster hardware via
+    ``fuelTank.addThrusterSet()``, confirmed against
+    ``examples/MultiSatBskSim/modelsMultiSat/BSK_MultiSatDynamics.py``'s
+    own ``SetFuelTank()``. Every tick, the tank reads the SAME mass-flow
+    rate (derived from each firing thruster's own ``steadyIsp`` and
+    commanded thrust -- the standard rocket equation, ``mDot = F /
+    (steadyIsp * g0)``) the thruster hardware itself already computes for
+    its own physics, and depletes ``hub.mHub`` by exactly that amount --
+    unlike this app's existing hand-rolled propellant bookkeeping
+    (``engine.orbit_maintenance``'s station-keeping/phasing/
+    constant-thrust controllers, which track an explicit-Euler rocket
+    -equation estimate in Python and feed it back into ``hub.mHub``
+    themselves), this is Basilisk's own state effector doing the real
+    physics, including the resulting center-of-mass shift as propellant
+    depletes (``r_TcT_TInit``), which the hand-rolled scalar-mass
+    approach cannot capture at all.
+
+    Requires at least one ``"thruster"`` actuator on this spacecraft --
+    a tank with nothing drawing from it is schema-valid (just inert) in
+    Basilisk itself, but almost certainly not what was intended, so this
+    schema rejects it with a specific message instead.
+
+    ``None`` (the default) means no fuel tank is simulated -- thrusters
+    fire with unlimited propellant, exactly as before this feature
+    existed (this app's pre-existing behavior for ACS/desaturation
+    thrusters specifically; station-keeping/phasing/constant-thrust
+    propellant bookkeeping is unrelated and unaffected either way).
+    """
+
+    propellant_mass_kg: float  # [kg] initial propellant mass loaded in the tank
+    max_propellant_mass_kg: float  # [kg] tank capacity -- propellant_mass_kg must not exceed this
+    tank_position_b_m: list = field(default_factory=lambda: [0.0, 0.0, 0.0])  # [m] r_TB_B, tank position in body frame
+
+    def validate(self, spacecraft_name: str) -> None:
+        _require(self.max_propellant_mass_kg > 0, f"{spacecraft_name}: fuel_tank.max_propellant_mass_kg must be > 0")
+        _require(0.0 <= self.propellant_mass_kg <= self.max_propellant_mass_kg,
+                  f"{spacecraft_name}: fuel_tank.propellant_mass_kg must be between 0 and "
+                  "max_propellant_mass_kg")
+        _require(len(self.tank_position_b_m) == 3,
+                  f"{spacecraft_name}: fuel_tank.tank_position_b_m must be a 3-element [x, y, z] list [m]")
+
+
+@dataclass
 class SpacecraftConfig:
     name: str
     orbit: OrbitIC
@@ -492,6 +636,22 @@ class SpacecraftConfig:
     srp_coeff: float = 1.3
     srp_area_m2: float = 1.0
 
+    # Torque from the central body's (and, if present, any third-body
+    # perturber's) gravity gradient across the spacecraft's own mass
+    # distribution -- Basilisk's real GravityGradientEffector, not an
+    # approximation: it reads the spacecraft's actual simulated inertia/
+    # position/attitude every tick (see engine.service), so it stays
+    # correct through inertia changes (e.g. FuelTank depletion, once that
+    # exists) rather than being computed once from initial conditions.
+    # Negligible in LEO for an actively-controlled spacecraft (the RW/MRP
+    # feedback loop simply rejects it as one more disturbance torque), but
+    # real for anything coasting without active control (fsw_mode=None) or
+    # in a large/elongated inertia configuration -- exactly the case this
+    # schema previously had no way to model at all. False by default:
+    # every scenario written before this field existed keeps its exact
+    # previous dynamics.
+    enable_gravity_gradient: bool = False
+
     sensors: list = field(default_factory=list)  # list[SensorConfig]
     actuators: list = field(default_factory=list)  # list[ActuatorConfig]
     # One of SUPPORTED_FSW_MODES, or None for no attitude control (attitude
@@ -512,6 +672,9 @@ class SpacecraftConfig:
     station_keeping: Optional[StationKeepingConfig] = None
     phasing_keeping: Optional[PhasingKeepingConfig] = None
     constant_thrust: Optional[ConstantThrustConfig] = None
+    momentum_dumping: Optional[MomentumDumpingConfig] = None
+    magnetic_momentum_management: Optional[MagneticMomentumManagementConfig] = None
+    fuel_tank: Optional[FuelTankConfig] = None
 
     # Phase 5: PURELY COSMETIC Vizard display -- replaces this spacecraft's
     # default cube icon with a custom CAD model
@@ -531,6 +694,21 @@ class SpacecraftConfig:
         _require(len(self.inertia_kg_m2) == 9, f"{self.name}: inertia_kg_m2 must have 9 elements (3x3, row-major)")
         _require(len(self.sigma_bn_init) == 3, f"{self.name}: sigma_bn_init must have 3 elements")
         _require(len(self.omega_bn_b_init_rad_s) == 3, f"{self.name}: omega_bn_b_init_rad_s must have 3 elements")
+        # drag_coeff/drag_area_m2/srp_coeff/srp_area_m2 feed straight into
+        # Basilisk's exponentialAtmosphere drag effector/SRP effector as a
+        # physical coefficient/projected area (engine.service) -- neither
+        # effector itself rejects a non-positive value (no crash, no
+        # exception), so a <= 0 area/coefficient here would otherwise
+        # silently produce a reversed or zero drag/SRP force instead of a
+        # clear error, including when the other three are left at their
+        # schema defaults and only one was mistyped. Validated
+        # unconditionally (not just when enable_drag/enable_srp is True)
+        # so toggling either flag on later can't resurface an
+        # already-invalid value unnoticed.
+        _require(self.drag_coeff > 0, f"{self.name}: drag_coeff must be > 0")
+        _require(self.drag_area_m2 > 0, f"{self.name}: drag_area_m2 must be > 0")
+        _require(self.srp_coeff > 0, f"{self.name}: srp_coeff must be > 0")
+        _require(self.srp_area_m2 > 0, f"{self.name}: srp_area_m2 must be > 0")
         self.orbit.validate()
 
         _require(self.fsw_mode is None or self.fsw_mode in SUPPORTED_FSW_MODES,
@@ -541,6 +719,10 @@ class SpacecraftConfig:
             _require(has_gs != has_body,  # xor: exactly one target
                       f"{self.name}: fsw_mode 'locationPointing' needs exactly one of "
                       "fsw_params['target_ground_station'] or fsw_params['target_body']")
+        if self.fsw_mode == "sunSafePoint" and self.fsw_params.get("use_css_estimation"):
+            _require(any(s.kind == "coarse_sun_sensor" for s in self.sensors),
+                      f"{self.name}: fsw_params['use_css_estimation'] is set but this spacecraft has no "
+                      "'coarse_sun_sensor' sensors to estimate sun-heading from")
 
         sensor_names = [s.name for s in self.sensors]
         _require(len(sensor_names) == len(set(sensor_names)),
@@ -569,6 +751,98 @@ class SpacecraftConfig:
                 _require(gsHat_B is not None and len(gsHat_B) == 3,
                           f"{self.name}: reaction_wheel {actuator.name!r} needs params['gsHat_B'] "
                           "as a 3-element body-frame spin-axis unit vector")
+                rw_type = actuator.params.get("rw_type", "custom")
+                if rw_type == "custom":
+                    # Confirmed directly against simIncludeRW.py's rwFactory.create(): the
+                    # "custom" type's own method (unlike every named hardware type, e.g.
+                    # "Honeywell_HR16") does nothing -- it relies entirely on these two
+                    # kwargs. Missing either one makes rwFactory.create() call exit(1)
+                    # directly (not a raised exception) -- which kills the whole
+                    # missionStudio process with no traceback, not just this one
+                    # simulation run -- so this schema requires them explicitly instead
+                    # of ever reaching that call with a bare rw_type="custom".
+                    has_u_max_guard = (actuator.params.get("u_max") is not None
+                                       or actuator.params.get("useMaxTorque") is False)
+                    _require(has_u_max_guard,
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) but has no params['u_max'] [N*m] -- rwFactory.create() hard-exits "
+                              "the whole process (not a catchable error) on a non-positive u_max for a "
+                              "default-saturating custom wheel; set params['u_max'], set "
+                              "params['useMaxTorque']=False, or use a named params['rw_type'] (e.g. "
+                              "'Honeywell_HR16') with its own built-in default instead")
+                    has_inertia = (actuator.params.get("Js") is not None
+                                   or (actuator.params.get("Omega_max") is not None
+                                       and actuator.params.get("maxMomentum") is not None))
+                    _require(has_inertia,
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) but has no params['Js'] [kg*m^2] (spin-axis inertia) and no "
+                              "params['Omega_max']+params['maxMomentum'] pair to derive it from -- "
+                              "rwFactory.create() cannot build this wheel's inertia without one of those; "
+                              "set one, or use a named params['rw_type'] with its own built-in default")
+                    # Confirmed directly against simIncludeRW.py: giving Js
+                    # AND the Omega_max+maxMomentum pair together is a
+                    # SEPARATE exit(1) hard-crash (rwFactory.create() builds
+                    # the wheel's inertia exactly one way, never both) --
+                    # found by exactly this combination in a real, already
+                    # -shipped params dict (engine.spacecraft_templates.py's
+                    # _RW_EXAMPLE_PARAMS, fixed alongside this check).
+                    _require(not (actuator.params.get("Js") is not None
+                                  and actuator.params.get("Omega_max") is not None
+                                  and actuator.params.get("maxMomentum") is not None),
+                              f"{self.name}: reaction_wheel {actuator.name!r} uses rw_type='custom' (the "
+                              "default) with params['Js'] AND both params['Omega_max']/params['maxMomentum'] "
+                              "set -- rwFactory.create() hard-exits the whole process because it builds this "
+                              "wheel's inertia exactly one way, never both; remove params['Js'] (let it be "
+                              "derived from Omega_max/maxMomentum) or remove the Omega_max/maxMomentum pair")
+            if actuator.kind == "thruster":
+                r_B = actuator.params.get("r_B")
+                _require(r_B is not None and len(r_B) == 3,
+                          f"{self.name}: thruster {actuator.name!r} needs params['r_B'] as a 3-element "
+                          "body-frame location [m]")
+                tHat_B = actuator.params.get("tHat_B")
+                _require(tHat_B is not None and len(tHat_B) == 3,
+                          f"{self.name}: thruster {actuator.name!r} needs params['tHat_B'] as a 3-element "
+                          "body-frame thrust-direction unit vector [-]")
+                _require(actuator.params.get("MaxThrust") is not None,
+                          f"{self.name}: thruster {actuator.name!r} needs params['MaxThrust'] [N] -- "
+                          "simIncludeThruster.thrusterFactory()'s own default (0.2 N) is easy to mistake "
+                          "for a wiring bug rather than a deliberately tiny thruster, so this schema "
+                          "requires it explicitly rather than silently falling back to it")
+            if actuator.kind == "magnetic_torque_rod":
+                gtHat_B = actuator.params.get("gtHat_B")
+                _require(gtHat_B is not None and len(gtHat_B) == 3,
+                          f"{self.name}: magnetic_torque_rod {actuator.name!r} needs params['gtHat_B'] as a "
+                          "3-element body-frame dipole-axis unit vector [-]")
+                _require(actuator.params.get("max_dipole_a_m2") is not None,
+                          f"{self.name}: magnetic_torque_rod {actuator.name!r} needs params['max_dipole_a_m2'] "
+                          "[A*m^2] (maximum commandable dipole magnitude)")
+
+        # engine.fsw/engine.service build exactly one PRIMARY control-torque
+        # path per spacecraft (reaction wheels via rwMotorTorque, OR
+        # thrusters via thrForceMapping/thrFiringSchmitt) -- mixing both for
+        # primary control would need a control-allocation module (e.g.
+        # Basilisk's torqueScheduler) this app does not build yet. The one
+        # exception is momentum_dumping (below), where thrusters have a
+        # DIFFERENT, non-competing job (bleeding off RW momentum, not
+        # attitude control) -- so the mix is required there, not rejected.
+        actuator_kinds_present = {a.kind for a in self.actuators}
+        if (self.momentum_dumping is None
+                and "reaction_wheel" in actuator_kinds_present and "thruster" in actuator_kinds_present):
+            _require(False,
+                      f"{self.name}: actuators mix 'reaction_wheel' and 'thruster' kinds -- only one control "
+                      "-torque actuator type per spacecraft is simulated (unless momentum_dumping is set, which "
+                      "requires exactly this mix); remove one kind's actuators, or set momentum_dumping")
+        # "magnetic_torque_rod" has no PRIMARY attitude-control role in this
+        # app at all (no B-dot-style detumble/pointing controller is built
+        # -- see engine.fsw's module docstring) -- its only simulated job is
+        # magnetic_momentum_management's continuous RW desaturation, so a
+        # magnetic_torque_rod actuator with that config unset would simply
+        # never receive a command.
+        if "magnetic_torque_rod" in actuator_kinds_present:
+            _require(self.magnetic_momentum_management is not None,
+                      f"{self.name}: 'magnetic_torque_rod' actuators need magnetic_momentum_management set "
+                      "(no other role for them is simulated); set it, or remove the magnetic_torque_rod "
+                      "actuator(s)")
 
         if self.power is not None:
             self.power.validate(self.name)
@@ -583,6 +857,40 @@ class SpacecraftConfig:
             self.phasing_keeping.validate(self.name)
         if self.constant_thrust is not None:
             self.constant_thrust.validate(self.name)
+        if self.momentum_dumping is not None:
+            _require("reaction_wheel" in actuator_kinds_present,
+                      f"{self.name}: momentum_dumping needs at least one 'reaction_wheel' actuator (momentum to "
+                      "dump) on this spacecraft")
+            _require("thruster" in actuator_kinds_present,
+                      f"{self.name}: momentum_dumping needs at least one 'thruster' actuator (desaturation "
+                      "hardware) on this spacecraft")
+            # engine.service builds BOTH desaturation control paths with no
+            # runtime guard against this -- two independent controllers would
+            # silently fight over the same reaction wheels (confirmed by
+            # direct audit: momentum_dumping and magnetic_momentum_management
+            # are each handled in their own independent `if` block, not
+            # elif). This schema check is what engine.service's own comment
+            # ("Scenario.validate() guarantees these are mutually exclusive")
+            # already assumed existed; it didn't until now.
+            _require(self.magnetic_momentum_management is None,
+                      f"{self.name}: momentum_dumping and magnetic_momentum_management are mutually exclusive "
+                      "RW-desaturation strategies -- set at most one (both would independently command the "
+                      "same reaction wheels)")
+            self.momentum_dumping.validate(self.name)
+        if self.magnetic_momentum_management is not None:
+            _require("reaction_wheel" in actuator_kinds_present,
+                      f"{self.name}: magnetic_momentum_management needs at least one 'reaction_wheel' actuator "
+                      "(momentum to manage) on this spacecraft")
+            _require("magnetic_torque_rod" in actuator_kinds_present,
+                      f"{self.name}: magnetic_momentum_management needs at least one 'magnetic_torque_rod' "
+                      "actuator (desaturation hardware) on this spacecraft")
+            num_reaction_wheels = sum(1 for a in self.actuators if a.kind == "reaction_wheel")
+            self.magnetic_momentum_management.validate(self.name, num_reaction_wheels)
+        if self.fuel_tank is not None:
+            _require("thruster" in actuator_kinds_present,
+                      f"{self.name}: fuel_tank needs at least one 'thruster' actuator on this spacecraft to "
+                      "draw propellant from")
+            self.fuel_tank.validate(self.name)
 
         if self.vizard_model_path is not None:
             _require(bool(self.vizard_model_path.strip()), f"{self.name}: vizard_model_path must not be blank")
@@ -644,15 +952,56 @@ class GroundStationConfig:
 
 @dataclass
 class SpaceWeatherConfig:
-    """See engine/spaceweather.py. ``source`` selects the resolution
-    strategy; ``local_file_path`` is used (and required) only for
-    ``"local_file"``, matching the user's own fallback plan ("if fetching
-    isn't possible I'll provide the file myself").
+    """See engine/spaceweather.py and engine/service.py. ``source``
+    selects the space-weather resolution strategy; ``local_file_path`` is
+    used (and required) only for ``"local_file"``, matching the user's own
+    fallback plan ("if fetching isn't possible I'll provide the file
+    myself").
+
+    ``atmosphere_model`` selects which Basilisk atmosphere-density model
+    ``engine.service`` builds for ``enable_drag`` spacecraft:
+    ``"nrlmsise00"`` (the original, only model this project used to wire
+    up -- needs the ``source``/``activity_level`` space-weather machinery
+    below) or ``"exponential"`` (Basilisk's ``ExponentialAtmosphere``, a
+    simple per-planet scale-height model that ignores ``source``/
+    ``activity_level``/``local_file_path`` entirely -- no F10.7/Ap
+    dependence at all). ``engine.service`` configures it with Basilisk's
+    own ``simSetPlanetEnvironment.exponentialAtmosphere()`` helper (the
+    same sea-level Earth baseDensity/scaleHeight a real shipped Basilisk
+    example, ``examples/scenarioDragDeorbit.py``, uses for its own
+    exponential-model deorbit case -- not hand-picked constants). Confirmed
+    directly against real Basilisk (a standalone density-recorder run, not
+    guessed) that a single sea-level exponential decay under-predicts
+    density at typical LEO altitudes by many orders of magnitude compared
+    to NRLMSISE-00 -- an inherent limitation of this simple model, not a
+    wiring bug: pick ``"exponential"`` for speed/simplicity (e.g. a quick
+    order-of-magnitude check with no space-weather dependency), never for
+    an accurate drag/decay estimate, which needs ``"nrlmsise00"``. Real
+    user question: "why can't I select the
+    atmospheric drag model, other tools let me choose Jacchia-Roberts or
+    NRLMSISE-00" -- Basilisk (checked directly against its own
+    ``src/simulation/environment/`` tree, not assumed) ships exactly
+    three atmosphere models: ``MsisAtmosphere`` (NRLMSISE-00),
+    ``ExponentialAtmosphere``, and ``TabularAtmosphere`` (a user-supplied
+    altitude/density table, not wired up here -- would need a new file
+    -upload schema/GUI concept of its own, out of scope for this round).
+    There is no Jacchia-Roberts model in Basilisk at all, so that specific
+    option genuinely cannot be offered here.
+
+    ``activity_level``/``activity_percentile`` (``"nrlmsise00"`` only --
+    ignored for ``"exponential"``) select a CONSERVATIVE, sustained-
+    worst-case drag margin instead of the ordinary resolved space-weather
+    data: see ``engine.spaceweather``'s own docstring, "Conservative
+    ('worst-case') drag margin", for the real user request this
+    implements and exactly what it computes.
     """
 
     source: str = "celestrak"  # "celestrak" | "local_file" | "synthetic"
     local_file_path: Optional[str] = None
     cache_dir: Optional[str] = None  # defaults to engine.spaceweather's own cache dir when None
+    atmosphere_model: str = "nrlmsise00"  # "nrlmsise00" | "exponential"
+    activity_level: str = "nominal"  # "nominal" | "conservative"
+    activity_percentile: float = 95.0  # [-] percentile of REAL historical F10.7/Ap; "conservative" only
 
     def validate(self) -> None:
         _require(self.source in ("celestrak", "local_file", "synthetic"),
@@ -660,6 +1009,14 @@ class SpaceWeatherConfig:
         if self.source == "local_file":
             _require(bool(self.local_file_path),
                       "space_weather.source is 'local_file' but local_file_path was not set")
+        _require(self.atmosphere_model in ("nrlmsise00", "exponential"),
+                  f"space_weather.atmosphere_model {self.atmosphere_model!r} must be 'nrlmsise00' or 'exponential'")
+        _require(self.activity_level in ("nominal", "conservative"),
+                  f"space_weather.activity_level {self.activity_level!r} must be 'nominal' or 'conservative'")
+        if self.activity_level == "conservative":
+            _require(50.0 <= self.activity_percentile < 100.0,
+                      "space_weather.activity_percentile must be in [50, 100) when activity_level is "
+                      f"'conservative' -- got {self.activity_percentile!r}")
 
 
 @dataclass
@@ -837,6 +1194,14 @@ class Scenario:
                           f"{sc.name}: fsw_params['target_ground_station'] {target_gs!r} is not one of "
                           f"this scenario's ground_stations {gs_names}")
         for sc in self.spacecraft:
+            target_body = sc.fsw_params.get("target_body") if sc.fsw_mode == "locationPointing" else None
+            if target_body is not None:
+                spice_tracked = {self.gravity.central_body, *self.gravity.third_body_perturbers}
+                _require(target_body in spice_tracked,
+                          f"{sc.name}: fsw_params['target_body'] {target_body!r} needs a real SPICE "
+                          f"ephemeris -- it must be gravity.central_body or one of "
+                          f"gravity.third_body_perturbers, got {sorted(spice_tracked)}")
+        for sc in self.spacecraft:
             if sc.phasing_keeping is not None:
                 _require(sc.phasing_keeping.chief_spacecraft in names,
                           f"{sc.name}: phasing_keeping.chief_spacecraft {sc.phasing_keeping.chief_spacecraft!r} "
@@ -927,9 +1292,23 @@ class Scenario:
             phasing_keeping = PhasingKeepingConfig(**phasing_keeping_data) if phasing_keeping_data is not None else None
             constant_thrust_data = sc.pop("constant_thrust", None)
             constant_thrust = ConstantThrustConfig(**constant_thrust_data) if constant_thrust_data is not None else None
+            momentum_dumping_data = sc.pop("momentum_dumping", None)
+            momentum_dumping = (
+                MomentumDumpingConfig(**momentum_dumping_data) if momentum_dumping_data is not None else None
+            )
+            magnetic_momentum_management_data = sc.pop("magnetic_momentum_management", None)
+            magnetic_momentum_management = (
+                MagneticMomentumManagementConfig(**magnetic_momentum_management_data)
+                if magnetic_momentum_management_data is not None else None
+            )
+            fuel_tank_data = sc.pop("fuel_tank", None)
+            fuel_tank = FuelTankConfig(**fuel_tank_data) if fuel_tank_data is not None else None
             spacecraft.append(SpacecraftConfig(orbit=orbit, sensors=sensors, actuators=actuators,
                                                 power=power, rf_link=rf_link, station_keeping=station_keeping,
                                                 phasing_keeping=phasing_keeping, constant_thrust=constant_thrust,
+                                                momentum_dumping=momentum_dumping,
+                                                magnetic_momentum_management=magnetic_momentum_management,
+                                                fuel_tank=fuel_tank,
                                                 **sc))
 
         mission_sequence = [Command.from_dict(c) for c in data.pop("mission_sequence", [])]

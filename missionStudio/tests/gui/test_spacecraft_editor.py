@@ -37,6 +37,28 @@ def test_dialog_every_tab_is_independently_scrollable(qtbot):
         assert isinstance(dialog.tabs.widget(i), QScrollArea), f"tab {i} ({dialog.tabs.tabText(i)!r}) isn't scrollable"
 
 
+def test_long_description_labels_wrap_instead_of_blowing_up_dialog_width(qtbot):
+    """Regression guard for a real bug, found via an actual user
+    screenshot of gui.phasing_formation_dialog.PhasingFormationDialog
+    (same copy-pasted top-description-QLabel shape, same missing
+    word-wrap): the Vizard-model tab's own description QLabel had the
+    identical problem. See that dialog's own test docstring for the
+    full explanation of what goes wrong without setWordWrap(True).
+    """
+    from PySide6.QtWidgets import QLabel
+
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+
+    description_labels = [w for w in dialog.findChildren(QLabel) if len(w.text()) > 100]
+    assert description_labels, "expected to find at least one long description QLabel"
+    assert all(w.wordWrap() for w in description_labels)
+
+
 def test_dialog_natural_size_stays_reasonable(qtbot):
     """A loose upper bound, not a pixel-exact check: guards against the
     whole-dialog-height blowing up again (it briefly reached ~1450px
@@ -50,6 +72,34 @@ def test_dialog_natural_size_stays_reasonable(qtbot):
     dialog.show()
     qtbot.wait(10)
     assert dialog.sizeHint().height() < 800
+
+
+def test_dialog_opens_at_a_usable_size_not_just_a_reasonable_upper_bound(qtbot):
+    """Regression test for a real bug, found from a user screenshot: with
+    no explicit resize() anywhere in this class, the dialog opened so
+    small that even its own first tab's Name/Dry mass rows were clipped
+    behind scrollbars -- QDialog.sizeHint() is dominated by each tab's
+    QScrollArea (see test_dialog_every_tab_is_independently_scrollable's
+    own docstring for why every tab has one), whose OWN sizeHint() is a
+    small, mostly-arbitrary default, not the wrapped content's real size
+    (confirmed directly: this dialog's sizeHint() measured 530x416 while
+    its "Orbit / mass" tab content alone needed 572x789). The test above
+    only guards the UPPER bound (it must not blow back up past ~800px
+    tall) -- this one guards the other direction, that it doesn't collapse
+    back down to that tiny broken size either.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+    # Not pixel-exact (the real fix computes width from each tab's own
+    # content, which could legitimately shift with future tab content
+    # changes) -- wide/tall enough that "Orbit / mass"'s Name/Dry mass
+    # rows and every tab label are visibly usable without scrolling.
+    assert dialog.size().width() >= 600
+    assert dialog.size().height() >= 600
 
 
 def test_dialog_edits_existing_config(qtbot):
@@ -82,7 +132,7 @@ def test_dialog_round_trips_sensors_actuators_and_fsw_mode(qtbot):
         name="sat-with-fsw",
         orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
         sensors=[SensorConfig(kind="star_tracker", name="st-1", params={"noise_arcsec": 5.0})],
-        actuators=[ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]})],
+        actuators=[ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"})],
         fsw_mode="hillPoint",
         fsw_params={"foo": "bar"},
         control_params={"K": 4.0, "P": 25.0},
@@ -95,7 +145,7 @@ def test_dialog_round_trips_sensors_actuators_and_fsw_mode(qtbot):
     assert got.sensors[0].kind == "star_tracker"
     assert got.sensors[0].params == {"noise_arcsec": 5.0}
     assert len(got.actuators) == 1
-    assert got.actuators[0].params == {"gsHat_B": [1, 0, 0]}
+    assert got.actuators[0].params == {"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}
     assert got.fsw_mode == "hillPoint"
     assert got.fsw_params == {"foo": "bar"}
     assert got.control_params == {"K": 4.0, "P": 25.0}
@@ -693,6 +743,69 @@ def test_dialog_rejects_empty_name(qtbot):
         dialog.to_dataclass()
 
 
+def test_dialog_name_field_shows_inline_error_while_empty(qtbot):
+    """gui.feedback's inline-validation primitive, live as the user
+    types -- not just the to_dataclass()-time exception the test above
+    already covers.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("")
+    assert dialog.name_edit.property("state") == "error"
+
+    dialog.name_edit.setText("sat-42")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_dialog_name_field_shows_inline_error_on_duplicate(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog(other_spacecraft_names=["sat-1", "sat-2"])
+    qtbot.addWidget(dialog)
+
+    dialog.name_edit.setText("sat-2")
+    assert dialog.name_edit.property("state") == "error"
+    assert "sat-2" in dialog.name_edit.toolTip()
+
+    dialog.name_edit.setText("sat-3")
+    assert dialog.name_edit.property("state") != "error"
+
+
+def test_dialog_accept_blocks_and_keeps_dialog_open_on_empty_name(qtbot):
+    """Regression guard for a real data-loss UX bug: _on_accept() used to
+    call self.accept() unconditionally, so a duplicate/empty name wasn't
+    caught until the (already-closed) dialog's caller checked afterward
+    -- silently discarding every edit the user just made. _on_accept()
+    must now refuse to close the dialog itself.
+    """
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0  # neither Accepted nor Rejected -- still open
+    assert dialog.name_edit.property("state") == "error"
+
+
+def test_dialog_accept_blocks_on_duplicate_name(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog(other_spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("sat-1")
+
+    dialog._on_accept()
+
+    assert dialog.result() == 0
+    assert dialog.name_edit.property("state") == "error"
+
+
 def test_list_widget_from_list_to_list_round_trip(qtbot):
     from missionstudio.gui.spacecraft_editor import SpacecraftListWidget
     from missionstudio.schema.scenario import OrbitIC, SpacecraftConfig
@@ -730,6 +843,32 @@ def test_list_widget_add_via_dialog(qtbot, monkeypatch):
     assert lw.list_widget.count() == 1
     assert lw.to_list()[0].name == "added-sat"
     assert changed_count == [1]
+    assert lw.list_widget.currentRow() == 0  # the new spacecraft is selected, not left unselected
+
+
+def test_list_widget_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog, SpacecraftListWidget
+
+    lw = SpacecraftListWidget()
+    qtbot.addWidget(lw)
+
+    def fake_exec(self):
+        self.name_edit.setText("toasted-sat")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SpacecraftEditorDialog, "exec", fake_exec)
+    lw._on_add()
+
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("toasted-sat" in t.text() for t in toasts)
+
+    lw.list_widget.setCurrentRow(0)
+    lw._on_remove()
+
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("toasted-sat" in t.text() and "Removed" in t.text() for t in toasts)
 
 
 def test_list_widget_new_from_template(qtbot, monkeypatch):
@@ -901,6 +1040,8 @@ def test_list_widget_generate_constellation_appends_generated_spacecraft(qtbot, 
     assert len(generated) == 4
     assert all(c.dry_mass_kg == 42.0 for c in generated)  # cloned from the template
     assert len(changed_calls) == 1
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("4" in t.text() and "constellation" in t.text() for t in toasts)
 
 
 def test_list_widget_generate_constellation_uses_default_template_when_list_empty(qtbot, monkeypatch):
@@ -1029,6 +1170,8 @@ def test_list_widget_generate_phasing_formation_appends_follower(qtbot, monkeypa
     assert follower.station_keeping is not None
     assert follower.dry_mass_kg == 100.0  # cloned from the chief (also the default template)
     assert len(changed_calls) == 1
+    toasts = getattr(lw.window(), "_missionstudio_active_toasts", [])
+    assert any("follower-1" in t.text() for t in toasts)
 
 
 @pytest.mark.requires_basilisk
@@ -1169,3 +1312,222 @@ def test_list_widget_generate_phasing_formation_without_basilisk_reports_clear_e
     assert len(lw.to_list()) == 1
     assert len(critical_calls) == 1
     assert "Basilisk" in critical_calls[0][1]
+
+
+def test_dialog_momentum_dumping_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.momentum_dumping_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping is None
+
+
+def test_dialog_builds_momentum_dumping_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-md",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.momentum_dumping_group.setChecked(True)
+    dialog.md_hs_max.setValue(65.0)
+    dialog.md_thr_min_fire_time.setValue(0.03)
+    dialog.md_max_counter_value.setValue(50)
+
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping is not None
+    assert sc.momentum_dumping.hs_max == 65.0
+    assert sc.momentum_dumping.thr_min_fire_time == 0.03
+    assert sc.momentum_dumping.max_counter_value == 50
+
+
+def test_dialog_round_trips_momentum_dumping(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, MomentumDumpingConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-md",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+        momentum_dumping=MomentumDumpingConfig(hs_max=70.0, thr_min_fire_time=0.04, max_counter_value=80),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.momentum_dumping_group.isChecked()
+    assert dialog.md_hs_max.value() == 70.0
+    assert dialog.md_thr_min_fire_time.value() == 0.04
+    assert dialog.md_max_counter_value.value() == 80
+
+    sc = dialog.to_dataclass()
+    assert sc.momentum_dumping.hs_max == 70.0
+
+
+def test_dialog_builds_fuel_tank_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-ft",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.fuel_tank_group.setChecked(True)
+    dialog.ft_propellant_mass.setValue(15.0)
+    dialog.ft_max_propellant_mass.setValue(25.0)
+    dialog.ft_tank_pos_x.setValue(0.1)
+    dialog.ft_tank_pos_y.setValue(0.2)
+    dialog.ft_tank_pos_z.setValue(-0.3)
+
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank is not None
+    assert sc.fuel_tank.propellant_mass_kg == 15.0
+    assert sc.fuel_tank.max_propellant_mass_kg == 25.0
+    assert sc.fuel_tank.tank_position_b_m == [0.1, 0.2, -0.3]
+
+
+def test_dialog_round_trips_fuel_tank(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, FuelTankConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-ft",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+        fuel_tank=FuelTankConfig(propellant_mass_kg=12.0, max_propellant_mass_kg=20.0),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.fuel_tank_group.isChecked()
+    assert dialog.ft_propellant_mass.value() == 12.0
+    assert dialog.ft_max_propellant_mass.value() == 20.0
+
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank.propellant_mass_kg == 12.0
+
+
+def test_dialog_fuel_tank_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.fuel_tank_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank is None
+
+
+def test_dialog_magnetic_momentum_management_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.magnetic_momentum_management_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management is None
+
+
+def test_dialog_builds_magnetic_momentum_management_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.magnetic_momentum_management_group.setChecked(True)
+    dialog.mmm_wheel_speed_biases_edit.setText("83.8, 62.8")
+    dialog.mmm_c_gain.setValue(0.01)
+
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management is not None
+    assert sc.magnetic_momentum_management.wheel_speed_biases_rad_s == [83.8, 62.8]
+    assert sc.magnetic_momentum_management.c_gain == 0.01
+
+
+def test_dialog_round_trips_magnetic_momentum_management(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import (
+        ActuatorConfig, MagneticMomentumManagementConfig, OrbitIC, SpacecraftConfig,
+    )
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+        magnetic_momentum_management=MagneticMomentumManagementConfig(
+            wheel_speed_biases_rad_s=[12.5], c_gain=0.02,
+        ),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.magnetic_momentum_management_group.isChecked()
+    assert dialog.mmm_wheel_speed_biases_edit.text() == "12.5"
+    assert dialog.mmm_c_gain.value() == 0.02
+
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management.wheel_speed_biases_rad_s == [12.5]
+
+
+def test_dialog_rejects_malformed_wheel_speed_biases(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, ScenarioValidationError, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0], "rw_type": "Honeywell_HR16"}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.magnetic_momentum_management_group.setChecked(True)
+    dialog.mmm_wheel_speed_biases_edit.setText("not a number")
+
+    with pytest.raises(ScenarioValidationError, match="comma-separated numbers"):
+        dialog.to_dataclass()

@@ -95,7 +95,8 @@ def _command_references(commands: List["Command"], path_prefix: str) -> List[Ref
         label_suffix = f" ({command.label!r})" if command.label else ""
         path = f"{path_prefix}[{i}]{label_suffix}"
 
-        if command.kind in ("maneuver", "propagate") and isinstance(command.params.get("spacecraft"), str):
+        if (command.kind in ("maneuver", "propagate", "lambert_transfer")
+                and isinstance(command.params.get("spacecraft"), str)):
             name = command.params["spacecraft"]
             if name:
                 refs.append(Reference(path=f"{path}.params['spacecraft']", resource_kind="spacecraft", name=name))
@@ -205,7 +206,8 @@ def _rename_in_commands(commands: List["Command"], resource_kind: str, old_name:
     updated = 0
     for command in commands:
         if resource_kind == "spacecraft":
-            if command.kind in ("maneuver", "propagate") and command.params.get("spacecraft") == old_name:
+            if (command.kind in ("maneuver", "propagate", "lambert_transfer")
+                    and command.params.get("spacecraft") == old_name):
                 command.params["spacecraft"] = new_name
                 updated += 1
             elif command.kind == "assignment" and isinstance(command.params.get("target"), str):

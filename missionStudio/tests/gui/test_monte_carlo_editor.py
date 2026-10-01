@@ -75,6 +75,33 @@ def test_dispersion_dialog_normal(qtbot):
     assert config.bounds is None
 
 
+def test_dispersion_dialog_hides_fields_not_used_by_the_selected_kind(qtbot):
+    """Regression guard for a real bug: Bounds/Mean/Std-deviation used
+    to all be visible and editable at once regardless of Kind, even
+    though to_dataclass() only ever uses the pair matching the current
+    kind -- a value typed into the "wrong" row was silently discarded
+    with no indication. Only the relevant row(s) should be visible.
+    """
+    from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
+
+    dialog = _DispersionEditorDialog(["sat-1"])
+    qtbot.addWidget(dialog)
+    dialog.show()  # isVisible() below needs the whole ancestor chain shown, not just setVisible() called
+    dialog.quantity_combo.setCurrentText("dry_mass_kg")
+
+    dialog.kind_combo.setCurrentText("uniform")
+    assert dialog.bounds_lo_spin.isVisible()
+    assert dialog.bounds_hi_spin.isVisible()
+    assert not dialog.mean_spin.isVisible()
+    assert not dialog.std_spin.isVisible()
+
+    dialog.kind_combo.setCurrentText("normal")
+    assert not dialog.bounds_lo_spin.isVisible()
+    assert not dialog.bounds_hi_spin.isVisible()
+    assert dialog.mean_spin.isVisible()
+    assert dialog.std_spin.isVisible()
+
+
 def test_dispersion_dialog_kind_choices_follow_quantity(qtbot):
     from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
 
@@ -150,4 +177,44 @@ def test_dispersion_list_add_edit_remove(qtbot, monkeypatch):
 
     widget.list_widget.setCurrentRow(0)
     widget._on_remove()
+
+
+def test_dispersion_list_add_and_remove_show_a_toast(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from missionstudio.gui.monte_carlo_editor import DispersionListWidget, _DispersionEditorDialog
+
+    widget = DispersionListWidget()
+    qtbot.addWidget(widget)
+    widget.set_spacecraft_names(["sat-1"])
+
+    def fake_exec(self):
+        self.quantity_combo.setCurrentText("dry_mass_kg")
+        self.kind_combo.setCurrentText("uniform")
+        self.bounds_lo_spin.setValue(1.0)
+        self.bounds_hi_spin.setValue(2.0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(_DispersionEditorDialog, "exec", fake_exec)
+    widget._on_add()
+
+    assert widget.list_widget.currentRow() == 0
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("dry_mass_kg" in t.text() and "Added" in t.text() for t in toasts)
+
+    widget.list_widget.setCurrentRow(0)
+    widget._on_remove()
+
+    toasts = getattr(widget.window(), "_missionstudio_active_toasts", [])
+    assert any("Removed" in t.text() for t in toasts)
     assert widget.to_list() == []
+
+
+def test_dispersion_editor_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """See test_constellation_dialog.py's identical test for why."""
+    from missionstudio.gui.monte_carlo_editor import _DispersionEditorDialog
+
+    dialog = _DispersionEditorDialog(spacecraft_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

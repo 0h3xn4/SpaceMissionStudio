@@ -1,0 +1,255 @@
+{
+  "name": "11 - Attitude control via thrusters (no reaction wheels)",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "full_attitude",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 0,
+    "third_body_perturbers": []
+  },
+  "spacecraft": [
+    {
+      "name": "sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6928.0,
+        "eccentricity": 0.0,
+        "inclination_deg": 45.0,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 100.0,
+      "inertia_kg_m2": [
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0
+      ],
+      "sigma_bn_init": [
+        0.3,
+        0.2,
+        -0.1
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [
+        {
+          "kind": "thruster",
+          "name": "thr-1",
+          "params": {
+            "r_B": [
+              -1,
+              -1,
+              1.28
+            ],
+            "tHat_B": [
+              1,
+              0,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-2",
+          "params": {
+            "r_B": [
+              1,
+              -1,
+              -1.28
+            ],
+            "tHat_B": [
+              -1,
+              0,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-3",
+          "params": {
+            "r_B": [
+              1,
+              -1,
+              1.28
+            ],
+            "tHat_B": [
+              0,
+              1,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-4",
+          "params": {
+            "r_B": [
+              1,
+              1,
+              -1.28
+            ],
+            "tHat_B": [
+              0,
+              -1,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-5",
+          "params": {
+            "r_B": [
+              1,
+              1,
+              1.28
+            ],
+            "tHat_B": [
+              -1,
+              0,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-6",
+          "params": {
+            "r_B": [
+              -1,
+              1,
+              -1.28
+            ],
+            "tHat_B": [
+              1,
+              0,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-7",
+          "params": {
+            "r_B": [
+              -1,
+              1,
+              1.28
+            ],
+            "tHat_B": [
+              0,
+              -1,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        },
+        {
+          "kind": "thruster",
+          "name": "thr-8",
+          "params": {
+            "r_B": [
+              -1,
+              -1,
+              -1.28
+            ],
+            "tHat_B": [
+              0,
+              1,
+              0
+            ],
+            "MaxThrust": 1.0
+          }
+        }
+      ],
+      "fsw_mode": "inertial3D",
+      "fsw_params": {
+        "sigma_R0N": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 0.01,
+    "dynamics_task_rate_s": 0.5,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "The thruster counterpart to '06'/'07': instead of reaction wheels or an idealized actuator, this spacecraft points itself using eight real ACS thrusters (an 8-thruster corner-mounted cube layout, the same real configuration examples/scenarioAttitudeFeedback2T_TH.py/scenarioMomentumDumping.py ship) via Basilisk's real thrForceMapping -> thrFiringSchmitt -> thrusterDynamicEffector chain (see engine.fsw.build_thrusters/build_thruster_force_mapping). fsw_mode 'inertial3D' commands a fixed inertial attitude; the spacecraft starts tipped away from it with a small initial body rate.\n\nWhat to look at: result series '{sat-1}.thruster_on_time' (one column per thruster, seconds) shows which thrusters fired and for how long as the controller worked to null the attitude error -- compare against '07''s '{sat-1}.rw_speeds' to see the equivalent signal for the reaction-wheel case. In Vizard, thruster plumes render natively (engine.vizard.enable_vizard's thr_effectors_by_spacecraft) when a thruster is firing.\n\nTry changing: each actuator's MaxThrust (weaker thrusters take longer to null the same attitude error), or the thruster layout itself (fewer than 6 well-placed thrusters cannot produce a pure torque about all three axes -- thrForceMapping will report a degraded/saturated solution).",
+  "schema_version": 1
+}

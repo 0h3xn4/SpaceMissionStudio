@@ -5,6 +5,28 @@ import pytest
 pytestmark = pytest.mark.requires_gui
 
 
+def test_description_label_wraps_instead_of_blowing_up_dialog_width(qtbot):
+    """Regression guard for the same real bug fixed in
+    phasing_formation_dialog.py (found via an actual user screenshot of
+    that dialog) -- this dialog copied the identical top-description
+    -QLabel shape, missing word-wrap the same way. See that test's own
+    docstring for the full explanation.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    from missionstudio.gui.constellation_dialog import WalkerConstellationDialog
+
+    dialog = WalkerConstellationDialog(template_names=["sat-1"], central_body="earth")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(10)
+
+    description_labels = [w for w in dialog.findChildren(QLabel) if len(w.text()) > 100]
+    assert description_labels, "expected to find the long top description QLabel"
+    assert all(w.wordWrap() for w in description_labels)
+    assert dialog.sizeHint().width() < 900
+
+
 def test_defaults_produce_a_valid_request(qtbot):
     from missionstudio.gui.constellation_dialog import WalkerConstellationDialog
 
@@ -75,3 +97,19 @@ def test_pattern_combo_offers_delta_and_star(qtbot):
     qtbot.addWidget(dialog)
     patterns = {dialog.pattern_combo.itemData(i) for i in range(dialog.pattern_combo.count())}
     assert patterns == {"delta", "star"}
+
+
+def test_dialog_resizes_to_its_own_sizehint_on_construction(qtbot):
+    """Regression test: see propagation_setup_dialog.py's identical test
+    for why this is needed -- Qt can size a freshly-constructed QDialog
+    smaller than its own sizeHint() on first show() on a real desktop (a
+    gap confirmed from an actual user screenshot of a sibling dialog,
+    gui.template_wizard.TemplateCustomizeWizard), which this project's
+    own offscreen test rendering does not reproduce.
+    """
+    from missionstudio.gui.constellation_dialog import WalkerConstellationDialog
+
+    dialog = WalkerConstellationDialog(template_names=["sat-1"])
+    qtbot.addWidget(dialog)
+
+    assert dialog.size() == dialog.sizeHint()

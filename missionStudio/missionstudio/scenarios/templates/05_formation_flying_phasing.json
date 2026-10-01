@@ -4,9 +4,10 @@
   "simulation_mode": "orbit_only",
   "gravity": {
     "central_body": "earth",
-    "central_body_degree": 0,
+    "central_body_degree": 10,
     "third_body_perturbers": [
-      "sun"
+      "sun",
+      "moon"
     ]
   },
   "spacecraft": [
@@ -49,12 +50,13 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
       "sensors": [],
       "actuators": [],
       "fsw_mode": null,
@@ -65,6 +67,9 @@
       "station_keeping": null,
       "phasing_keeping": null,
       "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -121,12 +126,13 @@
         0.0,
         0.0
       ],
-      "enable_drag": false,
+      "enable_drag": true,
       "drag_coeff": 2.2,
       "drag_area_m2": 1.0,
-      "enable_srp": false,
+      "enable_srp": true,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
       "sensors": [],
       "actuators": [],
       "fsw_mode": null,
@@ -155,6 +161,9 @@
         "max_delta_semi_major_axis_km": 3.0
       },
       "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -177,7 +186,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "conservative",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 7.0,
@@ -192,6 +204,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "Two spacecraft in near-identical orbits, 'follower-1' actively holding a fixed in-track separation behind chief 'chief-1' using phasing_keeping -- a closed-loop controller that measures the along-track separation and fires small along-track burns to correct drift, on top of its OWN station_keeping (phasing_keeping always needs station_keeping configured on the same spacecraft -- see PhasingKeepingConfig's own docstring for why: phasing needs altitude held steady first, or a semi-major-axis mismatch would make along-track drift and true phasing error indistinguishable).\n\nWhat to look at: after running, compare 'follower-1.position_N' and 'chief-1.position_N' -- the along-track (velocity-direction) separation should stay near target_separation_km despite neither orbit being perfectly matched to start, a basic model of formation-flying/rendezvous-proximity-operations control (e.g. trailing satellite formations, or a servicer holding station behind a target). 'missionstudio run' also prints a phasing delta-V breakdown in its station-keeping summary (see README, 'Running the CLI').\n\nTry changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single -element list holds one separation for the whole run, more elements step through a schedule), or chief-1's own orbit to start with a larger initial mismatch and watch follower-1 correct it.",
+  "description": "Two spacecraft in near-identical orbits, 'follower-1' actively holding a fixed in-track separation behind chief 'chief-1' using phasing_keeping -- a closed-loop controller that measures the along-track separation and fires small along-track burns to correct drift, on top of its OWN station_keeping (phasing_keeping always needs station_keeping configured on the same spacecraft -- see PhasingKeepingConfig's own docstring for why: phasing needs altitude held steady first, or a semi-major-axis mismatch would make along-track drift and true phasing error indistinguishable).\n\nWhat to look at: after running, compare 'follower-1.position_N' and 'chief-1.position_N' -- the along-track (velocity-direction) separation should stay near target_separation_km despite neither orbit being perfectly matched to start, a basic model of formation-flying/rendezvous-proximity-operations control (e.g. trailing satellite formations, or a servicer holding station behind a target). 'missionstudio run' also prints a phasing delta-V breakdown in its station-keeping summary (see README, 'Running the CLI').\n\nTry changing: target_separation_km (a schedule -- see PhasingKeepingConfig; a single -element list holds one separation for the whole run, more elements step through a schedule), or chief-1's own orbit to start with a larger initial mismatch and watch follower-1 correct it.\n\nUpdated to include 10th-degree spherical-harmonics gravity, Sun/Moon third-body gravity, atmospheric drag, and solar radiation pressure on both spacecraft (identically, so any chief/follower difference in behavior is real physics, not asymmetric configuration) -- a CONSERVATIVE, 95th-percentile sustained-worst-case drag margin from real historical CelesTrak data (see engine/spaceweather.py's own docstring), needing network access to CelesTrak or a local historical file to actually run. NOTE: this specific change has NOT been re-verified against a real multi-day Basilisk run the way this template's original dynamics were (see README's 'Verification status') -- this development sandbox has no route to the NAIF SPICE kernel host needed to run it at all; please report back if the phasing controller's propellant budget or behavior looks off under the added perturbations.",
   "schema_version": 1
 }

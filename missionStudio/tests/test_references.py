@@ -82,6 +82,20 @@ def test_maneuver_command_reference_is_found():
     assert "'Trim'" in refs[0].path
 
 
+def test_lambert_transfer_command_reference_is_found():
+    scenario = _scenario(mission_sequence=[
+        Command(kind="lambert_transfer", label="Transfer", params={
+            "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+        }),
+    ])
+
+    refs = find_spacecraft_references(scenario, "sat-1")
+
+    assert len(refs) == 1
+    assert "mission_sequence[0]" in refs[0].path
+    assert "'Transfer'" in refs[0].path
+
+
 def test_propagate_event_command_reference_is_found():
     scenario = _scenario(mission_sequence=[
         Command(kind="propagate", params={"stop_condition": "event", "event_kind": "periapsis",
@@ -169,6 +183,20 @@ def test_rename_spacecraft_updates_self_and_every_reference():
     assert scenario.mission_sequence[0].params["spacecraft"] == "chief-2"
     assert scenario.mission_sequence[1].params["target"] == "chief-2.station_keeping.thrust_n"
     assert find_spacecraft_references(scenario, "chief") == []
+
+
+def test_rename_spacecraft_updates_lambert_transfer_reference():
+    scenario = _scenario(mission_sequence=[
+        Command(kind="lambert_transfer", params={
+            "spacecraft": "sat-1", "target_position_m": [1.0, 0.0, 0.0], "time_of_flight_s": 3600.0,
+        }),
+    ])
+
+    updated = rename_spacecraft(scenario, "sat-1", "sat-1-renamed")
+
+    assert updated == 1  # the lambert_transfer command (SpacecraftConfig itself isn't counted)
+    assert scenario.mission_sequence[0].params["spacecraft"] == "sat-1-renamed"
+    assert find_spacecraft_references(scenario, "sat-1") == []
 
 
 def test_rename_spacecraft_in_nested_if_children():

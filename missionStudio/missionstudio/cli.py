@@ -407,7 +407,7 @@ def cmd_gui(args: argparse.Namespace) -> int:
     try:
         from .gui.app import main as gui_main
     except ImportError as exc:
-        print(f"ERROR: the GUI needs PySide6 and matplotlib installed "
+        print(f"ERROR: the GUI needs PySide6 and plotly installed "
               f"(pip install -e '.[gui]') -- {exc}", file=sys.stderr)
         return 2
     return gui_main([])

@@ -53,6 +53,7 @@
       "enable_srp": false,
       "srp_coeff": 1.3,
       "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
       "sensors": [],
       "actuators": [],
       "fsw_mode": null,
@@ -63,6 +64,9 @@
       "station_keeping": null,
       "phasing_keeping": null,
       "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -85,7 +89,10 @@
   "space_weather": {
     "source": "celestrak",
     "local_file_path": null,
-    "cache_dir": null
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
   },
   "sim_settings": {
     "duration_days": 1.0,

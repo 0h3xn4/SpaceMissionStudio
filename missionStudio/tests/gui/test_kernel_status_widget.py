@@ -41,6 +41,64 @@ def test_initial_state(widget):
     assert widget.table.rowCount() == 0
 
 
+def test_only_the_path_column_stretches(widget):
+    """Regression guard for a real rendering bug, found by actually
+    rendering this table and looking at it: a blanket Stretch on every
+    column forced all 4 to the SAME width regardless of content, so
+    "Cache last modified (UTC)" (by far the longest header) came out
+    truncated on both ends. Only "Path" should stretch -- the rest size
+    to their own content.
+    """
+    from PySide6.QtWidgets import QHeaderView
+
+    header = widget.table.horizontalHeader()
+    for col in range(widget.table.columnCount()):
+        expected = QHeaderView.ResizeMode.Stretch if col == 2 else QHeaderView.ResizeMode.ResizeToContents
+        assert header.sectionResizeMode(col) == expected, f"column {col}"
+
+
+def test_unavailable_kernel_shows_short_status_with_error_as_tooltip(widget):
+    """Regression guard: the "Available" cell used to embed the full
+    error message inline ("NO: download failed: connection refused"),
+    which (once the blanket-Stretch bug above was fixed) forced THAT
+    column wide instead, stealing width from "Path" -- the more
+    important column to keep readable. The short "NO" plus a tooltip
+    keeps every column's width driven by genuinely short content while
+    still surfacing the detail one hover away.
+    """
+    from types import SimpleNamespace
+
+    statuses = [
+        SimpleNamespace(filename="de430.bsp", available=False, error="download failed: connection refused",
+                         path=None, modified_utc=None),
+    ]
+    widget._on_finished(statuses)
+
+    item = widget.table.item(0, 1)
+    assert item.text() == "NO"
+    assert item.toolTip() == "download failed: connection refused"
+
+
+def test_path_cell_carries_the_full_path_as_a_tooltip(widget):
+    """The "Path" column can't be interactively widened by the user (it's
+    Stretch-mode, by design, so it always claims the remaining space
+    rather than needing a scrollbar) -- a long real path can still get
+    visually truncated, so the full path is always available as a
+    tooltip regardless.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    statuses = [
+        SimpleNamespace(filename="naif0012.tls", available=True, error=None,
+                         path=Path("/home/user/.cache/basilisk/naif0012.tls"), modified_utc="2026-01-15T08:23:11"),
+    ]
+    widget._on_finished(statuses)
+
+    item = widget.table.item(0, 2)
+    assert item.toolTip() == "/home/user/.cache/basilisk/naif0012.tls"
+
+
 def test_refresh_disables_button_while_running(widget, qtbot, monkeypatch):
     from missionstudio.gui.kernel_status_widget import _KernelFetchWorker
 

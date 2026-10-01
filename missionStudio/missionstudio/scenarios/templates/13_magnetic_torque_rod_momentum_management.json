@@ -1,0 +1,230 @@
+{
+  "name": "13 - Reaction wheel momentum management via magnetic torque rods",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "full_attitude",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 0,
+    "third_body_perturbers": []
+  },
+  "spacecraft": [
+    {
+      "name": "sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6778.14,
+        "eccentricity": 0.0,
+        "inclination_deg": 45.0,
+        "raan_deg": 60.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 10.0,
+      "inertia_kg_m2": [
+        0.006666666666666667,
+        0.0,
+        0.0,
+        0.0,
+        0.04186666666666666,
+        0.0,
+        0.0,
+        0.0,
+        0.04186666666666666
+      ],
+      "sigma_bn_init": [
+        0.1,
+        0.2,
+        -0.3
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.001,
+        -0.01,
+        0.03
+      ],
+      "enable_drag": false,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.0,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-1",
+          "params": {
+            "gsHat_B": [
+              0.0,
+              0.6156614753256583,
+              0.788010753606722
+            ],
+            "rw_type": "BCT_RWP015",
+            "Omega_max": 5000.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-2",
+          "params": {
+            "gsHat_B": [
+              0.0,
+              0.788010753606722,
+              -0.6156614753256583
+            ],
+            "rw_type": "BCT_RWP015",
+            "Omega_max": 5000.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-3",
+          "params": {
+            "gsHat_B": [
+              0.6156614753256583,
+              -0.788010753606722,
+              0.0
+            ],
+            "rw_type": "BCT_RWP015",
+            "Omega_max": 5000.0
+          }
+        },
+        {
+          "kind": "reaction_wheel",
+          "name": "rw-4",
+          "params": {
+            "gsHat_B": [
+              -0.6156614753256583,
+              -0.788010753606722,
+              0.0
+            ],
+            "rw_type": "BCT_RWP015",
+            "Omega_max": 5000.0
+          }
+        },
+        {
+          "kind": "magnetic_torque_rod",
+          "name": "mtb-1",
+          "params": {
+            "gtHat_B": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "max_dipole_a_m2": 0.1
+          }
+        },
+        {
+          "kind": "magnetic_torque_rod",
+          "name": "mtb-2",
+          "params": {
+            "gtHat_B": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "max_dipole_a_m2": 0.1
+          }
+        },
+        {
+          "kind": "magnetic_torque_rod",
+          "name": "mtb-3",
+          "params": {
+            "gtHat_B": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "max_dipole_a_m2": 0.1
+          }
+        },
+        {
+          "kind": "magnetic_torque_rod",
+          "name": "mtb-4",
+          "params": {
+            "gtHat_B": [
+              0.70710678,
+              0.70710678,
+              0.0
+            ],
+            "max_dipole_a_m2": 0.1
+          }
+        }
+      ],
+      "fsw_mode": "inertial3D",
+      "fsw_params": {
+        "sigma_R0N": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "control_params": {
+        "K": 0.0001,
+        "P": 0.002
+      },
+      "power": null,
+      "rf_link": null,
+      "station_keeping": null,
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": {
+        "wheel_speed_biases_rad_s": [
+          83.7758040957278,
+          62.83185307179586,
+          41.8879020478639,
+          20.94395102393195
+        ],
+        "c_gain": 0.003
+      },
+      "fuel_tank": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "nominal",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 0.08333333333333333,
+    "dynamics_task_rate_s": 2.0,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "The alternative desaturation strategy to '12': instead of waiting for total momentum to cross a threshold and firing a discrete thruster burst, this spacecraft's four reaction wheels (same skewed-pyramid layout as examples/scenarioMtbMomentumManagement.py) are CONTINUOUSLY biased toward target speeds (800/600/400/200 RPM) the whole run, using four magnetic torque rods and the real geomagnetic field (Basilisk's WMM model) via MagneticMomentumManagementConfig (engine.fsw.build_mtb_desaturation: a dedicated magnetometer + tamComm feed mtbMomentumManagement, which sits BETWEEN rwMotorTorque and the RW hardware, modifying the commanded motor torque). No control-allocation conflict with the fsw_mode='inertial3D' attitude pointing running at the same time -- magnetic torque rods never do attitude control here, only this continuous momentum bias.\n\nWhat to look at: result series '{sat-1}.rw_speeds' should climb from zero and settle near 800/600/400/200 RPM (converted: ~83.8/62.8/41.9/20.9 rad/s) over the ~2 hour run -- confirmed by direct experimentation against a real Basilisk build to converge to within about 0.5 RPM of each target. Compare the SHAPE of this convergence against '12''s sharp, discrete desaturation steps -- same underlying problem (reaction wheels accumulating momentum), two structurally different real Basilisk solutions.\n\nTry changing: wheel_speed_biases_rad_s (different target speeds per wheel), c_gain (a larger gain reacts faster but can overshoot/oscillate), or the orbit inclination (a near-equatorial orbit sees a weaker, less favorably-oriented geomagnetic field than a higher-inclination one, which can slow convergence noticeably).",
+  "schema_version": 1
+}

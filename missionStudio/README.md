@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 614 tests
+  exercised either way -- `pytest tests/` runs and passes 774 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -194,6 +194,21 @@ environment issue.
   Windows 11 machine (none has ever been available in this development
   sandbox) -- see `packaging/README.md` for exactly what's verified
   where, and please report anything that doesn't work as documented.
+  That end-to-end packaging pass predates `results_widget.py`'s
+  matplotlib-to-Plotly migration (see the "GUI & CLI" bullet under
+  "Capabilities" below): the plots now render inside a `QWebEngineView`,
+  which -- unlike plain PySide6 widgets, matplotlib included -- embeds a
+  full Chromium renderer with its own system-library footprint (things
+  like `libnss3`/`libatk-bridge2.0-0`/`libgbm1`, beyond the
+  `libegl1`/`libopengl0`/`libxcb-cursor0` already called out below for
+  plain PySide6). This development sandbox's container already had
+  everything `QtWebEngineProcess` needs (confirmed with `ldd` --
+  nothing reported missing) and the full headless `pytest-qt` suite
+  exercises real `QWebEngineView` instances, but that is not the same
+  as confirming a fresh install on a minimal target machine (the `.deb`
+  postinst's or the Windows installer's own actual end user); if
+  `missionstudio gui` starts but the results plot stays blank, that is
+  the first thing to check.
 
 ## Capabilities
 
@@ -212,10 +227,23 @@ references it). No third-party schema library.
 
 **Orbital dynamics & propagation** -- central-body point-mass or Earth
 spherical-harmonics gravity plus third-body point-mass perturbers,
-atmospheric drag (NRLMSISE-00, Earth-only) and SRP, a selectable
-integrator (`euler`/`rk2`/`rkf45`/`rkf78`), and osculating Keplerian
-elements computed and exported alongside inertial position/velocity at
-every sample.
+atmospheric drag (Earth-only; a choice of NRLMSISE-00 or a simple
+exponential model -- see `SpaceWeatherConfig.atmosphere_model`'s own
+docstring for why not Jacchia-Roberts too: Basilisk has no such model)
+and SRP (per spacecraft, on that spacecraft's own "Orbit / mass" tab),
+a selectable integrator (`euler`/`rk2`/`rkf45`/`rkf78`), and osculating
+Keplerian elements computed and exported alongside inertial
+position/velocity at every sample -- plus, when a real J2 term is
+actually modeled (Earth with spherical-harmonics degree >= 2), MEAN
+(first-order-J2, osc -> mean) elements alongside the osculating ones,
+via Basilisk's own `orbitalMotion.clMeanOscMap` (the same tool its
+`meanOEFeedback` FSW module uses -- not a bespoke implementation).
+NRLMSISE-00 drag can also use a
+CONSERVATIVE, sustained-worst-case margin (a chosen percentile -- e.g.
+95th -- of REAL historical CelesTrak F10.7/Ap data, held constant
+across the whole scenario, never a fabricated number) instead of
+ordinary resolved space weather -- see `engine/spaceweather.py`'s own
+docstring, "Conservative ('worst-case') drag margin".
 
 **Attitude, sensors & actuators** -- every `fsw_mode` maps to a real
 Basilisk FSW module chain (attitude nav/guidance/control), idealized or
@@ -225,7 +253,10 @@ magnetometer sensors (magnetometer is Earth-only).
 **Mission planning** -- a GMAT/FreeFlyer-inspired Resources / Mission
 Sequence / Output architecture: `propagate` (duration, epoch, or
 periapsis/apoapsis-event stop conditions), `maneuver` (impulsive
-delta-V, inertial/VNB/RTN), `assignment`, `report`, `if`/`while`
+delta-V, inertial/VNB/RTN), `lambert_transfer` (solves for the
+impulsive delta-V that reaches a target position after a given time of
+flight, via Basilisk's own `lambertPlanner`/`lambertSolver`/
+`lambertValidator`), `assignment`, `report`, `if`/`while`
 conditionals, and `script_block` commands, run by a real execution
 engine (`engine.mission_engine.MissionEngine`) with a dedicated GUI
 editor and output console.
@@ -254,20 +285,36 @@ separation target; radial/cross-track (R/N) only set the follower's
 starting geometry, since the phasing controller has no radial/
 cross-track control authority (the wizard says so up front).
 
+**Fuel tank** -- real propellant depletion for `"thruster"` actuators
+(`SpacecraftConfig.fuel_tank`, `engine.fsw.build_fuel_tank`): Basilisk's
+own `fuelTank` state effector (`FuelTankModelUniformBurn`), tied to the
+thruster hardware so it reads the SAME mass-flow rate the thruster
+itself already computes (`mDot = F / (steadyIsp * g0)`) -- a materially
+different, more physical mechanism than the orbit-maintenance
+bookkeeping above (which is a hand-rolled Python estimate specific to
+station-keeping/phasing/constant-thrust burns); this one is Basilisk's
+own effector, including the resulting center-of-mass shift as
+propellant depletes.
+
 **Vizard visualization** -- live-stream or `.bin` playback file, an
 Earth-centered default camera view with orbit trace lines, live
 data panels (battery charge, station-keeping propellant remaining,
 delta-V used -- station-keeping and phasing-keeping reported as separate
-panels, since both draw from one shared tank -- live along-track
-separation from the chief for a phasing formation, ground-station
-access-window indicators -- all driven by real, already-simulated
-values, not static snapshots), custom 3D models per spacecraft (purely
-cosmetic), and a **Launch Vizard** action that starts the external
-application itself, not just configures what feeds it.
+panels, since both draw from one shared tank -- for a phasing formation,
+the real chief/follower offset broken out into Radial/Transverse/Normal
+panels (the same R/T/N terms the phasing-formation wizard itself uses,
+not an abstract single number), ground-station access-window indicators
+-- all driven by real, already-simulated values, not static snapshots,
+with Vizard's own native live current/max readout on every panel),
+custom 3D models per spacecraft (purely cosmetic), and a **Launch
+Vizard** action that starts the external application itself (offering
+to download AVS's own pre-built binary automatically if none can be
+found -- see "Running the CLI" above), not just configures what feeds
+it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
-nine complete example scenarios covering every major concept in
+eighteen complete example scenarios covering every major concept in
 isolation (see "Template missions" below).
 
 **Safe cancellation** -- **Abort Simulation** cooperatively cancels an
@@ -276,12 +323,19 @@ simulation chunks or commands, keeping whatever partial results were
 already produced -- never a forced kill that could leave Basilisk's C++
 state mid-mutation.
 
-**GUI & CLI** -- a full PySide6 desktop shell (scenario editor, results
-plots, Monte Carlo, live progress feedback, a real visual theme/icon/
+**GUI & CLI** -- a full PySide6 desktop shell (scenario editor,
+Monte Carlo, live progress feedback, a real visual theme/icon/
 toolbar) and an equivalent headless CLI (`missionstudio validate/run/
 monte-carlo/kernels-status/generate-constellation/gui`), both built on
 the exact same `schema`/`engine` layer -- neither is a thin wrapper
-around the other.
+around the other. Result plots are Plotly figures (a validated,
+colorblind-safe categorical palette; a unified hover tooltip; plain
+decimal axis ticks -- never matplotlib's scientific/offset notation)
+rendered in an embedded `QWebEngineView`, with the epoch/elapsed-time
+x-axis toggle and per-series km-unit conversion described above still
+applying unchanged; see `results_widget.py`'s own module docstring for
+why `QWebEngineView` over a static image, and "Verification status"
+above for this migration's one open packaging caveat.
 
 ## Repository layout
 
@@ -318,12 +372,13 @@ missionStudio/
     gui/
       app.py                         -- QApplication entry point
       theme.py                       -- Phase 5: app-wide QSS stylesheet + palette
+      feedback.py                    -- toast notifications + inline (per-field) validation highlighting
       icons.py                       -- Phase 5: procedurally-drawn app icon
-      main_window.py                 -- MainWindow: File/Run menus + toolbar, ties everything together
+      main_window.py                 -- MainWindow: File/Run/Help menus + toolbar, ties everything together
       load_scenario_widget.py        -- "Load Scenario" tab: built-in template picker + browse-for-a-file
       scenario_editor.py             -- the full scenario form + live validation
       mission_sequence_editor.py     -- Phase 6: mission_sequence tree editor (Command Add/Edit/Remove/nesting)
-      mission_output_widget.py       -- Phase 6: "Mission Output" debug-console tab (CommandSummary/ReportEntry display)
+      mission_output_widget.py       -- Phase 6: "Mission Output" debug-console tab (CommandSummary/ReportEntry display) + CSV export
       propagation_setup_dialog.py    -- Phase 5: gravity/perturbations + integrator + space weather, one dedicated window
       spacecraft_editor.py           -- spacecraft list + add/edit/remove dialog (tabbed: orbit, sensors/actuators, FSW, power/propulsion/link budget)
       sensor_actuator_editor.py      -- Phase 2: generic sensor/actuator list + add/edit/remove dialog
@@ -336,7 +391,7 @@ missionStudio/
       phasing_formation_dialog.py    -- "Generate phasing formation..." dialog
       spacecraft_template_dialog.py  -- Phase 5: "New from template" picker dialog
       kernel_status_widget.py        -- SPICE kernel status panel
-      results_widget.py              -- matplotlib results plot + CSV export
+      results_widget.py              -- Plotly results plot (QWebEngineView) + CSV export
       run_worker.py                  -- SimulationService/Monte Carlo on a background QThread
     scenarios/
       two_body_validation.json       -- the Phase 0 validation scenario
@@ -351,6 +406,10 @@ missionStudio/
         07_attitude_pointing_with_adcs_hardware.json
         08_mission_sequence_orbit_raise.json
         09_monte_carlo_dispersion_analysis.json
+        10_gravity_gradient_torque.json
+        11_thruster_attitude_control.json
+        12_reaction_wheel_momentum_dumping.json
+        13_magnetic_torque_rod_momentum_management.json
   scripts/
     _generate_templates.py            -- regenerates scenarios/templates/*.json from schema dataclasses (not installed/imported elsewhere)
   packaging/                          -- build_wheel.sh/.ps1, install.sh/.ps1, .desktop entry (Linux) -- see packaging/README.md
@@ -402,14 +461,14 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 614 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 838 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
-full PySide6 GUI, run headless) and skips 96 whose premise is
+full PySide6 GUI, run headless) and skips 126 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
 `tests/conftest.py`.
 
 With Basilisk installed (`pip install "bsk[all]"` -- see "Getting
-started" above), the 96 skips above run for real instead of skipping.
+started" above), the 126 skips above run for real instead of skipping.
 See "Verification status" above for how thoroughly that's actually been
 exercised -- short version: yes, including a real full multi-day run.
 
@@ -509,9 +568,18 @@ verified, not just designed to behave that way.
 
 Two more commands worth knowing: **Launch Vizard** (Run menu/toolbar,
 GUI only) starts the external Vizard application itself, separate from
-configuring how a run feeds it; **Abort Simulation** (Run menu, GUI
-only, also while a Monte Carlo batch or Mission Sequence is running)
-cooperatively cancels an in-progress run between simulation chunks or
+configuring how a run feeds it -- if it can't be found automatically
+(a remembered path, or a short list of common per-OS install
+locations), a dialog offers **Download Vizard** (fetches AVS's own
+pre-built binary for your platform, the same links
+`docs/source/Vizard/VizardDownload.rst` in the Basilisk checkout
+publishes for a human to follow manually -- see
+`missionstudio/gui/vizard_launcher.py`'s own module docstring for why a
+true single-build-step integration with Basilisk isn't realistic, and
+what this does instead) alongside the original **Browse...** for an
+existing install; **Abort Simulation** (Run menu, GUI only, also while
+a Monte Carlo batch or Mission Sequence is running) cooperatively
+cancels an in-progress run between simulation chunks or
 mission-sequence commands -- never a forced kill, so partial results
 from before the cancellation are kept, not discarded. Full detail on
 both in `HISTORY.md`.
@@ -525,10 +593,19 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-nine built-in template missions (see "Template missions" below) or
+eighteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
-edit. File > New/Open/Save/Save As work against the same
+edit. Below the template list, a standalone **"Customize: \<template
+name\>..."** button for every one of the eighteen templates is always
+visible: a short, multi-step walkthrough of just that template's own key
+tunable parameters (pre-filled with its current values), ending in the
+same Scenario Editor tab with those changes already applied -- a faster
+path than the full editor form for someone who wants "GEO
+station-keeping, but with a tighter deadband and twice the propellant"
+rather than every field on every spacecraft. The
+original template file is never modified either way (both still need
+File > Save As to write anywhere). File > New/Open/Save/Save As work against the same
 `schema.Scenario`/`load_scenario()`/`.save()` the CLI uses (File > Open
 and the Load Scenario tab's own "Browse for a file..." button are two
 paths to the same `open_path()`); the scenario form's validation status
@@ -542,13 +619,20 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has nine ready-to-run scenario
+`missionstudio/scenarios/templates/` has eighteen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
 attitude pointing (idealized, then with real ADCS hardware), a Mission
-Sequence-based impulsive orbit raise, and a Monte Carlo dispersion
-analysis. See that directory's own `README.md` for the full catalog and
+Sequence-based impulsive orbit raise, a Monte Carlo dispersion
+analysis, uncontrolled gravity-gradient torque, thruster-only attitude
+control, reaction-wheel momentum management via thrusters or via
+magnetic torque rods, real sun-heading estimation from coarse sun
+sensor hardware, direct celestial-body pointing, a Lambert-solver
+point-to-point transfer, real propellant depletion via a fuel tank,
+and drag-driven LEO station-keeping (the direct LEO counterpart to
+GEO station-keeping above).
+See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -562,7 +646,7 @@ and every one is covered by `tests/test_scenario_templates.py`
 `tests/gui/test_scenario_templates_gui.py` (confirms each one also
 round-trips through the actual `ScenarioEditorWidget` form), and
 `tests/gui/test_load_scenario_widget.py` (the in-GUI picker described
-below) -- 59 tests total, all passing before this was committed. What's
+below) -- 107 tests total, all passing before this was committed. What's
 NOT yet verified: an actual Basilisk run of any of them (this sandbox has
 none), so treat the physical numbers (propellant use, drift rates,
 orbital periods) as reasonable back-of-the-envelope choices, not
@@ -572,7 +656,7 @@ and hasn't been run for real.
 
 **Built into the GUI itself** (not just files you'd have to know the path
 to): the GUI's **Load Scenario** tab (`gui/load_scenario_widget.py`,
-see "Running the GUI" above) lists all nine by name with their
+see "Running the GUI" above) lists all eighteen by name with their
 description shown on selection, no file-browsing needed -- "Open
 Template" or a double-click loads one and switches straight to the
 Scenario Editor tab. The same tab's "Browse for a file..." button covers
@@ -628,18 +712,49 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   reasoning as spherical-harmonics gravity) -- `engine.fsw` raises a clear
   error for a magnetometer on any other central body rather than silently
   producing a sensor with no field to read.
-* **`locationPointing`'s `target_body` option (point at a celestial body
-  directly, not a ground station) is schema-valid but not wired up** --
-  it needs an `EphemerisMsg`, which this checkout only produces via
-  `ephemerisConverter` from a `SpicePlanetStateMsg`, not yet built here.
-* **`"thruster"`/`"magnetic_torque_rod"` actuator kinds are schema-valid
-  but not wired up** -- `engine.fsw`/`engine.service` raise a specific
-  error if either is actually configured, rather than silently doing
-  nothing.
-* **The attitude control loop closes on truth spacecraft state.**
-  `simpleNav` is in the loop (not raw `scStateOutMsg`), but its
-  error-model matrices are left at Basilisk's own zero defaults -- there
-  is no GUI/schema field yet to configure realistic navigation error.
+* **Both actuator kinds beyond `"reaction_wheel"` are wired up, each for
+  a specific role**: `"thruster"` either as primary attitude control
+  (real `thrusterDynamicEffector` + `thrForceMapping` + `thrFiringSchmitt`
+  -- a spacecraft uses `"reaction_wheel"` OR `"thruster"` for control, not
+  both) or, together with `"reaction_wheel"`, as `MomentumDumpingConfig`'s
+  desaturation hardware; `"magnetic_torque_rod"` ONLY as
+  `MagneticMomentumManagementConfig`'s desaturation hardware (continuous
+  RW momentum biasing via the real geomagnetic field, not a discrete
+  burst) -- there is no standalone magnetic-torque-rod attitude-control/
+  detumble mode, so a `"magnetic_torque_rod"` actuator without
+  `magnetic_momentum_management` set is rejected early with a specific
+  error.
+* **The attitude control loop closes on truth spacecraft state**, EXCEPT
+  for sun heading specifically. `simpleNav` is in the loop (not raw
+  `scStateOutMsg`), but its error-model matrices are left at Basilisk's
+  own zero defaults -- there is no GUI/schema field yet to configure
+  realistic navigation error. `fsw_mode: sunSafePoint`'s
+  `fsw_params['use_css_estimation']` is the one exception: it drives the
+  controller from a real `cssWlsEst` weighted-least-squares estimate
+  computed from a dedicated `coarse_sun_sensor` cluster, not truth (see
+  `14_css_sun_heading_estimation.json`). A full attitude DETERMINATION
+  filter (star tracker + rate gyro + reaction-wheel speeds through
+  Basilisk's `inertialUKF`) is deliberately not built -- no clean shipped
+  Basilisk example was found to verify one against safely.
+* **`engine.fsw.DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`) is tuned for a
+  900 kg*m^2 spacecraft** (lifted directly from Basilisk's own
+  `examples/BskSim` reference) running its FSW task at a 0.1s rate --
+  applied unscaled to a much smaller spacecraft (this schema's own
+  default inertia is 10 kg*m^2) at a coarser `dynamics_task_rate_s`, the
+  resulting discrete-time control update can be numerically unstable
+  (confirmed: idealized/unsaturated actuation can reach NaN within
+  seconds; reaction-wheel actuation's own torque saturation bounds the
+  damage but can still leave a persistent, non-decaying pointing
+  oscillation rather than real convergence). There is no automatic
+  gain-vs-inertia scaling in `engine.fsw`/`engine.service` -- scale
+  `SpacecraftConfig.control_params`'s `K`/`P` by this spacecraft's own
+  inertia relative to that 900 kg*m^2 reference (both by the same
+  factor) for anything much smaller or larger, and use a fine enough
+  `dynamics_task_rate_s` for idealized (no actuator hardware) attitude
+  control specifically. `07_attitude_pointing_with_adcs_hardware.json`,
+  `14_css_sun_heading_estimation.json` (scaled gains) and
+  `06_attitude_pointing_basic.json` (a finer task rate) all show a fix
+  for this.
 * **Monte Carlo dispersions cover two quantities**: `dry_mass_kg`
   (uniform/normal) and `attitude_sigma_bn` (uniform-random-attitude).
   Cartesian position/velocity dispersion is deliberately NOT offered --
@@ -652,6 +767,30 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
 * **Monte Carlo retains a fixed set of data per run** (each spacecraft's
   position/velocity) -- there is no per-run custom retention-policy
   selection in the schema yet.
+* **No Jacchia-Roberts atmosphere model, no Earth-albedo/IR radiation
+  pressure, no `TabularAtmosphere` (user-supplied density table).** All
+  three were real user questions/requests, checked directly against
+  Basilisk's own source (not assumed) before answering:
+  * Jacchia-Roberts genuinely doesn't exist anywhere in Basilisk (checked
+    `src/simulation/environment/` -- only `ExponentialAtmosphere`,
+    `MsisAtmosphere`, `TabularAtmosphere` do); `atmosphere_model` offers
+    the first two (see "Orbital dynamics & propagation" above), not the
+    one that doesn't exist.
+  * Basilisk's `earthRadiationModel` module computes Earth albedo/IR
+    flux, but its own payload comment names `facetERPDynamicEffector` as
+    the consumer that turns that flux into an actual orbital force --
+    and that module doesn't exist in this Basilisk build either (checked
+    the source tree and the installed package). Wiring this up for real
+    would mean writing a brand-new, never-before-exercised force
+    -effector from scratch (the same `extForceTorque` manual-force
+    -injection pattern this project's own thrust controllers use, plus
+    the standard flux/c * area * Cr formula solar SRP already uses) --
+    deliberately not done this round; real user decision, not a gap that
+    slipped through unnoticed.
+  * `TabularAtmosphere` (a user-supplied altitude/density CSV) would need
+    a new file-upload schema/GUI concept of its own -- out of scope for
+    the atmosphere-model-choice work that added `ExponentialAtmosphere`
+    as the second option.
 * **This development sandbox itself still can't reach the NAIF SPICE
   kernel host** (its network policy blocks it), so `engine.kernels`'s
   download step always fails here specifically -- correctly, with a
@@ -723,9 +862,8 @@ Scoped but not yet built, from real GUI usage feedback (full detail in
   protobuf message/panel type, not a reused shape.
 
 Beyond that, the "Known limitations" section above is the rest of the
-honest map: a handful of schema-valid-but-not-wired-up options
-(celestial-body `locationPointing` targets, thrusters, magnetic torque
-rods, non-Earth spherical harmonics/magnetometer), navigation error
-modeling, and richer Monte Carlo retention. None of the remaining items
-is blocked on a design decision; each is scoped and documented at its
-own call site (or in `HISTORY.md`) for whoever picks it up next.
+honest map: non-Earth spherical harmonics/magnetometer, navigation
+error modeling, and richer Monte Carlo retention. None of the
+remaining items is blocked on a design decision; each is scoped and
+documented at its own call site (or in `HISTORY.md`) for whoever picks
+it up next.

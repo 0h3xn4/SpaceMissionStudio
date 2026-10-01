@@ -37,6 +37,55 @@ def test_app_icon_pixmap_is_not_blank(qapp):
     assert len(colors) >= 3, f"expected at least 3 distinct colors (body/ring/satellite), got {colors}"
 
 
+def test_large_icon_includes_the_gold_body_color(qapp):
+    """Regression guard for the current (satellite-glyph) design: real
+    user feedback on the ORIGINAL design ("refine it to read clearer at
+    small sizes") led to a full redesign, not a parameter tweak -- see
+    icons.py's own module docstring for why. This pins the one part of
+    that redesign a generic "at least N colors" check (the test above)
+    wouldn't catch regressing: the body is specifically gold (chosen for
+    light/dark-background contrast, not just aesthetics), not the
+    original design's near-black.
+    """
+    from PySide6.QtGui import QColor
+
+    from missionstudio.gui.icons import _GOLD, _render
+
+    pixmap = _render(256)
+    image = pixmap.toImage()
+    gold = QColor(_GOLD)
+    colors = {
+        (QColor(image.pixel(x, y)).red(), QColor(image.pixel(x, y)).green(), QColor(image.pixel(x, y)).blue())
+        for x in range(0, image.width(), 2)
+        for y in range(0, image.height(), 2)
+        if QColor(image.pixel(x, y)).alpha() > 0
+    }
+    assert (gold.red(), gold.green(), gold.blue()) in colors
+
+
+def test_small_icon_omits_fine_detail_that_would_render_illegibly(qapp):
+    """The antenna and panel/body grid-line detail are omitted below
+    their own size thresholds (found by rendering both and comparing --
+    see icons.py's module docstring) rather than drawn at a thickness
+    that anti-aliases away to noise. A 16px render should have
+    meaningfully fewer distinct colors than a 256px one as a result.
+    """
+    from PySide6.QtGui import QColor
+
+    from missionstudio.gui.icons import _render
+
+    def distinct_colors(size):
+        image = _render(size).toImage()
+        return {
+            (QColor(image.pixel(x, y)).red(), QColor(image.pixel(x, y)).green(), QColor(image.pixel(x, y)).blue())
+            for x in range(image.width())
+            for y in range(image.height())
+            if QColor(image.pixel(x, y)).alpha() > 0
+        }
+
+    assert len(distinct_colors(16)) < len(distinct_colors(256))
+
+
 def test_ensure_icon_file_creates_a_real_png(qapp, tmp_path):
     from missionstudio.gui.icons import ensure_icon_file
 

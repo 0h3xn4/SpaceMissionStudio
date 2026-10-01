@@ -39,6 +39,16 @@ wires up in Phase 2:
   for spacecraft with ``"reaction_wheel"`` actuators (see ``engine.fsw``);
   ``None`` otherwise, matching ``enableUnityVisualization``'s own
   ``ensure_correct_len_list`` handling of a per-spacecraft ``None`` entry.
+* Thruster plumes -- passed via ``thrEffectorList``, which makes Vizard
+  draw native thruster plume effects when firing. Only present for
+  spacecraft with ``"thruster"`` actuators; ``None`` otherwise. Confirmed
+  directly against ``src/utilities/vizSupport.py`` that this parameter
+  wants a per-spacecraft LIST of ``ThrusterDynamicEffector`` instances
+  (``depth=2``, unlike ``rwEffectorList``'s single instance per
+  spacecraft -- a spacecraft could in principle have more than one
+  separate thruster cluster, e.g. ACS + DV, though ``engine.fsw`` only
+  ever builds one per spacecraft), so each non-``None`` entry here is
+  wrapped in a one-element list before being passed through.
 * Ground stations -- drawn via ``vizSupport.addLocation`` (lat/lon/alt,
   field of view, minimum-elevation cone) for every
   :class:`schema.scenario.GroundStationConfig`, so the access geometry
@@ -47,10 +57,6 @@ wires up in Phase 2:
 * Attitude, position, and (natively, always) eclipse/sun-direction
   indication come from ``enableUnityVisualization``'s own per-spacecraft
   state message wiring -- no extra work needed here.
-
-Thruster plumes (``thrEffectorList``) are NOT passed: Phase 2 does not
-wire up thruster actuators (see ``engine.fsw``'s module docstring), so
-there is nothing to visualize there yet.
 
 Default camera / orbit-line view (fixed after user feedback that Vizard
 opened locked onto the spacecraft with no context -- "improve" per that
@@ -80,10 +86,12 @@ and ``addLocation``'s signature were read directly from
 ``rwEffectorList``/``saveFile``/``liveStream`` usage pattern matches
 ``examples/scenarioAttitudeFeedbackRW.py``. The ``VizSettings`` fields
 this module now sets were confirmed to exist under these exact names by
-reading ``vizStructures.h`` directly, but setting them was NOT exercised
-against a real running Vizard instance (no display in this development
-sandbox to confirm the rendered result) -- report back if the camera/
-orbit-line behavior doesn't match what's documented here.
+reading ``vizStructures.h`` directly; a real user's own running Vizard
+instance (a screenshot of the ``05_formation_flying_phasing`` template)
+has since confirmed the camera/orbit-line/spacecraft-label behavior
+documented here matches exactly what was intended -- this development
+sandbox itself still has no display to confirm rendered results with,
+but that specific gap is now closed by a real report, not left assumed.
 
 Live-data panels (fixed after user feedback that the live Vizard stream
 wasn't "understandable" -- a moving dot with no other readout doesn't
@@ -107,22 +115,66 @@ analytical estimate -- see each source module's own docstring):
   this -- see its own module docstring). Same example's pattern for the
   "Tank" panel.
 * **Delta-V used** -- one more ``GenericStorage`` panel per spacecraft
-  with ``StationKeepingConfig`` configured (station-keeping delta-V,
+  with ``StationKeepingConfig`` configured ("SK Delta-V",
   ``StationKeepingController.deltaVOutMsg``), plus, for a spacecraft that
-  ALSO has ``PhasingKeepingConfig`` configured, two more:
-  ``PhasingKeepingController.deltaVOutMsg`` (phasing delta-V, kept as a
-  SEPARATE panel from station-keeping's own -- see that controller's
-  docstring for why: both draw from the one shared tank, but reporting
-  them separately shows the propellant cost of altitude-keeping and
-  phasing-keeping individually) and ``...separationOutMsg`` (the live
-  along-track separation from the chief, against the currently-scheduled
-  target -- "is the formation actually holding", arguably the single most
-  relevant live number for a phasing/formation-flying scenario). All
-  three are real ``DataStorageStatusMsgPayload`` messages those
-  controllers publish specifically for this (again, see their own module
+  ALSO has ``PhasingKeepingConfig`` configured, a second one ("Phasing
+  Delta-V", ``PhasingKeepingController.deltaVOutMsg``) -- kept SEPARATE
+  from station-keeping's own (see that controller's docstring for why:
+  both draw from the one shared tank, but reporting them separately shows
+  the propellant cost of altitude-keeping and phasing-keeping
+  individually). Both are real ``DataStorageStatusMsgPayload`` messages
+  those controllers publish specifically for this (see their own module
   docstring) -- deliberately not a second ``FuelTankMsgPayload`` reuse, so
-  the propellant and delta-V/separation panels are never racing to
-  overwrite the same message.
+  the propellant and delta-V panels are never racing to overwrite the
+  same message.
+* **Fuel tank remaining** -- a ``GenericStorage`` panel per spacecraft with
+  a real ``schema.scenario.FuelTankConfig`` "fuel_tank" state effector
+  configured (``engine.fsw.build_fuel_tank``), labeled "Fuel Tank" and
+  wired to that effector's own ``fuelTankOutMsg`` -- a codebase-audit
+  completeness fix: every other actuator-management feature
+  (``station_keeping``, ``phasing_keeping``) already got a matching
+  live-Vizard panel the moment it shipped, but a real ``fuelTank`` state
+  effector (as opposed to ``StationKeepingController``'s own hand-rolled
+  propellant scalar) had none until now. Deliberately a DIFFERENT label
+  from station-keeping's own "Propellant" panel above -- the two track
+  physically different, independent propellant pools (this one backs a
+  "thruster" actuator's attitude-control/momentum-dumping hardware, not
+  a reboost burn) and can both be present on the same spacecraft at once.
+* **RTN separation from chief** -- THREE more ``GenericStorage`` panels,
+  labeled by :func:`_rtn_panel_label` (e.g. "R vs chief-1"/"T vs
+  chief-1"/"N vs chief-1" -- naming WHICH chief, not just the axis; see
+  that function's own docstring) for a spacecraft with
+  ``PhasingKeepingConfig`` configured, from
+  ``PhasingKeepingController.separationRadialOutMsg``/
+  ``...TransverseOutMsg``/``...NormalOutMsg`` -- the REAL chief/follower
+  offset in the chief's own Hill frame (``orbitalMotion.rv2hill``, the
+  exact same function ``engine.formation``'s wizard itself uses to place
+  a follower), not an abstract single scalar. Real user feedback, across
+  three rounds: first that a single "Separation" number was too vague to
+  interpret; then that it should be broken out into the same R/T/N terms
+  the wizard itself already uses; then (this round) two more issues with
+  that breakout -- see ``PhasingKeepingController``'s own docstring for
+  the full reasoning on both, and "Real bug found from a real running
+  Vizard screenshot, THIRD occurrence" below for the first one
+  (``storageLevel`` is ``abs()``-clamped to ``[0, storageCapacity]``,
+  MAGNITUDE only, unlike an earlier revision's signed, symmetric clamp)
+  -- shared ``storageCapacity`` across all three panels is unchanged.
+* **Live numeric values are Vizard's OWN, not this module's.** A real
+  screenshot (from an actual user) showed every ``GenericStorage`` panel
+  rendering its own live ``"<currentValue> / <maxValue> <units>"``
+  readout natively, in a column separate from ``label`` -- this module
+  briefly (mis-)diagnosed that as missing and added a custom
+  ``_LiveValueLabelBridge`` that rewrote ``label`` itself to embed the
+  same numbers as text; a SECOND real screenshot showed that text
+  getting cut off (Vizard truncates a panel row's ``label`` at a fixed
+  width, independent of how wide the panel itself grows for its own
+  native readout column), which is what led to noticing the native
+  column was there all along. Reverted: panel labels are short, static
+  names ("SK Delta-V"/"Phasing Delta-V"/:func:`_rtn_panel_label`'s
+  output, not the longer names an earlier version used -- still within
+  that same fixed per-row width, confirmed against the same screenshot's
+  truncation of "Delta-V (station-keeping)"), and Vizard's own native
+  column is what shows the live numbers.
 * **Ground-station access windows** -- one ``GenericSensor`` marker per
   (ground station, spacecraft) pair that Phase 3's access analysis tracks,
   changing color LIVE between "no access" and "access" as
@@ -151,13 +203,33 @@ Vizard too.
 
 Verification status: the ``GenericStorage``/battery+fuel-tank wiring
 matches a real, shipped multi-satellite Basilisk example line-for-line
-(cited above). The ``GenericSensor``/``DeviceCmdMsgPayload``/bridge-module
-wiring matches the field-level pattern in a second real shipped example
+(cited above), AND has since been confirmed rendering correctly against
+a real running Vizard instance (the same screenshot cited above --
+"Propellant"/"Delta-V"/"Separation" panels all visible and updating).
+The R/T/N panels' MAGNITUDE fix (see "Real bug found from a real
+running Vizard screenshot, FOURTH round" below) is confirmed TWO ways
+now: against ``PhasingKeepingController``'s own real-Basilisk unit
+tests (``storageLevel`` is genuinely non-negative and correctly
+clamped), AND directly against Vizard's own Unity source
+(``0h3xn4/vizard``,
+``GenericStorageUnitMethods.cs``'s ``UpdateCurrentValue()``) -- a hard
+``value >= 0`` branch with no tolerance, confirming a negative
+``storageLevel`` really does render "Unavailable" unconditionally, not
+inferred from field-comment wording. :func:`_rtn_panel_label`'s
+truncation-width budget is likewise now computed directly from Vizard's
+own panel-sizing code (:func:`_usable_label_width_px`) rather than a
+flat constant confirmed against one screenshot -- see that function's
+own docstring for the exact formula and its one remaining estimate
+(characters-per-pixel, since this project has no access to the actual
+TMP font's glyph metrics).
+The ``GenericSensor``/``DeviceCmdMsgPayload``/bridge-module wiring
+matches the field-level pattern in a second real shipped example
 (``examples/scenarioGroundLocationImaging.py``), but the specific
 "republish an access flag as a sensor mode" composition is this module's
-own, not copied from an example verbatim -- like the camera/orbit-line
-work above, none of this was exercised against a real running Vizard
-instance (no display in this development sandbox).
+own, not copied from an example verbatim, and -- unlike the
+``GenericStorage`` panels above -- has NOT yet been confirmed against a
+real running Vizard instance (that screenshot's scenario had no ground
+stations configured).
 
 **Real bug found on first actual run** (reported: ``basic_string::_M_create``,
 a C++ ``std::length_error``, thrown well after setup completed, during an
@@ -229,6 +301,134 @@ found. Fixed the same way as the bridge fix: ``generic_storage_list``/
 are now returned alongside ``viz``/``access_indicator_bridges`` (see
 :func:`enable_vizard`'s own Returns docs) and ``engine.service`` retains
 all four for the ``SimulationService`` instance's lifetime.
+
+**Real UX bug found from a real running Vizard screenshot** (a genuine
+user report, not this project's own repro -- the FIRST real look at any
+of this module's panels actually rendered): the phasing-formation
+"Separation from chief" ``GenericStorage`` bar rendered broken --
+overflowing its own panel box, full window width, unlike the compact
+"Propellant"/"Delta-V" bars right next to it in the same screenshot.
+Root cause: that panel's ``storageCapacity`` was set to the along-track
+TARGET separation itself, so ordinary, ON-TARGET holding already sat at
+~100% fill with zero headroom, and a real correction transient (this
+project's own manual repro, once alerted to look: a fresh scenario's
+initial along-track mismatch, well before the controller has converged)
+pushed ``storageLevel`` well past ``storageCapacity`` -- confirmed
+directly against a real Basilisk run, not just theorized: a 600 s manual
+repro read back ``storageLevel`` at over 4x ``storageCapacity`` before
+the fix. Vizard does not appear to clamp an overflowing bar itself.
+Fixed in ``engine.orbit_maintenance.PhasingKeepingController.UpdateState``:
+the gauge now gets 2x the target as headroom, and the value actually
+WRITTEN to the separation message is clamped to that capacity (``min()``,
+confirmed against the same manual repro to now read exactly at the
+capacity rather than 4x it) -- the true, unclamped number is kept
+separately (plain Python attributes) for anything that needs it.
+Same screenshot ALSO seemed to show every panel's ``label`` as static
+text (e.g. "Propellant"), never a live number -- first "fixed" by adding
+a ``_LiveValueLabelBridge`` that rewrote ``label`` itself every tick to
+embed the current/max value as text. A SECOND real screenshot (the
+follow-up report) showed that this was solving a problem Vizard didn't
+have: it already renders a live ``"<currentValue> / <maxValue> <units>"``
+readout natively, in a column separate from ``label`` -- invisible in
+the FIRST screenshot only because the panel was narrow at the time, not
+because it doesn't exist. The label-bridge text, once long enough to
+embed real numbers, then got cut off by a fixed-width truncation on each
+row's own ``label`` area (unrelated to the native readout column, which
+doesn't share that limit) -- exactly what the second screenshot showed
+("Delta-V (station-keeping): 0" cut off mid-word). Reverted entirely:
+panel labels are short, static names again, and Vizard's own native
+column is what shows live values -- see this module's "Live-data panels"
+section above for the current, much simpler design.
+
+That same follow-up report also caught a SEPARATE, deeper bug, this
+time in ``engine.formation`` rather than here: the wizard-generated
+follower's along-track separation (what the ``phasing_keeping`` control
+law is actually supposed to hold) was reading wildly larger than
+requested. Root-caused to ``engine.formation.generate_phasing_follower``
+placing the ENTIRE requested (R, T, N) Hill-frame offset via a single
+``hill2rv`` call from the chief's state -- confirmed, independent of
+offset size, that ``orbitalMotion.rv2elem()`` decomposing a
+near-circular state built that way puts essentially the WHOLE
+along-track angle into ``omega`` (argument of periapsis), never into
+``f`` (true anomaly), so ``PhasingKeepingController``'s ``f``-only
+mean-anomaly tracking read the follower as already on target and never
+corrected anything -- see ``engine.formation``'s own module docstring
+for the fix (place T as a direct mean-anomaly shift; layer R/N on
+afterward) and the full numerical confirmation.
+
+A THIRD round of feedback on the same panels, after both fixes above:
+the single "Separation" scalar (even correctly clamped) was still too
+abstract to interpret -- a user could see a number and a bar, but not
+what it actually meant geometrically. Replaced with the three
+``separationRadialOutMsg``/``separationTransverseOutMsg``/
+``separationNormalOutMsg`` panels described in "Live-data panels" above,
+each a REAL ``orbitalMotion.rv2hill`` decomposition (not the control
+law's own mean-anomaly-difference approximation) in the same R/T/N terms
+``engine.formation``'s wizard already asks for -- so the number Vizard
+shows during a run and the number a user typed into the wizard beforehand
+are directly comparable.
+
+**Real bug found from a real running Vizard screenshot, FOURTH round**
+(a real user report on the R/T/N panels from the round above): the
+Radial and Normal panels showed "Unavailable" instead of a number/bar,
+while Transverse (right next to them, same panel construction) rendered
+normally. Root cause: ``PhasingKeepingController.UpdateState`` clamped
+``storageLevel`` SYMMETRICALLY at that point (``[-storageCapacity,
+storageCapacity]``, sign preserved, so a trailing vs. leading follower
+would still read with the correct sign) -- but GenericStorage's own
+field comments, in both ``vizStructures.h`` and the wire-format
+``vizMessage.proto`` (``"current/maximum absolute value of the storage
+device"``), document ``currentValue``/``maxValue`` as a non-negative
+gauge, the same kind of quantity as the battery/propellant/delta-V
+panels right next to it. At the screenshot's moment Radial and Normal
+happened to be negative and Transverse happened to be positive -- which
+lines up with a non-negative-only widget rejecting a negative value it
+was never designed to receive.
+
+CONFIRMED directly, not just inferred from field-comment wording: the
+Vizard Unity source (``0h3xn4/vizard``, cloned separately -- Vizard's
+own client was previously assumed closed-source/unavailable to this
+project, which turned out not to be the case) shows exactly this.
+``GenericStorageUnitMethods.cs``'s ``UpdateCurrentValue()`` reads:
+
+.. code-block:: csharp
+
+    float value = (float) myMsg.CurrentValue;
+    ...
+    if (value >= 0) { /* normal bar + "<value> / <maxValue> <units>" */ }
+    else
+    {
+        hoverText.text = "Unavailable";
+        verboseText.text = "Unavailable";   // "Stale" in VR
+        verboseText.color = Color.gray;
+        measurementRect.GetComponent<Image>().color = Color.gray;
+        measurementRect.sizeDelta = new Vector2(0, barHeight);
+    }
+
+A hard ``value >= 0`` branch, unconditional, with no tolerance for a
+small negative number and nothing to do with ``maxValue`` or color
+thresholds -- exactly what the screenshot's positive/negative split
+showed. Fixed in
+``PhasingKeepingController.UpdateState``/``_clamp_magnitude`` (see that
+function's own docstring): ``storageLevel`` now publishes ``abs()``,
+clamped to ``[0, storageCapacity]`` -- MAGNITUDE, not signed direction.
+This is a real, honest trade-off, not a full fix: Vizard's live panels
+can no longer show "ahead of"/"behind the chief" the way the previous
+(broken) revision intended to; the signed numbers remain available as
+``lastRadialKm``/``lastTransverseKm``/``lastNormalKm`` on the controller
+itself for anything that needs them, just not live in Vizard.
+
+The SAME round of feedback also asked a separate, simpler question: the
+panels never said WHOSE offset they were measuring -- "Radial (R)" on a
+follower's own storage panel doesn't say which chief it's relative to.
+Fixed by :func:`_rtn_panel_label`, which folds the chief spacecraft's
+own name (``PhasingKeepingController.chiefName``, wired by
+:func:`build_phasing_keeping` from ``chief_sc_object.ModelTag``) into
+the label itself (e.g. "R vs chief-1") instead of a bare axis letter --
+see that function's own docstring for the truncation-width budget this
+has to stay inside, computed per-scenario from the follower
+spacecraft's own name (Vizard's panel width scales with it -- not a
+flat constant).
 """
 
 from __future__ import annotations
@@ -237,6 +437,90 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+_VIZARD_PANEL_TITLE_SUFFIX = " Storage"  # GenericStoragePanelMethods.cs: panelName = scName + " Storage"
+_VIZARD_MIN_BAR_WIDTH_PX = 90.0  # GenericStoragePanelMethods.cs: private int barWidth = 90
+_VIZARD_WIDE_BAR_TRIGGER_CHARS = 16  # GenericStoragePanelMethods.cs: if (panelName.Length > 16)
+_VIZARD_PIXELS_PER_TITLE_CHARACTER = 7.0  # GenericStoragePanelMethods.cs: pixelsPerCharacter = 7f
+_VIZARD_LABEL_MARGIN_PX = 3.0  # deviceName RectTransform's own sizeDelta = {x: -3, y: 15} in the prefab
+# Not a measured glyph metric (this project has no access to the actual
+# TMP font asset's per-character advance-width table -- it's a built-in
+# TextMeshPro font, not a custom asset checked into 0h3xn4/vizard) --
+# calibrated conservatively against the one confirmed real data point (a
+# real screenshot: "Transverse (T)", 14 characters, rendered in full
+# inside a 123px box, for a spacecraft named "follower-1" -- see
+# :func:`_usable_label_width_px`), which implies an UPPER bound of
+# ~8.8 px/character; padded up here so the computed character budget
+# stays an underestimate (never risks truncation) rather than an
+# overestimate, since a proportional font's actual per-character width
+# varies with which characters are used.
+_PIXELS_PER_LABEL_CHARACTER_ESTIMATE = 9.5
+
+
+def _usable_label_width_px(follower_name: str) -> float:
+    """The real, per-scenario pixel width available to a
+    ``GenericStorage`` panel row's own ``label`` text -- NOT a fixed
+    value. Reverse-engineered directly from Vizard's own Unity source
+    (``0h3xn4/vizard``):
+
+    ``GenericStoragePanelMethods.cs``'s ``InitializePanel()`` builds
+    ``panelName = spacecraftName + " Storage"`` and, only if that
+    exceeds 16 characters, widens ``barWidth`` to
+    ``panelName.Length * 7`` (pixels) -- applied via ``SetBarWidth()``
+    UNIFORMLY to every storage-device row in that spacecraft's own
+    panel, so the same bar width (and hence label width) is shared by
+    every row regardless of that row's own label length. A SHORT
+    spacecraft name (``len(name) + len(" Storage") <= 16``, i.e. 8
+    characters or fewer) never triggers the widening, leaving the
+    panel at the hardcoded 90px default -- narrower than the 123px a
+    real confirming screenshot (spacecraft named "follower-1", 10
+    characters) actually exercised.
+
+    ``GenericStorageUnitMethods.cs``'s own prefab
+    (``GenericStoragePanelUnit.prefab``) shows the ``deviceName`` TMP
+    text box is anchor-stretched inside that same bar's
+    ``backgroundRect`` with ``sizeDelta = {x: -3, y: 15}`` -- so usable
+    label width is ``barWidth - 3`` pixels. That same prefab confirms
+    the render mode this all matters for: ``m_enableAutoSizing: 0``
+    (no shrink-to-fit), ``m_TextWrappingMode: 1`` (NoWrap),
+    ``m_overflowMode: 3`` (``TextOverflowModes.Truncate``) -- a hard
+    per-pixel cutoff, not ellipsis or wrapping.
+    """
+    panel_title_len = len(follower_name) + len(_VIZARD_PANEL_TITLE_SUFFIX)
+    bar_width_px = (
+        panel_title_len * _VIZARD_PIXELS_PER_TITLE_CHARACTER
+        if panel_title_len > _VIZARD_WIDE_BAR_TRIGGER_CHARS
+        else _VIZARD_MIN_BAR_WIDTH_PX
+    )
+    return bar_width_px - _VIZARD_LABEL_MARGIN_PX
+
+
+def _rtn_panel_label(axis_letter: str, chief_name: str, follower_name: str) -> str:
+    """Short ``GenericStorage`` panel label for an RTN separation panel,
+    e.g. ``"R vs chief-1"`` -- real user feedback that "Radial (R)"/
+    "Transverse (T)"/"Normal (N)" alone didn't say WHOSE offset it was.
+
+    The safe length budget is computed from ``follower_name`` (the
+    spacecraft this panel actually lives on) via
+    :func:`_usable_label_width_px`, converted to a character count with
+    :data:`_PIXELS_PER_LABEL_CHARACTER_ESTIMATE` -- NOT a flat constant,
+    since Vizard's own panel width scales with that spacecraft's own
+    name (see that function's own docstring). Three tiers, each falling
+    back to the next only if it would exceed the computed budget:
+    ``"{axis} vs {chief_name}"`` -> the generic, shorter ``"{axis} vs
+    chief"`` -> the bare ``axis_letter`` alone (always fits, 1
+    character) -- so even an unusually narrow panel (a very short
+    follower spacecraft name) never risks a half-truncated label.
+    """
+    max_len = max(1, int(_usable_label_width_px(follower_name) / _PIXELS_PER_LABEL_CHARACTER_ESTIMATE))
+    named = f"{axis_letter} vs {chief_name}" if chief_name else ""
+    if named and len(named) <= max_len:
+        return named
+    generic = f"{axis_letter} vs chief"
+    if len(generic) <= max_len:
+        return generic
+    return axis_letter
 
 
 class VizardError(Exception):
@@ -268,11 +552,13 @@ class VizardRequest:
 
 def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardRequest,
                    rw_effectors_by_spacecraft: Optional[List] = None,
+                   thr_effectors_by_spacecraft: Optional[List] = None,
                    ground_stations: Optional[Dict[str, object]] = None,
                    central_body_name: str = "earth",
                    battery_by_spacecraft: Optional[Dict[str, object]] = None,
                    station_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
                    phasing_keeping_by_spacecraft: Optional[Dict[str, object]] = None,
+                   fuel_tank_by_spacecraft: Optional[Dict[str, object]] = None,
                    access_out_msgs: Optional[Dict[tuple, object]] = None,
                    custom_models_by_spacecraft: Optional[Dict[str, dict]] = None):
     """Call once, after every spacecraft/sensor/actuator/FSW module for
@@ -301,6 +587,10 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         rw_effectors_by_spacecraft: one ``reactionWheelStateEffector.ReactionWheelStateEffector``
             (or ``None``) per entry in ``sc_objects`` -- see module
             docstring.
+        thr_effectors_by_spacecraft: one ``thrusterDynamicEffector.ThrusterDynamicEffector``
+            (or ``None``) per entry in ``sc_objects`` -- see module
+            docstring for the depth-2 wrapping this function does before
+            handing it to ``enableUnityVisualization``.
         ground_stations: ``{name: groundLocation.GroundLocation}`` for
             every ``GroundStationConfig`` already built for this scenario.
         battery_by_spacecraft: ``{spacecraft_name: simpleBattery.SimpleBattery}``
@@ -312,6 +602,14 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         phasing_keeping_by_spacecraft: ``{spacecraft_name: engine.orbit_maintenance.PhasingKeepingController}``
             for every spacecraft with ``PhasingKeepingConfig`` set -- same
             section.
+        fuel_tank_by_spacecraft: ``{spacecraft_name: fuelTank.FuelTank()}``
+            for every spacecraft with ``schema.scenario.FuelTankConfig``
+            set -- same section. A real Basilisk state effector (see
+            ``engine.fsw.build_fuel_tank``), distinct from
+            ``station_keeping_by_spacecraft``'s own hand-rolled
+            "Propellant" panel above (that one's propellant is a plain
+            Python scalar belonging to a DIFFERENT, unrelated thruster --
+            see ``engine.orbit_maintenance``'s module docstring).
         access_out_msgs: ``{(ground_station_name, spacecraft_name): groundLocation.accessOutMsgs[i]}``
             for every station/spacecraft pair Phase 3's access analysis
             tracks (``engine.service``'s own ``_access_out_msgs``) -- same
@@ -339,6 +637,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     battery_by_spacecraft = battery_by_spacecraft or {}
     station_keeping_by_spacecraft = station_keeping_by_spacecraft or {}
     phasing_keeping_by_spacecraft = phasing_keeping_by_spacecraft or {}
+    fuel_tank_by_spacecraft = fuel_tank_by_spacecraft or {}
     access_out_msgs = access_out_msgs or {}
 
     class _AccessIndicatorBridge(sysModel.SysModel):
@@ -381,7 +680,6 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
     # where this list is attached to ``viz`` below, and
     # ``engine.service``'s own retention of the returned ``viz``.
     access_indicator_bridges: List[object] = []
-
     for sc_object in sc_objects:
         sc_name = sc_object.ModelTag
         storages = []
@@ -411,8 +709,14 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             panel.fuelTankStateInMsg = tank_reader
             storages.append(panel)
 
+            # "SK Delta-V" (not "Delta-V (station-keeping)"): Vizard
+            # truncates a GenericStorage panel's own label text at a
+            # fixed width per row (confirmed against a real running
+            # Vizard instance -- a real screenshot showed the longer name
+            # cut off mid-word) -- kept short deliberately, same reason
+            # below for "Phasing Delta-V"/"Separation".
             dv_panel = vizInterface.GenericStorage()
-            dv_panel.label = "Delta-V (station-keeping)"
+            dv_panel.label = "SK Delta-V"
             dv_panel.type = "Delta-V"
             dv_panel.units = "m/s"
             dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("yellow"))
@@ -424,7 +728,7 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
         phasing_controller = phasing_keeping_by_spacecraft.get(sc_name)
         if phasing_controller is not None:
             phasing_dv_panel = vizInterface.GenericStorage()
-            phasing_dv_panel.label = "Delta-V (phasing)"
+            phasing_dv_panel.label = "Phasing Delta-V"
             phasing_dv_panel.type = "Delta-V"
             phasing_dv_panel.units = "m/s"
             phasing_dv_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("orange"))
@@ -433,15 +737,76 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             phasing_dv_panel.dataStorageStateInMsg = phasing_dv_reader
             storages.append(phasing_dv_panel)
 
-            separation_panel = vizInterface.GenericStorage()
-            separation_panel.label = "Separation from chief"
-            separation_panel.type = "Separation"
-            separation_panel.units = "km"
-            separation_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
-            separation_reader = messaging.DataStorageStatusMsgReader()
-            separation_reader.subscribeTo(phasing_controller.separationOutMsg)
-            separation_panel.dataStorageStateInMsg = separation_reader
-            storages.append(separation_panel)
+            # Three panels, not one: real user feedback was that a single
+            # "Separation" scalar was too vague to interpret -- Radial/
+            # Transverse/Normal, matching engine.formation's own wizard
+            # terminology exactly, is what a user can actually read and
+            # act on (see PhasingKeepingController's own docstring for
+            # where these numbers come from -- a real orbitalMotion.rv2hill
+            # decomposition, not an approximation).
+            #
+            # Colors deliberately avoid dark/saturated primaries (plain
+            # "blue"/"magenta"/"green", used until a real user reported
+            # the R panel unreadable): confirmed from Vizard's own
+            # GenericStoragePanelUnit.prefab that the on-bar device-name
+            # label is hardcoded to a dark gray font
+            # (m_fontColor ~= (0.196, 0.196, 0.196)), so a fully/mostly
+            # -filled bar (R and T both read 100/100 here) in a LOW
+            # -luminance color leaves that label nearly invisible --
+            # plain "blue" is actually darker than the label text itself.
+            # Every color below keeps perceived luminance
+            # (0.2126 R + 0.7152 G + 0.0722 B) comfortably above the
+            # label's own (~50/255), matching the already-readable rows
+            # in this same panel ("cyan"/"yellow"/"orange"/"lightgreen").
+            radial_panel = vizInterface.GenericStorage()
+            radial_panel.label = _rtn_panel_label("R", phasing_controller.chiefName, sc_name)
+            radial_panel.type = "Separation"
+            radial_panel.units = "km"
+            radial_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("lightskyblue"))
+            radial_reader = messaging.DataStorageStatusMsgReader()
+            radial_reader.subscribeTo(phasing_controller.separationRadialOutMsg)
+            radial_panel.dataStorageStateInMsg = radial_reader
+            storages.append(radial_panel)
+
+            transverse_panel = vizInterface.GenericStorage()
+            transverse_panel.label = _rtn_panel_label("T", phasing_controller.chiefName, sc_name)
+            transverse_panel.type = "Separation"
+            transverse_panel.units = "km"
+            transverse_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("violet"))
+            transverse_reader = messaging.DataStorageStatusMsgReader()
+            transverse_reader.subscribeTo(phasing_controller.separationTransverseOutMsg)
+            transverse_panel.dataStorageStateInMsg = transverse_reader
+            storages.append(transverse_panel)
+
+            normal_panel = vizInterface.GenericStorage()
+            normal_panel.label = _rtn_panel_label("N", phasing_controller.chiefName, sc_name)
+            normal_panel.type = "Separation"
+            normal_panel.units = "km"
+            normal_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("springgreen"))
+            normal_reader = messaging.DataStorageStatusMsgReader()
+            normal_reader.subscribeTo(phasing_controller.separationNormalOutMsg)
+            normal_panel.dataStorageStateInMsg = normal_reader
+            storages.append(normal_panel)
+
+        fuel_tank_effector = fuel_tank_by_spacecraft.get(sc_name)
+        if fuel_tank_effector is not None:
+            # "Fuel Tank" (not "Propellant", which station_keeping's own
+            # hand-rolled bookkeeping panel above already uses) -- the two
+            # features are independent and can coexist on one spacecraft
+            # (station_keeping's own reboost propellant vs. a real
+            # fuelTank.FuelTank() state effector backing a "thruster"
+            # actuator's attitude-control/momentum-dumping propellant),
+            # so the labels and colors must stay visually distinct even
+            # though both show a kg quantity depleting over time.
+            tank_panel = vizInterface.GenericStorage()
+            tank_panel.label = "Fuel Tank"
+            tank_panel.type = "Propellant Tank"
+            tank_panel.units = "kg"
+            tank_panel.color = vizInterface.IntVector(vizSupport.toRGBA255("magenta"))
+            fuel_tank_reader = messaging.FuelTankMsgReader()
+            fuel_tank_reader.subscribeTo(fuel_tank_effector.fuelTankOutMsg)
+            tank_panel.fuelTankStateInMsg = fuel_tank_reader
+            storages.append(tank_panel)
 
         generic_storage_list.append(storages or None)
         if storages:
@@ -477,6 +842,10 @@ def enable_vizard(scSim, task_name: str, sc_objects: List, request: VizardReques
             saveFile=str(request.save_file) if request.save_file else None,
             liveStream=request.live_stream,
             rwEffectorList=rw_effectors_by_spacecraft,
+            thrEffectorList=(
+                [[thr] if thr is not None else None for thr in thr_effectors_by_spacecraft]
+                if thr_effectors_by_spacecraft is not None else None
+            ),
             genericStorageList=generic_storage_list if any(generic_storage_list) else None,
             genericSensorList=generic_sensor_list if any(generic_sensor_list) else None,
         )

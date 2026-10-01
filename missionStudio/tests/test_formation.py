@@ -68,21 +68,69 @@ def test_nonzero_cross_track_offset_changes_orbital_plane():
     assert follower.orbit.inclination_deg != pytest.approx(chief.orbit.inclination_deg, abs=1e-6)
 
 
-def test_along_track_offset_round_trips_through_hill_frame():
-    """The along-track component of the Hill-frame offset used to place
-    the follower must match what a direct rv2hill of the generated
-    follower's own state recovers -- confirms generate_phasing_follower
-    calls hill2rv/elem2rv consistently, not some other convention.
+def _measured_separation_km(chief, follower):
+    """What PhasingKeepingController's OWN mean-anomaly-difference
+    tracking (engine.orbit_maintenance._mean_anomaly, replicated here
+    rather than imported since that module needs a full SysModel/task
+    context to construct) would read for this pair at epoch -- the exact
+    property the real bug (see test below) broke.
     """
     from Basilisk.utilities import orbitalMotion, simIncludeGravBody
-
-    chief = _chief()
-    request = _request(radial_km=1.0, along_track_km=50.0, cross_track_km=2.0)
-    follower = generate_phasing_follower(request, chief, chief, central_body="earth")
 
     grav_factory = simIncludeGravBody.gravBodyFactory()
     mu = grav_factory.createBodies(["earth"])["earth"].mu
 
+    def rv(orbit):
+        oe = orbitalMotion.ClassicElements()
+        oe.a = orbit.semi_major_axis_km * 1000.0
+        oe.e = orbit.eccentricity
+        oe.i = np.radians(orbit.inclination_deg)
+        oe.Omega = np.radians(orbit.raan_deg)
+        oe.omega = np.radians(orbit.arg_periapsis_deg)
+        oe.f = np.radians(orbit.true_anomaly_deg)
+        return orbitalMotion.elem2rv(mu, oe)
+
+    def mean_anomaly(r, v):
+        oe = orbitalMotion.rv2elem(mu, r, v)
+        eccentric_anomaly = orbitalMotion.f2E(oe.f, oe.e)
+        return orbitalMotion.E2M(eccentric_anomaly, oe.e), oe.a
+
+    r_c, v_c = rv(chief.orbit)
+    r_f, v_f = rv(follower.orbit)
+    m_c, _ = mean_anomaly(r_c, v_c)
+    m_f, a_f = mean_anomaly(r_f, v_f)
+    wrapped = (m_f - m_c + np.pi) % (2 * np.pi) - np.pi
+    return abs(wrapped) * chief.orbit.semi_major_axis_km * 1000.0 / 1000.0
+
+
+def test_along_track_separation_matches_target_exactly_with_zero_radial_and_cross_track():
+    """Regression test for the real bug this generator's docstring
+    describes: a real user's Vizard run showed a requested along-track
+    separation reading as ~0 km to PhasingKeepingController. With R and N
+    both 0, the along-track separation the controller will actually
+    measure at epoch must match the request to high precision.
+    """
+    chief = _chief()
+    follower = generate_phasing_follower(
+        _request(radial_km=0.0, along_track_km=500.0, cross_track_km=0.0), chief, chief, central_body="earth",
+    )
+    assert _measured_separation_km(chief, follower) == pytest.approx(500.0, abs=0.01)
+
+
+def test_along_track_separation_is_far_off_when_placed_via_a_single_hill2rv_call():
+    """Negative control for the test above: confirms the OLD (buggy)
+    approach -- a single hill2rv(chief_r, chief_v, [R, T, N]) call, then
+    rv2elem straight back to classical elements -- really does misread a
+    500 km along-track request as approximately 0 km, the exact failure
+    a real user reported. If this ever stops failing, orbitalMotion's own
+    near-circular rv2elem convention changed and this generator's whole
+    T-vs-R/N split (see its module docstring) should be re-examined.
+    """
+    from Basilisk.utilities import orbitalMotion, simIncludeGravBody
+
+    chief = _chief()
+    grav_factory = simIncludeGravBody.gravBodyFactory()
+    mu = grav_factory.createBodies(["earth"])["earth"].mu
     chief_oe = orbitalMotion.ClassicElements()
     chief_oe.a = chief.orbit.semi_major_axis_km * 1000.0
     chief_oe.e = chief.orbit.eccentricity
@@ -90,21 +138,27 @@ def test_along_track_offset_round_trips_through_hill_frame():
     chief_oe.Omega = np.radians(chief.orbit.raan_deg)
     chief_oe.omega = np.radians(chief.orbit.arg_periapsis_deg)
     chief_oe.f = np.radians(chief.orbit.true_anomaly_deg)
-    r_chief, v_chief = orbitalMotion.elem2rv(mu, chief_oe)
+    r_c, v_c = orbitalMotion.elem2rv(mu, chief_oe)
 
-    follower_oe = orbitalMotion.ClassicElements()
-    follower_oe.a = follower.orbit.semi_major_axis_km * 1000.0
-    follower_oe.e = follower.orbit.eccentricity
-    follower_oe.i = np.radians(follower.orbit.inclination_deg)
-    follower_oe.Omega = np.radians(follower.orbit.raan_deg)
-    follower_oe.omega = np.radians(follower.orbit.arg_periapsis_deg)
-    follower_oe.f = np.radians(follower.orbit.true_anomaly_deg)
-    r_follower, v_follower = orbitalMotion.elem2rv(mu, follower_oe)
+    rho_h = np.array([0.0, 500.0, 0.0]) * 1000.0
+    r_f, v_f = orbitalMotion.hill2rv(r_c, v_c, rho_h, np.zeros(3))
+    follower_oe = orbitalMotion.rv2elem(mu, r_f, v_f)
 
-    rho_h, _rho_prime_h = orbitalMotion.rv2hill(r_chief, v_chief, r_follower, v_follower)
-    assert rho_h[0] == pytest.approx(1000.0, abs=1.0)
-    assert rho_h[1] == pytest.approx(50000.0, abs=1.0)
-    assert rho_h[2] == pytest.approx(2000.0, abs=1.0)
+    assert abs(np.degrees(follower_oe.f) % 360.0) < 0.01  # ~ same f as the chief's own 0 deg -- the bug
+
+
+def test_along_track_separation_degrades_gracefully_with_nonzero_radial_and_cross_track():
+    """R/N are layered on AFTER the along-track placement (see module
+    docstring) -- the resulting along-track reading won't be exact
+    anymore, but must stay in the right ballpark (nowhere near the total
+    failure -- ~0 km -- the single-hill2rv-call approach produced).
+    """
+    chief = _chief()
+    follower = generate_phasing_follower(
+        _request(radial_km=1.0, along_track_km=500.0, cross_track_km=50.0), chief, chief, central_body="earth",
+    )
+    measured = _measured_separation_km(chief, follower)
+    assert 250.0 < measured < 500.0  # meaningfully close to 500, nowhere near the ~0 km bug
 
 
 def test_phasing_keeping_targets_abs_along_track_km():

@@ -69,7 +69,23 @@ def validate_all(scenario: "Scenario") -> List[str]:
     try:
         scenario.validate()
     except ScenarioValidationError as exc:
-        errors.append(str(exc))
+        # Scenario.validate() checks resources (spacecraft, ground
+        # stations, ...) BEFORE mission_sequence, so a raised exception is
+        # a RESOURCE-level problem unless every resource is already valid
+        # -- in which case it may instead be the first bad mission_sequence
+        # command/dangling reference (both error-message formats always
+        # start with "mission_sequence[...", confirmed against
+        # Command.validate()'s own f"mission_sequence[{i}]: ..." and
+        # schema.references._command_references()'s f"mission_sequence[...
+        # ].params[...]" path format). The loop below already re-collects
+        # EVERY mission_sequence problem on its own (that's the whole
+        # point of this function over plain Scenario.validate()), so
+        # appending this one here too would report the exact same first
+        # bad command/reference twice -- found by audit, fixed by skipping
+        # it here and letting the dedicated loop be the sole source of
+        # mission_sequence errors.
+        if not str(exc).startswith("mission_sequence["):
+            errors.append(str(exc))
 
     spacecraft_names = {sc.name for sc in scenario.spacecraft}
     ground_station_names = {gs.name for gs in scenario.ground_stations}

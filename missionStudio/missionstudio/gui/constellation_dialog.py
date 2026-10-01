@@ -85,11 +85,16 @@ class WalkerConstellationDialog(QDialog):
         self._central_body = central_body
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        description_label = QLabel(
             "Generates a full Walker-pattern constellation from a few high-level requirements -- "
             "every satellite's mass/sensors/actuators/power/etc. are cloned from the template you pick below; "
             "only orbit and name differ. Added to (not replacing) this scenario's spacecraft list."
-        ))
+        )
+        # See phasing_formation_dialog.py's identical fix (same
+        # copy-pasted top-description-QLabel shape, same missing
+        # word-wrap) for the real screenshot that found this bug.
+        description_label.setWordWrap(True)
+        layout.addWidget(description_label)
 
         form = QFormLayout()
         form.addRow("Central body (from this scenario)", QLabel(central_body))
@@ -132,6 +137,18 @@ class WalkerConstellationDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        # See propagation_setup_dialog.py's identical fix for why this is
+        # needed even though nothing here looks obviously undersized in
+        # this project's own offscreen test rendering: on a real desktop
+        # (confirmed from an actual user screenshot of a sibling dialog,
+        # gui.template_wizard.TemplateCustomizeWizard), Qt can size a
+        # freshly-constructed QDialog/QWizard smaller than its OWN
+        # sizeHint() on first show() -- a real, platform-dependent layout
+        # -convergence gap this project's own offscreen Qt backend does
+        # not reproduce, so it can only be caught by explicitly forcing
+        # the size rather than trusting Qt's default first-show sizing.
+        self.resize(self.sizeHint())
 
     def _on_accept(self) -> None:
         try:

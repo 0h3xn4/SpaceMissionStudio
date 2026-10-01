@@ -1,0 +1,122 @@
+{
+  "name": "18 - LEO station-keeping",
+  "epoch_utc": "2030-01-01T00:00:00",
+  "simulation_mode": "orbit_only",
+  "gravity": {
+    "central_body": "earth",
+    "central_body_degree": 10,
+    "third_body_perturbers": [
+      "sun",
+      "moon"
+    ]
+  },
+  "spacecraft": [
+    {
+      "name": "leo-sat-1",
+      "orbit": {
+        "type": "classical_elements",
+        "semi_major_axis_km": 6778.0,
+        "eccentricity": 0.0,
+        "inclination_deg": 51.6,
+        "raan_deg": 0.0,
+        "arg_periapsis_deg": 0.0,
+        "anomaly_type": "true",
+        "true_anomaly_deg": 0.0,
+        "mean_anomaly_deg": null,
+        "position_km": null,
+        "velocity_km_s": null,
+        "tle_line1": null,
+        "tle_line2": null
+      },
+      "dry_mass_kg": 120.0,
+      "inertia_kg_m2": [
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0
+      ],
+      "sigma_bn_init": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "omega_bn_b_init_rad_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "enable_drag": true,
+      "drag_coeff": 2.2,
+      "drag_area_m2": 1.5,
+      "enable_srp": false,
+      "srp_coeff": 1.3,
+      "srp_area_m2": 1.0,
+      "enable_gravity_gradient": false,
+      "sensors": [],
+      "actuators": [],
+      "fsw_mode": null,
+      "fsw_params": {},
+      "control_params": {},
+      "power": null,
+      "rf_link": null,
+      "station_keeping": {
+        "target_altitude_km": 400.0,
+        "deadband_km": 1.0,
+        "thrust_n": 0.05,
+        "isp_s": 1500.0,
+        "propellant_kg": 2.0,
+        "eclipse_sunlit_threshold": 0.99
+      },
+      "phasing_keeping": null,
+      "constant_thrust": null,
+      "momentum_dumping": null,
+      "magnetic_momentum_management": null,
+      "fuel_tank": null,
+      "vizard_model_path": null,
+      "vizard_model_offset_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "vizard_model_scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "ground_stations": [],
+  "space_weather": {
+    "source": "celestrak",
+    "local_file_path": null,
+    "cache_dir": null,
+    "atmosphere_model": "nrlmsise00",
+    "activity_level": "conservative",
+    "activity_percentile": 95.0
+  },
+  "sim_settings": {
+    "duration_days": 14.0,
+    "dynamics_task_rate_s": 30.0,
+    "integrator": "rkf78"
+  },
+  "monte_carlo": {
+    "enabled": false,
+    "num_runs": 10,
+    "thread_count": 1,
+    "verbose": false,
+    "dispersions": []
+  },
+  "mission_sequence": [],
+  "description": "The direct LEO counterpart to '03' (GEO station-keeping): a 400 km small satellite actively maintaining its altitude against atmospheric drag -- the actual dominant driver of LEO altitude decay, the same way Sun/Moon/SRP drive GEO drift in '03' -- using the exact same station_keeping deadband thrust controller. Unlike GEO's typically-infrequent corrections, LEO drag is continuous and altitude-dependent (denser air lower down means faster decay), so this spacecraft needs noticeably more frequent, smaller corrections.\n\nWhat to look at: same as '03' -- run the CLI and check command_summary/results for propellant used over the 14-day run, and compare the number/frequency of burns against '03's GEO case in the station-keeping summary (README, 'Running the CLI'). The contrast is the lesson: GEO drift is slow and the deadband is wide (5 km) because the perturbing forces are weak and roughly constant; LEO drag is faster and the deadband here is tight (1 km) because a satellite this low can lose multiple km of altitude in days, not years.\n\nTry changing: the orbit's semi_major_axis_km (lower = thicker atmosphere = much faster decay = more frequent burns -- try 350 km or 300 km to see the effect accelerate sharply), drag_area_m2/drag_coeff (a satellite with more cross-sectional area per unit mass decays faster), or deadband_km (tighter means more frequent, smaller corrections, the same trade '03' suggests for GEO).\n\nenable_srp is deliberately OFF here (unlike '04'/'05', which enable it alongside drag): the point of this template, like '03's point about GEO, is to isolate the ONE dominant perturbation (drag) rather than mix in a secondary effect SRP is at this altitude. Uses the same CONSERVATIVE, 95th-percentile sustained-worst-case nrlmsise00 drag margin from real historical CelesTrak data as '04'/'05' (see engine/spaceweather.py's own docstring) -- needs network access to CelesTrak (or a local historical space-weather file set via space_weather.local_file_path) to actually run. NOTE: like '05', this template's exact decay rate under the real nrlmsise00 model has NOT been re-verified against a real multi-day Basilisk run in this development sandbox (no route to the NAIF SPICE kernel host or CelesTrak here) -- the station_keeping/drag parameters were instead tuned and confirmed against a bypass-SPICE build using a realistically-reparameterized simple exponential atmosphere model (2-3 real reboost burns over 14 days, well under budget); please report back if the real nrlmsise00 propellant budget looks off.",
+  "schema_version": 1
+}

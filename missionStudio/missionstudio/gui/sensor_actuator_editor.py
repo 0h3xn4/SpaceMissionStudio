@@ -84,12 +84,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .feedback import clear_invalid, mark_invalid, show_toast
+
 
 class _ParamSpec(NamedTuple):
     key: str
     required: bool
     example: object
     help_text: str  # includes units, where the quantity has physical meaning
+    # True for a direction (nHat_B, gsHat_B, tHat_B, ...), where "Normalize"
+    # (rescale to unit length, preserving direction) is a meaningful, safe
+    # action. False for a 3-element vector that ISN'T a direction -- a
+    # position like thruster r_B [m], or a per-axis quantity like
+    # magnetometer noise_std_tesla [T] -- where clicking Normalize would
+    # silently corrupt the value (e.g. rescale a thruster's location to
+    # exactly 1 meter from the body origin). Found while adding "thruster"
+    # below: r_B needed its own vector row (same X/Y/Z treatment as every
+    # other 3-element param) but must NOT offer Normalize, which this
+    # module previously offered unconditionally on every 3-element spec --
+    # also fixes the same latent bug already present on magnetometer's
+    # noise_std_tesla.
+    normalizable: bool = True
 
     @property
     def is_vector(self) -> bool:
@@ -97,10 +112,7 @@ class _ParamSpec(NamedTuple):
 
 
 # One entry per SUPPORTED_SENSOR_KINDS/SUPPORTED_ACTUATOR_KINDS value that
-# engine.fsw actually builds -- deliberately omits "thruster"/
-# "magnetic_torque_rod" (schema-valid but not wired up; see
-# _UNIMPLEMENTED_ACTUATOR_KINDS below and SUPPORTED_ACTUATOR_KINDS's own
-# module-level docstring note in schema.scenario).
+# engine.fsw actually builds.
 _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
     "star_tracker": [
         _ParamSpec("noise_arcsec", False, 0.0, "1-sigma attitude noise [arcsec]"),
@@ -115,7 +127,8 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
         _ParamSpec("noise_std", False, 0.0, "1-sigma output noise (cosine-law output units) [-]"),
     ],
     "magnetometer": [
-        _ParamSpec("noise_std_tesla", False, [0.0, 0.0, 0.0], "1-sigma noise per body axis [T]"),
+        _ParamSpec("noise_std_tesla", False, [0.0, 0.0, 0.0], "1-sigma noise per body axis [T]",
+                    normalizable=False),
     ],
     "reaction_wheel": [
         _ParamSpec("gsHat_B", True, [0.0, 0.0, 1.0], "spin-axis direction, body frame, unit vector [-]"),
@@ -123,8 +136,24 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
                     "wheel model name known to Basilisk's simIncludeRW.rwFactory(), e.g. 'Honeywell_HR16'"),
         _ParamSpec("Omega_max", False, 6000.0, "max wheel speed [RPM]"),
         _ParamSpec("u_max", False, 0.2, "max motor torque [N*m]"),
-        _ParamSpec("maxMomentum", False, 50.0, "max wheel angular momentum [N*m*s]"),
-        _ParamSpec("Js", False, 0.028, "wheel inertia about the spin axis [kg*m^2]"),
+        _ParamSpec("Js", False, 0.028, "wheel inertia about the spin axis [kg*m^2] -- rw_type='custom' can "
+                    "derive this from maxMomentum [N*m*s] instead, but NOT both: rwFactory.create() hard"
+                    "-exits the whole process if Js and maxMomentum are both set"),
+    ],
+    "thruster": [
+        _ParamSpec("r_B", True, [1.0, 0.0, 0.0], "thruster location, body frame [m]", normalizable=False),
+        _ParamSpec("tHat_B", True, [1.0, 0.0, 0.0], "thrust direction, body frame, unit vector [-]"),
+        _ParamSpec("MaxThrust", True, 1.0, "maximum thrust [N]"),
+        _ParamSpec("thruster_type", False, "Blank_Thruster",
+                    "thruster model name known to Basilisk's simIncludeThruster.thrusterFactory(), "
+                    "e.g. 'MOOG_Monarc_1' -- 'Blank_Thruster' means no type-specific defaults, use the "
+                    "params here as-is"),
+        _ParamSpec("steadyIsp", False, 220.0, "fuel efficiency [s]"),
+        _ParamSpec("MinOnTime", False, 0.020, "minimum on time [s]"),
+    ],
+    "magnetic_torque_rod": [
+        _ParamSpec("gtHat_B", True, [1.0, 0.0, 0.0], "dipole-axis direction, body frame, unit vector [-]"),
+        _ParamSpec("max_dipole_a_m2", True, 0.1, "maximum commandable dipole magnitude [A*m^2]"),
     ],
 }
 
@@ -133,8 +162,23 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
 # schema.scenario.SUPPORTED_ACTUATOR_KINDS's module-level docstring note.
 # Selectable here (so a saved scenario file using one can still be
 # opened/edited), but flagged with an in-dialog warning rather than
-# letting a beginner discover this only when Run Simulation fails.
-_UNIMPLEMENTED_ACTUATOR_KINDS = ("thruster", "magnetic_torque_rod")
+# letting a beginner discover this only when Run Simulation fails. Empty
+# now -- every SUPPORTED_ACTUATOR_KINDS value is wired up by engine.fsw
+# (see _CONDITIONAL_ACTUATOR_NOTES below for "magnetic_torque_rod"'s own
+# extra requirement, which is a condition, not an "unimplemented" gap).
+_UNIMPLEMENTED_ACTUATOR_KINDS = ()
+
+# A kind that IS wired up, but only in a specific role with its own extra
+# requirement beyond "needs these params" -- shown as an additional note
+# above the normal param hint, not a warning that it's unsimulated.
+_CONDITIONAL_ACTUATOR_NOTES = {
+    "magnetic_torque_rod": (
+        "Only simulated for continuous reaction-wheel momentum management (this spacecraft also needs "
+        "magnetic_momentum_management set, and at least one 'reaction_wheel' actuator -- see the Power / "
+        "propulsion tab) -- there is no standalone attitude-control/detumble mode for magnetic torque "
+        "rods alone."
+    ),
+}
 
 
 def _spin_component(value: float = 0.0) -> QDoubleSpinBox:
@@ -174,9 +218,13 @@ def _hint_text(kind: str) -> str:
             "Pick 'reaction_wheel' for a working actuator."
         )
     specs = _KIND_PARAM_SPECS.get(kind)
-    if not specs:
-        return "No params needed for this kind."
     lines = []
+    note = _CONDITIONAL_ACTUATOR_NOTES.get(kind)
+    if note:
+        lines.append(f"ℹ {note}")
+    if not specs:
+        lines.append("No params needed for this kind.")
+        return "\n".join(lines)
     for spec in specs:
         tag = "required" if spec.required else "optional"
         where = " -- see X/Y/Z fields below" if spec.is_vector else ""
@@ -185,9 +233,11 @@ def _hint_text(kind: str) -> str:
 
 
 class _ItemEditorDialog(QDialog):
-    def __init__(self, item_cls, kind_choices, item=None, parent: QWidget | None = None):
+    def __init__(self, item_cls, kind_choices, item=None, parent: QWidget | None = None,
+                 other_names: list[str] | None = None):
         super().__init__(parent)
         self._item_cls = item_cls
+        self._other_names = other_names or []
         # A defensive copy, not the original item's own dict: _rebuild_vector_rows
         # below writes the live spin-box values back into this cache on every
         # Kind change so switching away and back never loses an edit (see that
@@ -209,6 +259,7 @@ class _ItemEditorDialog(QDialog):
         form.addRow("Kind", self.kind_combo)
 
         self.name_edit = QLineEdit(item.name if item is not None else "")
+        self.name_edit.textChanged.connect(self._on_name_changed)
         form.addRow("Name", self.name_edit)
         layout.addLayout(form)
 
@@ -256,6 +307,12 @@ class _ItemEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # See constellation_dialog.py's identical fix for why this is
+        # needed: Qt can size a freshly-constructed QDialog smaller than
+        # its own sizeHint() on first show() on a real desktop, a gap
+        # this project's own offscreen test rendering doesn't reproduce.
+        self.resize(self.sizeHint())
+
     def _rebuild_vector_rows(self, kind: str) -> None:
         # Regression fix: this used to only re-use self._item_params (the
         # ORIGINAL item's saved values) when switching back to the exact
@@ -284,10 +341,11 @@ class _ItemEditorDialog(QDialog):
             row.addWidget(x)
             row.addWidget(y)
             row.addWidget(z)
-            normalize_button = QPushButton("Normalize")
-            normalize_button.setToolTip("Rescale to a unit vector (preserves direction).")
-            normalize_button.clicked.connect(lambda _checked, k=spec.key: self._on_normalize(k))
-            row.addWidget(normalize_button)
+            if spec.normalizable:
+                normalize_button = QPushButton("Normalize")
+                normalize_button.setToolTip("Rescale to a unit vector (preserves direction).")
+                normalize_button.clicked.connect(lambda _checked, k=spec.key: self._on_normalize(k))
+                row.addWidget(normalize_button)
             row_widget = QWidget()
             row_widget.setLayout(row)
             required_tag = "" if spec.required else " (optional)"
@@ -315,7 +373,37 @@ class _ItemEditorDialog(QDialog):
             z.setValue(spec.example[2])
         self.params_edit.setPlainText(json.dumps(_non_vector_template_params(kind), indent=2))
 
+    def _on_name_changed(self, text: str) -> None:
+        """Live inline feedback (see gui.feedback / spacecraft_editor.py's
+        own ``_on_name_changed`` for the identical pattern this mirrors)
+        -- ``self._other_names`` is already known at construction time.
+        """
+        name = text.strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+        elif name in self._other_names:
+            mark_invalid(self.name_edit, f"{name!r} already exists")
+        else:
+            clear_invalid(self.name_edit)
+
     def _on_accept(self) -> None:
+        # Real data-loss bug this used to have, same shape as
+        # spacecraft_editor.py's SpacecraftEditorDialog (see that
+        # dialog's own _on_accept docstring): a duplicate name wasn't
+        # checked HERE, so accept() always succeeded and the dialog
+        # closed -- only THEN did the caller (SensorActuatorListWidget's
+        # _on_add/_on_edit) notice the duplicate, by which point every
+        # edit the user just made was gone. Checked here first so the
+        # dialog stays open instead.
+        name = self.name_edit.text().strip()
+        if not name:
+            mark_invalid(self.name_edit, "Name must not be empty")
+            self.name_edit.setFocus()
+            return
+        if name in self._other_names:
+            mark_invalid(self.name_edit, f"{name!r} already exists")
+            self.name_edit.setFocus()
+            return
         try:
             self.to_dataclass()
         except ValueError as exc:
@@ -390,7 +478,8 @@ class SensorActuatorListWidget(QWidget):
         return {item.name for i, item in enumerate(self._items) if i != exclude_row}
 
     def _on_add(self) -> None:
-        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, parent=self)
+        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, parent=self,
+                                    other_names=sorted(self._existing_names()))
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_item = dialog.to_dataclass()
             if new_item.name in self._existing_names():
@@ -398,13 +487,16 @@ class SensorActuatorListWidget(QWidget):
                 return
             self._items.append(new_item)
             self._refresh_list()
+            self.list_widget.setCurrentRow(len(self._items) - 1)
+            show_toast(self.window(), f"Added {new_item.kind}: {new_item.name!r}")
             self.changed.emit()
 
     def _on_edit(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
-        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, item=self._items[row], parent=self)
+        dialog = _ItemEditorDialog(self._item_cls, self._kind_choices, item=self._items[row], parent=self,
+                                    other_names=sorted(self._existing_names(exclude_row=row)))
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_item = dialog.to_dataclass()
             if new_item.name in self._existing_names(exclude_row=row):
@@ -412,14 +504,18 @@ class SensorActuatorListWidget(QWidget):
                 return
             self._items[row] = new_item
             self._refresh_list()
+            self.list_widget.setCurrentRow(row)
+            show_toast(self.window(), f"Updated {new_item.kind}: {new_item.name!r}")
             self.changed.emit()
 
     def _on_remove(self) -> None:
         row = self.list_widget.currentRow()
         if row < 0:
             return
+        item = self._items[row]
         del self._items[row]
         self._refresh_list()
+        show_toast(self.window(), f"Removed {item.kind}: {item.name!r}", kind="info")
         self.changed.emit()
 
     def to_list(self) -> list:

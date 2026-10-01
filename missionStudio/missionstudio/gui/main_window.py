@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Optional
 
-from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEventLoop, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QSplitter,
     QStyle,
     QTabWidget,
@@ -51,6 +53,7 @@ from PySide6.QtWidgets import (
 
 from ..logging_setup import get_log_file_path
 from ..schema.scenario import Scenario, ScenarioValidationError, load_scenario
+from .feedback import show_toast
 from .kernel_status_widget import KernelStatusWidget
 from .load_scenario_widget import LoadScenarioWidget
 from .mission_output_widget import MissionOutputWidget
@@ -60,6 +63,7 @@ from .scenario_editor import ScenarioEditorWidget
 from .vizard_dialog import VizardDialog
 from .vizard_launcher import (
     DEFAULT_LIVE_STREAM_ADDRESS,
+    VizardFetchWorker,
     find_vizard_executable,
     launch_vizard,
     remember_vizard_executable,
@@ -127,6 +131,7 @@ class MainWindow(QMainWindow):
 
         self.load_scenario_widget = LoadScenarioWidget()
         self.load_scenario_widget.path_chosen.connect(self._on_load_scenario_path_chosen)
+        self.load_scenario_widget.scenario_customized.connect(self._on_load_scenario_customized)
 
         self.results_widget = ResultsWidget()
         self.mission_output_widget = MissionOutputWidget()
@@ -290,7 +295,37 @@ class MainWindow(QMainWindow):
         run_menu.addAction(monte_carlo_action)
         self.monte_carlo_action = monte_carlo_action
 
+        # Real gap, found while auditing the rest of the app for UX
+        # issues: missionstudio.__version__ already exists (this is a
+        # packaged desktop app, shipping .deb/Windows installers -- see
+        # packaging/), but nothing in the GUI surfaced it anywhere --
+        # no Help menu, no About dialog, no version visible at all. A
+        # user filing a bug report or asking for support had no way to
+        # even state which version they were running from inside the
+        # app itself.
+        help_menu = self.menuBar().addMenu("&Help")
+        about_action = QAction("&About missionStudio", self)
+        about_action.triggered.connect(self.on_about)
+        help_menu.addAction(about_action)
+
         self._build_toolbar()
+
+    def on_about(self) -> None:
+        import importlib.util
+
+        import missionstudio
+
+        basilisk_status = (
+            "available" if importlib.util.find_spec("Basilisk") is not None
+            else "not installed/built -- see missionStudio/README.md"
+        )
+        QMessageBox.about(
+            self, "About missionStudio",
+            f"<b>missionStudio</b> {missionstudio.__version__}<br><br>"
+            "A GUI-based mission-analysis application built on the Basilisk "
+            "astrodynamics framework (AVS Lab, University of Colorado Boulder).<br><br>"
+            f"Basilisk: {basilisk_status}",
+        )
 
     def _build_toolbar(self) -> None:
         """Puts the SAME QAction instances the menu bar uses onto two
@@ -387,6 +422,7 @@ class MainWindow(QMainWindow):
         self.mission_output_widget.clear()
         self._mark_clean()
         self.statusBar().showMessage("New scenario.")
+        show_toast(self, "New scenario")
         self.left_tabs.setCurrentWidget(self.scenario_editor)
 
     def on_open(self) -> None:
@@ -408,20 +444,54 @@ class MainWindow(QMainWindow):
             return
         self.open_path(Path(path))
 
+    def _on_load_scenario_customized(self, scenario: Scenario) -> None:
+        """Handles LoadScenarioWidget.scenario_customized -- a template
+        run through gui.template_wizard.TemplateCustomizeWizard, with its
+        curated fields already applied to an in-memory Scenario copy (see
+        that module's own docstring). Same unsaved-changes gate as
+        _on_load_scenario_path_chosen; unlike that path there is no file
+        yet, so this validates the wizard's result here (the one thing
+        load_scenario() would otherwise have done for a file-backed open)
+        before handing off to _open_scenario with no path -- the user
+        must File > Save As before this can overwrite anything, so the
+        original template file on disk is never at risk.
+        """
+        if not self._confirm_discard_unsaved():
+            return
+        try:
+            scenario.validate()
+        except ScenarioValidationError as exc:
+            QMessageBox.critical(self, "Could not open customized scenario", str(exc))
+            return
+        self._open_scenario(scenario, current_path=None, verb="Customized")
+
     def open_path(self, path: Path) -> bool:
         try:
             scenario = load_scenario(path)
         except ScenarioValidationError as exc:
             QMessageBox.critical(self, "Could not open scenario", str(exc))
             return False
+        self._open_scenario(scenario, current_path=path, verb="Opened")
+        return True
+
+    def _open_scenario(self, scenario: Scenario, current_path: Optional[Path], verb: str) -> None:
+        """Shared tail end of open_path()/_on_load_scenario_customized():
+        loads ``scenario`` into the editor and resets every piece of
+        per-scenario state (results, mission output, dirty flag, current
+        -path) the same way regardless of where the Scenario came from.
+        ``current_path=None`` (the wizard path) leaves on_save() routing
+        through on_save_as() -- see that method -- rather than silently
+        picking a path to write to.
+        """
         self.scenario_editor.from_scenario(scenario)
-        self._current_path = path
+        self._current_path = current_path
         self.results_widget.set_result(None)
         self.mission_output_widget.clear()
         self._mark_clean()
-        self.statusBar().showMessage(f"Opened {path}")
+        label = str(current_path) if current_path is not None else scenario.name
+        self.statusBar().showMessage(f"{verb} {label}")
+        show_toast(self, f"{verb} {current_path.name if current_path is not None else scenario.name}")
         self.left_tabs.setCurrentWidget(self.scenario_editor)
-        return True
 
     def on_save(self) -> None:
         if self._current_path is None:
@@ -448,6 +518,7 @@ class MainWindow(QMainWindow):
         self._current_path = path
         self._mark_clean()
         self.statusBar().showMessage(f"Saved {path}")
+        show_toast(self, f"Saved {path.name}")
 
     # -- run-in-progress feedback -------------------------------------------
     def _set_running(self, running: bool) -> None:
@@ -506,6 +577,110 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Vizard disabled for the next run.")
             else:
                 self.statusBar().showMessage("Vizard enabled for the next run.")
+
+    def _locate_or_fetch_vizard(self) -> Optional[Path]:
+        """Called only when :func:`find_vizard_executable` came up empty.
+        Offers "Download Vizard" (automatic -- see
+        ``gui.vizard_launcher``'s own module docstring on the real user
+        request this answers) alongside the original manual "Browse...".
+        Returns the resolved, already-``remember_vizard_executable``'d
+        path, or ``None`` if the user cancelled/dismissed both options or
+        a download genuinely failed (an error dialog was already shown in
+        that case) -- :meth:`on_launch_vizard` treats that exactly like
+        its own previous "user cancelled the browse prompt" case.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Vizard not found")
+        box.setText(
+            "Vizard wasn't found automatically. missionStudio can download AVS's own pre-built Vizard "
+            "for this platform, or you can browse for an existing install."
+        )
+        download_button = box.addButton("Download Vizard", QMessageBox.ButtonRole.AcceptRole)
+        browse_button = box.addButton("Browse...", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is download_button:
+            return self._fetch_vizard_with_progress()
+
+        if clicked is browse_button:
+            path_str, _selected_filter = QFileDialog.getOpenFileName(self, "Locate the Vizard application")
+            if not path_str:
+                return None
+            executable = Path(path_str)
+            remember_vizard_executable(executable)
+            return executable
+
+        return None
+
+    def _fetch_vizard_with_progress(self) -> Optional[Path]:
+        """Runs :class:`~.vizard_launcher.VizardFetchWorker` on a
+        background thread while blocking THIS method (not the whole
+        event loop -- see below) behind a modal, cancellable progress
+        dialog. Blocking here, rather than connecting to the worker's
+        signals and returning immediately, keeps :meth:`on_launch_vizard`'s
+        existing synchronous ``bool`` return contract (also relied on by
+        :meth:`on_run`'s live-stream gate) unchanged -- see
+        ``VizardFetchWorker``'s own docstring.
+
+        A nested ``QEventLoop`` (not a plain blocking call) is what makes
+        this safe: it keeps pumping Qt's event loop -- repainting the
+        progress dialog, handling the Cancel button -- while genuinely
+        waiting for the worker thread, rather than freezing the whole GUI
+        for the download's duration.
+        """
+        progress = QProgressDialog("Downloading Vizard...", "Cancel", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        worker = VizardFetchWorker(parent=self)
+        loop = QEventLoop()
+        outcome: dict = {}
+
+        def on_status(message: str) -> None:
+            progress.setLabelText(message)
+
+        def on_finished_ok(path_str: str) -> None:
+            outcome["path"] = path_str
+            loop.quit()
+
+        def on_failed(message: str) -> None:
+            outcome["error"] = message
+            loop.quit()
+
+        worker.status.connect(on_status)
+        worker.finished_ok.connect(on_finished_ok)
+        worker.failed.connect(on_failed)
+        progress.canceled.connect(worker.request_cancel)  # cooperative -- see VizardFetchWorker's own docstring
+
+        worker.start()
+        progress.show()
+        # QEventLoop.quit() is a no-op if the loop isn't running YET (Qt's
+        # own documented behavior, confirmed the hard way -- a first
+        # version of this method assumed quit()-before-exec() would make
+        # the next exec() return immediately, which hung instead): a real
+        # QThread's start() returns almost instantly, well before its
+        # background run() has a chance to emit finished_ok/failed, so
+        # this only matters for a worker that happens to finish
+        # SYNCHRONOUSLY inside start() itself. Checking outcome first
+        # covers exactly that case without affecting the real one.
+        if not outcome:
+            loop.exec()
+        progress.close()
+        worker.wait()
+
+        if "path" in outcome:
+            executable = Path(outcome["path"])
+            remember_vizard_executable(executable)
+            return executable
+
+        error = outcome.get("error", "download cancelled")
+        if error != "download cancelled":
+            QMessageBox.critical(self, "Could not download Vizard", error)
+        return None
 
     def on_launch_vizard(self) -> bool:
         """Starts the external Vizard application -- a no-op if an
@@ -575,11 +750,9 @@ class MainWindow(QMainWindow):
 
         executable = find_vizard_executable()
         if executable is None:
-            path_str, _selected_filter = QFileDialog.getOpenFileName(self, "Locate the Vizard application")
-            if not path_str:
+            executable = self._locate_or_fetch_vizard()
+            if executable is None:
                 return False
-            executable = Path(path_str)
-            remember_vizard_executable(executable)
         try:
             self._vizard_process = launch_vizard(executable, direct_comm_address=direct_comm_address)
         except OSError as exc:
@@ -710,6 +883,7 @@ class MainWindow(QMainWindow):
 
     def _on_run_finished(self, result, command_summary=None) -> None:
         self._stop_busy(f"Run complete: {len(result.series)} result series.")
+        show_toast(self, f"Run complete -- {len(result.series)} result series")
         # set_live_result(), not set_result(): a live run's final chunk and
         # its "finished" result always share the same series names, so
         # using set_result() here would rebuild series_combo and silently
@@ -738,6 +912,7 @@ class MainWindow(QMainWindow):
         instead of "complete".
         """
         self._stop_busy("Run cancelled by user.")
+        show_toast(self, "Run cancelled", kind="info")
         self.results_widget.set_live_result(partial_result, self._last_run_epoch_utc)
         if command_summary is not None:
             self.mission_output_widget.set_command_summary(command_summary)
@@ -775,6 +950,13 @@ class MainWindow(QMainWindow):
                                  f"Run indices that failed: {failures}")
         else:
             self._stop_busy("Monte Carlo complete -- all runs succeeded.")
+            # A QMessageBox.warning already covers the failures>0 branch
+            # above (strong enough feedback on its own, matching
+            # _on_run_failed's reasoning for why IT has no toast either)
+            # -- this all-succeeded branch had none at all, unlike its
+            # single-run sibling _on_run_finished's own toast, found
+            # while checking this tab's feedback for consistency.
+            show_toast(self, "Monte Carlo complete -- all runs succeeded")
 
     def _on_monte_carlo_failed(self, message: str) -> None:
         self._stop_busy("Monte Carlo run failed.")

@@ -7,6 +7,7 @@ error path in this development sandbox (see test_run_worker.py).
 import importlib.util
 
 import pytest
+from PySide6.QtCore import QObject, Signal
 
 pytestmark = pytest.mark.requires_gui
 
@@ -166,6 +167,64 @@ def test_choosing_a_template_with_unsaved_changes_prompts_first(window, monkeypa
     # Cancelled -- the original (dirty) scenario must still be showing,
     # not the template that was about to replace it.
     assert window._current_path is None
+    assert window.left_tabs.currentWidget() is window.load_scenario_widget
+
+
+def test_choosing_a_customized_scenario_opens_it_with_no_current_path(window):
+    """gui.template_wizard.TemplateCustomizeWizard emits an in-memory
+    Scenario, not a file path -- _on_load_scenario_customized must leave
+    _current_path at None (so on_save() routes through on_save_as()
+    rather than silently writing over the original template file this
+    scenario was built from).
+    """
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+
+    template_path = TEMPLATES_DIR / "03_geo_station_keeping.json"
+    scenario = load_scenario(template_path)
+    scenario.spacecraft[0].station_keeping.deadband_km = 2.5
+
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert window._current_path is None
+    assert window.left_tabs.currentWidget() is window.scenario_editor
+    loaded = window.scenario_editor.to_scenario()
+    assert loaded.spacecraft[0].station_keeping.deadband_km == 2.5
+    # The original template file itself must be untouched.
+    assert load_scenario(template_path).spacecraft[0].station_keeping.deadband_km != 2.5
+
+
+def test_choosing_a_customized_scenario_with_unsaved_changes_prompts_first(window, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+    from PySide6.QtWidgets import QMessageBox
+
+    _add_valid_spacecraft(window)
+    question_calls = []
+    monkeypatch.setattr(QMessageBox, "question",
+                         staticmethod(lambda *a, **k: question_calls.append(1) or QMessageBox.StandardButton.Cancel))
+
+    scenario = load_scenario(TEMPLATES_DIR / "03_geo_station_keeping.json")
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert len(question_calls) == 1
+    assert window.left_tabs.currentWidget() is window.load_scenario_widget
+
+
+def test_customized_scenario_that_fails_validation_shows_error_not_crash(window, monkeypatch):
+    from missionstudio.gui.load_scenario_widget import TEMPLATES_DIR
+    from missionstudio.schema import load_scenario
+    from PySide6.QtWidgets import QMessageBox
+
+    critical_calls = []
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: critical_calls.append(a)))
+
+    scenario = load_scenario(TEMPLATES_DIR / "03_geo_station_keeping.json")
+    scenario.spacecraft[0].station_keeping.deadband_km = -1.0  # invalid: must be > 0
+
+    window.load_scenario_widget.scenario_customized.emit(scenario)
+
+    assert len(critical_calls) == 1
     assert window.left_tabs.currentWidget() is window.load_scenario_widget
 
 
@@ -574,6 +633,34 @@ def test_monte_carlo_finished_stops_busy_indicator_and_reenables_actions(window)
     assert window.monte_carlo_action.isEnabled()
 
 
+def test_monte_carlo_finished_with_no_failures_shows_a_toast(window):
+    """Regression guard: found while checking this tab's feedback for
+    consistency -- _on_run_finished (the single-run sibling) already
+    shows a toast on success, but this Monte Carlo equivalent had none
+    at all.
+    """
+    window._start_busy("Running Monte Carlo test...")
+    window._on_monte_carlo_finished([])
+
+    toasts = getattr(window, "_missionstudio_active_toasts", [])
+    assert any("Monte Carlo complete" in t.text() for t in toasts)
+
+
+def test_monte_carlo_finished_with_failures_does_not_show_a_toast(window, monkeypatch):
+    """The QMessageBox.warning already shown for a partial failure is
+    strong enough feedback on its own -- same reasoning as
+    _on_run_failed having no toast alongside its own QMessageBox.critical.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    window._start_busy("Running Monte Carlo test...")
+    window._on_monte_carlo_finished([2])
+
+    toasts = getattr(window, "_missionstudio_active_toasts", [])
+    assert not any("Monte Carlo complete" in t.text() for t in toasts)
+
+
 def test_monte_carlo_failed_stops_busy_indicator_and_reenables_actions(window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
@@ -724,34 +811,32 @@ def test_launch_vizard_relaunches_after_the_process_exits(window, monkeypatch):
 
 
 def test_launch_vizard_not_found_falls_back_to_browse(window, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog
-
+    """`on_launch_vizard()`'s own contract once `find_vizard_executable()`
+    comes up empty: whatever `_locate_or_fetch_vizard()` resolves to (via
+    either its "Download" or "Browse..." path -- see the dedicated tests
+    for those below) gets launched. Mocked at that seam rather than
+    QFileDialog directly, since which of the two sub-paths the user took
+    is no longer this test's concern.
+    """
     from pathlib import Path
 
     from missionstudio.gui import main_window
 
     picked = Path("/picked/Vizard")
     monkeypatch.setattr(main_window, "find_vizard_executable", lambda: None)
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(picked), "")))
-    remembered = []
-    monkeypatch.setattr(main_window, "remember_vizard_executable", lambda path: remembered.append(path))
+    monkeypatch.setattr(main_window.MainWindow, "_locate_or_fetch_vizard", lambda self: picked)
     monkeypatch.setattr(main_window, "launch_vizard", lambda path, direct_comm_address=None: _FakeVizardProcess())
 
     window.on_launch_vizard()
 
-    assert remembered == [picked]
     assert window._vizard_process is not None
 
 
-def test_launch_vizard_not_found_and_browse_cancelled_does_nothing(window, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog
-
-    from pathlib import Path
-
+def test_launch_vizard_not_found_and_resolution_cancelled_does_nothing(window, monkeypatch):
     from missionstudio.gui import main_window
 
     monkeypatch.setattr(main_window, "find_vizard_executable", lambda: None)
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", "")))
+    monkeypatch.setattr(main_window.MainWindow, "_locate_or_fetch_vizard", lambda self: None)
     launch_calls = []
     monkeypatch.setattr(main_window, "launch_vizard",
                          lambda path, direct_comm_address=None: launch_calls.append(path))
@@ -760,6 +845,138 @@ def test_launch_vizard_not_found_and_browse_cancelled_does_nothing(window, monke
 
     assert launch_calls == []
     assert window._vizard_process is None
+
+
+def test_locate_or_fetch_vizard_browse_option_remembers_the_picked_path(window, monkeypatch):
+    """The original manual-browse path, now reached via the "not found"
+    QMessageBox's "Browse..." button -- clicked here by text match (see
+    this test's own `_click` helper) rather than assuming a specific
+    button object, since QMessageBox builds its buttons fresh each call.
+    """
+    from pathlib import Path
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    picked = Path("/picked/Vizard")
+    monkeypatch.setattr(QMessageBox, "exec", _click_message_box_button("Browse..."))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(picked), "")))
+    remembered = []
+    monkeypatch.setattr("missionstudio.gui.main_window.remember_vizard_executable",
+                         lambda path: remembered.append(path))
+
+    result = window._locate_or_fetch_vizard()
+
+    assert result == picked
+    assert remembered == [picked]
+
+
+def test_locate_or_fetch_vizard_browse_cancelled_returns_none(window, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", _click_message_box_button("Browse..."))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", "")))
+
+    assert window._locate_or_fetch_vizard() is None
+
+
+def test_locate_or_fetch_vizard_dismissed_returns_none(window, monkeypatch):
+    """Neither "Download Vizard" nor "Browse..." clicked (e.g. the dialog
+    was closed via its window decoration) -- QMessageBox's own
+    `clickedButton()` then returns its implicit Cancel button, which
+    matches neither of the two named buttons this method checks for.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)  # never click anything
+
+    assert window._locate_or_fetch_vizard() is None
+
+
+def _click_message_box_button(button_text):
+    """Returns a replacement for ``QMessageBox.exec`` that, instead of
+    actually blocking on user input, finds one of the box's own
+    ``addButton()``-added buttons by its visible text and clicks it --
+    exercising the real ``clickedButton()``/``buttonClicked`` machinery
+    (that connection is wired in ``addButton()`` itself, not only while
+    ``exec()`` is actually running) rather than faking the outcome.
+    """
+    def _exec(self):
+        for button in self.buttons():
+            if button.text() == button_text:
+                button.click()
+                return 0
+        raise AssertionError(f"no QMessageBox button with text {button_text!r}")
+    return _exec
+
+
+class _FakeVizardFetchWorker(QObject):
+    """Stands in for ``VizardFetchWorker`` without spinning up a real
+    ``QThread`` -- mirrors this test file's own ``RunWorker``-patching
+    convention (``monkeypatch.setattr(RunWorker, "start", ...)``) rather
+    than exercising real threading/network in a unit test. Signals are
+    emitted synchronously from :meth:`start`, exactly as they would be
+    for a worker whose background thread happened to finish before the
+    caller's nested ``QEventLoop`` even started spinning -- a real,
+    documented-safe case for ``QEventLoop`` (``quit()`` before ``exec()``
+    just makes the next ``exec()`` return immediately), not a test-only
+    shortcut.
+    """
+
+    finished_ok = Signal(str)
+    failed = Signal(str)
+    status = Signal(str)
+
+    def __init__(self, outcome_path=None, outcome_error=None, parent=None):
+        super().__init__(parent)
+        self._outcome_path = outcome_path
+        self._outcome_error = outcome_error
+        self.cancel_requested = False
+
+    def request_cancel(self):
+        self.cancel_requested = True
+
+    def start(self):
+        if self._outcome_error is not None:
+            self.failed.emit(self._outcome_error)
+        else:
+            self.finished_ok.emit(self._outcome_path)
+
+    def wait(self):
+        pass
+
+
+def test_fetch_vizard_with_progress_success_remembers_and_returns_the_path(window, monkeypatch):
+    from pathlib import Path
+
+    from missionstudio.gui import main_window
+
+    fetched = Path("/fetched/Vizard")
+    monkeypatch.setattr(main_window, "VizardFetchWorker",
+                         lambda parent=None: _FakeVizardFetchWorker(outcome_path=str(fetched)))
+    remembered = []
+    monkeypatch.setattr(main_window, "remember_vizard_executable", lambda path: remembered.append(path))
+
+    result = window._fetch_vizard_with_progress()
+
+    assert result == fetched
+    assert remembered == [fetched]
+
+
+def test_fetch_vizard_with_progress_failure_shows_error_and_returns_none(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from missionstudio.gui import main_window
+
+    monkeypatch.setattr(main_window, "VizardFetchWorker",
+                         lambda parent=None: _FakeVizardFetchWorker(outcome_error="could not download: boom"))
+    shown = []
+    monkeypatch.setattr(main_window.QMessageBox, "critical",
+                         staticmethod(lambda *a, **k: shown.append(a) or QMessageBox.StandardButton.Ok))
+
+    result = window._fetch_vizard_with_progress()
+
+    assert result is None
+    assert shown  # a critical dialog was shown with the failure reason
 
 
 def test_launch_vizard_failure_shows_error(window, monkeypatch):
@@ -1199,3 +1416,25 @@ def test_end_to_end_cancel_signal_updates_window_without_crashing(window, qtbot,
     qtbot.waitUntil(lambda: not window.abort_action.isEnabled(), timeout=5000)
 
     assert window.statusBar().currentMessage() == "Run cancelled by user."
+
+
+def test_about_dialog_shows_version_and_basilisk_status(window, monkeypatch):
+    """Regression guard for a real gap found while auditing the rest of
+    the app: missionstudio.__version__ already existed (a packaged
+    desktop app, shipping .deb/Windows installers), but nothing in the
+    GUI surfaced it anywhere -- no Help menu, no About dialog, no
+    version visible at all.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    import missionstudio
+
+    calls = []
+    monkeypatch.setattr(QMessageBox, "about", staticmethod(lambda *a, **k: calls.append(a)))
+
+    window.on_about()
+
+    assert len(calls) == 1
+    shown_text = calls[0][2]
+    assert missionstudio.__version__ in shown_text
+    assert "Basilisk" in shown_text
