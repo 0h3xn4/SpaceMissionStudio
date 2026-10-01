@@ -15,6 +15,11 @@ bug found and fixed, the full crash-investigation writeups) -- nothing
 was deleted, it just moved out of the way of a README someone installing
 this for the first time should actually be able to read.
 
+**New to missionStudio?** This README is the technical reference (install,
+architecture, verification status). For a beginner-friendly, step-by-step
+walkthrough of actually *using* the app -- no programming background
+assumed -- see [`USER_MANUAL.md`](USER_MANUAL.md).
+
 ## Getting started
 
 **Just want to use the app, not develop it?** There's a real installer
@@ -156,7 +161,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 774 tests
+  exercised either way -- `pytest tests/` runs and passes 940 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -376,6 +381,7 @@ missionStudio/
       icons.py                       -- Phase 5: procedurally-drawn app icon
       main_window.py                 -- MainWindow: File/Run/Help menus + toolbar, ties everything together
       load_scenario_widget.py        -- "Load Scenario" tab: built-in template picker + browse-for-a-file
+      template_wizard.py             -- "Customize: <template name>..." guided wizard spec registry + dialog
       scenario_editor.py             -- the full scenario form + live validation
       mission_sequence_editor.py     -- Phase 6: mission_sequence tree editor (Command Add/Edit/Remove/nesting)
       mission_output_widget.py       -- Phase 6: "Mission Output" debug-console tab (CommandSummary/ReportEntry display) + CSV export
@@ -410,6 +416,11 @@ missionStudio/
         11_thruster_attitude_control.json
         12_reaction_wheel_momentum_dumping.json
         13_magnetic_torque_rod_momentum_management.json
+        14_css_sun_heading_estimation.json
+        15_celestial_body_pointing.json
+        16_lambert_transfer.json
+        17_fuel_tank_depletion.json
+        18_leo_station_keeping.json
   scripts/
     _generate_templates.py            -- regenerates scenarios/templates/*.json from schema dataclasses (not installed/imported elsewhere)
   packaging/                          -- build_wheel.sh/.ps1, install.sh/.ps1, .desktop entry (Linux) -- see packaging/README.md
@@ -432,16 +443,44 @@ missionStudio/
     test_cli.py
     test_two_body_validation.py      -- requires_basilisk
     test_mission_engine.py           -- Phase 6, requires_basilisk
+    test_time_system.py              -- requires_basilisk
+    test_gravity_gradient.py         -- GravityGradientEffector wiring, requires_basilisk
+    test_thruster_control.py         -- real "thruster" actuator control path, requires_basilisk
+    test_momentum_dumping.py         -- RW momentum desaturation via thrusters, requires_basilisk
+    test_mtb_desaturation.py         -- RW momentum management via magnetic torque rods, requires_basilisk
+    test_mtb_dipole_result_series.py -- commanded MTB dipole exposed as its own result series, requires_basilisk
+    test_css_estimation.py           -- real CSS-based sun-heading estimation (sunSafePoint), requires_basilisk
+    test_location_pointing_target_body.py -- direct celestial-body pointing (locationPointing), requires_basilisk
+    test_default_mrp_gain_scaling.py -- DEFAULT_MRP_GAINS auto-scaled to a spacecraft's own inertia
+    test_lambert_transfer.py         -- Mission Sequence lambert_transfer command, requires_basilisk
+    test_fuel_tank.py                -- real FuelTank state effector, requires_basilisk
+    test_vizard_fuel_tank_panel.py   -- live Vizard "Fuel Tank" panel for the fuel-tank effector
+    test_osculating_elements.py      -- osculating + first-order-J2 mean Keplerian elements export
+    test_orbit_maintenance.py        -- station-keeping/phasing-keeping/constant-frame-thrust VNB/RTN math, requires_basilisk
+    test_orbit_maintenance_true_mass.py -- delta-V estimate accounts for fuel-tank mass too
+    test_spacecraft_templates.py     -- reusable spacecraft "bus" templates
+    test_formation.py                -- phasing-formation generator (chief + R/T/N offset), requires_basilisk
+    test_monte_carlo.py              -- Basilisk.utilities.MonteCarlo bridge, requires_basilisk
+    test_service_execution_errors.py -- clear error message for a real ExecuteSimulation() crash class
+    test_service_run_live.py         -- chunked run_live() streaming for the GUI's live-updating plot
+    test_vizard.py                   -- Vizard GenericStorage/GenericSensor dangling-pointer regression, requires_basilisk
+    test_vizard_labels.py            -- Vizard RTN panel label helpers, no Basilisk needed
+    test_logging_setup.py            -- file-backed logging so a GUI crash leaves more than one bare line
     gui/
+      test_app.py
+      test_theme.py
+      test_icons.py
       test_scenario_templates_gui.py -- every template round-trips through ScenarioEditorWidget too
       test_orbit_ic_widget.py
       test_spacecraft_editor.py
+      test_spacecraft_template_dialog.py
       test_sensor_actuator_editor.py
       test_vizard_dialog.py
       test_vizard_launcher.py
       test_monte_carlo_editor.py
       test_ground_station_editor.py
       test_constellation_dialog.py   -- Phase 4
+      test_phasing_formation_dialog.py
       test_scenario_editor.py
       test_propagation_setup_dialog.py
       test_results_widget.py
@@ -451,6 +490,7 @@ missionStudio/
       test_mission_sequence_editor.py -- Phase 6
       test_mission_output_widget.py  -- Phase 6
       test_load_scenario_widget.py   -- "Load Scenario" tab: built-in template picker + browse
+      test_template_wizard.py        -- the "Customize: <template name>..." guided wizard
 ```
 
 ## Running the tests
@@ -461,7 +501,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 838 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 940 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 126 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
@@ -644,9 +684,11 @@ repository as the regeneration source of truth), not hand-written JSON,
 and every one is covered by `tests/test_scenario_templates.py`
 (schema-level load/validate/round-trip, Basilisk-free),
 `tests/gui/test_scenario_templates_gui.py` (confirms each one also
-round-trips through the actual `ScenarioEditorWidget` form), and
+round-trips through the actual `ScenarioEditorWidget` form),
 `tests/gui/test_load_scenario_widget.py` (the in-GUI picker described
-below) -- 107 tests total, all passing before this was committed. What's
+below), and `tests/gui/test_template_wizard.py` (the "Customize:
+\<template name\>..." wizard spec registry -- see "Running the GUI"
+below) -- 198 tests total across those four files, all passing. What's
 NOT yet verified: an actual Basilisk run of any of them (this sandbox has
 none), so treat the physical numbers (propellant use, drift rates,
 orbital periods) as reasonable back-of-the-envelope choices, not
@@ -736,25 +778,28 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   filter (star tracker + rate gyro + reaction-wheel speeds through
   Basilisk's `inertialUKF`) is deliberately not built -- no clean shipped
   Basilisk example was found to verify one against safely.
-* **`engine.fsw.DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`) is tuned for a
-  900 kg*m^2 spacecraft** (lifted directly from Basilisk's own
-  `examples/BskSim` reference) running its FSW task at a 0.1s rate --
-  applied unscaled to a much smaller spacecraft (this schema's own
-  default inertia is 10 kg*m^2) at a coarser `dynamics_task_rate_s`, the
-  resulting discrete-time control update can be numerically unstable
-  (confirmed: idealized/unsaturated actuation can reach NaN within
-  seconds; reaction-wheel actuation's own torque saturation bounds the
-  damage but can still leave a persistent, non-decaying pointing
-  oscillation rather than real convergence). There is no automatic
-  gain-vs-inertia scaling in `engine.fsw`/`engine.service` -- scale
-  `SpacecraftConfig.control_params`'s `K`/`P` by this spacecraft's own
-  inertia relative to that 900 kg*m^2 reference (both by the same
-  factor) for anything much smaller or larger, and use a fine enough
-  `dynamics_task_rate_s` for idealized (no actuator hardware) attitude
-  control specifically. `07_attitude_pointing_with_adcs_hardware.json`,
-  `14_css_sun_heading_estimation.json` (scaled gains) and
-  `06_attitude_pointing_basic.json` (a finer task rate) all show a fix
-  for this.
+* **`engine.fsw.DEFAULT_MRP_GAINS` (`K=3.5`, `P=30.0`), lifted directly
+  from Basilisk's own `examples/BskSim` reference, is tuned for a
+  900 kg*m^2 spacecraft** running its FSW task at a 0.1s rate -- applied
+  unscaled to a much smaller spacecraft (this schema's own default
+  inertia is 10 kg*m^2), the resulting discrete-time control update
+  reliably diverges to NaN within seconds. **No longer a trap for a new
+  spacecraft**: `engine.fsw.build_mrp_feedback` now auto-scales K/P by
+  that spacecraft's own `inertia_kg_m2` relative to the 900 kg*m^2
+  reference (`_default_mrp_gains_for_inertia`) whenever
+  `SpacecraftConfig.control_params` doesn't explicitly set `K`/`P` --
+  confirmed against a real Basilisk build to converge cleanly even at the
+  schema's own coarse `dynamics_task_rate_s` default, where the unscaled
+  reference gains diverge (`tests/test_default_mrp_gain_scaling.py`).
+  This was previously applied only by hand, to specific templates
+  (`07_attitude_pointing_with_adcs_hardware.json`,
+  `14_css_sun_heading_estimation.json`'s explicit scaled
+  `control_params`; `06_attitude_pointing_basic.json`'s finer task rate)
+  before it was generalized into `engine.fsw` itself for every
+  spacecraft -- those templates' own explicit choices are now redundant
+  but harmless. Passing explicit `control_params={"K": ..., "P": ...}`
+  still overrides this unscaled, same as always -- that choice stays on
+  you.
 * **Monte Carlo dispersions cover two quantities**: `dry_mass_kg`
   (uniform/normal) and `attitude_sigma_bn` (uniform-random-attitude).
   Cartesian position/velocity dispersion is deliberately NOT offered --
