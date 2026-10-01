@@ -597,12 +597,11 @@ eighteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. Below the template list, a standalone **"Customize: \<template
-name\>..."** button for each template with a guided wizard available
-(currently '03', '07', and '18' -- see "Template missions" below) is
-always visible: a short, multi-step walkthrough of just that template's
-own key tunable parameters (pre-filled with its current values), ending
-in the same Scenario Editor tab with those changes already applied --
-a faster path than the full editor form for someone who wants "GEO
+name\>..."** button for every one of the eighteen templates is always
+visible: a short, multi-step walkthrough of just that template's own key
+tunable parameters (pre-filled with its current values), ending in the
+same Scenario Editor tab with those changes already applied -- a faster
+path than the full editor form for someone who wants "GEO
 station-keeping, but with a tighter deadband and twice the propellant"
 rather than every field on every spacecraft. The
 original template file is never modified either way (both still need

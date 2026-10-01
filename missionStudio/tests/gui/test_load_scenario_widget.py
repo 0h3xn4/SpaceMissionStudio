@@ -61,22 +61,28 @@ def _customize_button(widget, name_substring: str):
     return matches[0]
 
 
-def test_customize_button_exists_only_for_a_template_with_a_registered_wizard_spec(qtbot):
-    from PySide6.QtWidgets import QPushButton
-
+def test_customize_button_exists_for_every_template_with_a_registered_wizard_spec(qtbot):
+    """Every bundled template has a registered spec now (see
+    gui.template_wizard's own docstring for the rollout history), so this
+    confirms the button LIST tracks the spec registry -- not that some
+    templates are excluded (there's a dedicated unit test for that,
+    gui.template_wizard's own test_get_wizard_spec_returns_none_for_an
+    _unregistered_template).
+    """
     from missionstudio.gui.load_scenario_widget import LoadScenarioWidget
+    from missionstudio.gui.template_wizard import get_wizard_spec
 
     widget = LoadScenarioWidget()
     qtbot.addWidget(widget)
 
-    # "01 - Two-body circular orbit": no registered wizard spec.
-    assert not any("01 - Two-body" in b.text() for b in widget.findChildren(QPushButton))
-
-    # "03 - GEO station-keeping": has one, and it's enabled without any
-    # prior list selection -- these buttons are standalone actions, not
-    # gated on widget.list_widget.currentItem().
-    button = _customize_button(widget, "03 - GEO station-keeping")
-    assert button.isEnabled()
+    for scenario_name, path in widget._template_paths.items():
+        if get_wizard_spec(path.name) is None:
+            continue
+        # Has one, and it's enabled without any prior list selection --
+        # these buttons are standalone actions, not gated on
+        # widget.list_widget.currentItem().
+        button = _customize_button(widget, scenario_name)
+        assert button.isEnabled()
 
 
 def test_customize_clicked_emits_scenario_customized_on_accept(qtbot, monkeypatch):

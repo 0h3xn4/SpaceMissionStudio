@@ -5000,3 +5000,80 @@ _page_not_a_flat_default` for the wizard's different fix, parametrized
 across all three registered specs. Full suite: 871 passed, 126 skipped,
 zero regressions.
 
+## Customize wizards for the remaining fifteen templates
+
+Direct follow-up, once the 3-template pilot (see above) was confirmed
+working: "looking good, please create them for all the others now."
+Every bundled template ('01' through '18') now has a registered
+`gui.template_wizard.TemplateWizardSpec` -- the wizard MACHINERY needed
+no changes at all (confirmed by the pilot's own design goal), this was
+purely 15 new spec entries plus a handful of new small get/set helper
+functions for shapes the pilot hadn't needed yet.
+
+**Fields, chosen the same way the pilot's three were**: each spec's
+fields come from that template's own already-published "Try changing:"
+text wherever it maps to a safe scalar edit. A few templates' literal
+text doesn't -- '04's Walker constellation text calls out
+total_satellites/num_planes, which the text ITSELF says must be
+regenerated via the GUI/CLI, not hand-edited (so the wizard instead
+exposes altitude/inclination, applied uniformly across every generated
+satellite -- a real Walker constellation shares both by construction);
+'06'/'11'/'15's text calls out swapping `fsw_mode` to a different string
+(a structurally different `fsw_params` set, not a spin-box edit -- the
+wizard instead exposes each one's initial attitude tip, a safe,
+meaningful "how far off-target does it start" knob that's always
+present regardless of fsw_mode). Two things are NEVER exposed in any
+spec, even where a template's own text mentions them: `fsw_mode` itself,
+and `dynamics_task_rate_s` (several templates' own comments document a
+real, confirmed NaN-divergence risk from setting this too coarse -- see
+this file's own "MRP gain scaling" entry above).
+
+**A real, independently-found precision bug, caught by this task's own
+comprehensive round-trip tests (new: every spec, not just the pilot's
+three, checked for an EXACT no-op round-trip and for still validating
+after a one-step nudge to every field)**: '18's own altitude field
+(carried over unchanged from the pilot) silently drifted
+`orbit.semi_major_axis_km` by ~137 m on EVERY `accept()`, even with zero
+user edits -- its setter recomputed `semi_major_axis_km = altitude +
+_EARTH_RADIUS_KM` using a fixed module constant, but '18's own
+`scripts/_generate_templates.py` builder was written with a simpler,
+rounder "6378.0" Earth radius, not that constant's more precise value.
+Two more of the same CLASS of bug surfaced in the new specs: '04's
+Walker altitude field (its OWN setter used the same fixed-constant
+pattern, now additionally confirmed to be Basilisk's real
+`earth.radEquator`, 6378.1366 km -- but at this field's original
+`decimals=1`, the display rounding alone was enough to lose the ~0.4 m
+remainder) and '13's wheel-speed-bias RPM fields (a separately
+-precomputed reciprocal constant for the reverse rad/s<->RPM conversion
+left a few-ULP floating-point discrepancy after one round trip).
+
+Fixed three different ways, matched to each root cause: '18's setter now
+derives the radius offset from the scenario's OWN current
+(pre-mutation) `semi_major_axis_km`/`target_altitude_km` rather than
+applying a fixed constant, so it exactly preserves whatever offset a
+template was actually built with, regardless of convention; '04's
+Altitude field's `decimals` went from 1 to 4 (now the display itself
+doesn't truncate away precision `_EARTH_RADIUS_KM`, corrected to
+Basilisk's real `6378.1366`, no longer needs to lose); '13's RPM
+conversion now divides/multiplies by the exact SAME constant
+`scripts/_generate_templates.py` itself uses (`_RPM_TO_RAD_S =
+math.pi / 30.0`), confirmed directly to make the round trip bit-exact
+rather than just visually close. All three were real bugs that would
+have shipped invisibly (the drift is far too small to notice in the UI,
+but a module whose own module docstring explicitly promises "the
+original template file is never touched" should not silently nudge a
+DERIVED scenario's values on a true no-op either) -- found specifically
+because the broader rollout's own test sweep checked EVERY spec for an
+exact round trip, not just the three the pilot had already covered.
+
+**Verification**: `tests/gui/test_template_wizard.py`'s two
+template-count-agnostic parametrized tests (pre-fill correctness, sizing
+-- already written for the pilot) now run against all eighteen
+specs automatically (parametrized from the real bundled-template
+directory listing, not a hand-maintained list), plus two brand new
+parametrized tests across all eighteen: an exact (`to_dict()`
+-equality) no-edit round-trip, and a "nudge every field by one step,
+still validates" sweep -- the two tests that actually caught the three
+precision bugs above. Full suite: 938 passed, 126 skipped, zero
+regressions (up from 871/126).
+
