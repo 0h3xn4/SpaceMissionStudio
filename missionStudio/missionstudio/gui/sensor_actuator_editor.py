@@ -112,10 +112,7 @@ class _ParamSpec(NamedTuple):
 
 
 # One entry per SUPPORTED_SENSOR_KINDS/SUPPORTED_ACTUATOR_KINDS value that
-# engine.fsw actually builds -- deliberately omits "magnetic_torque_rod"
-# (schema-valid but not wired up; see _UNIMPLEMENTED_ACTUATOR_KINDS below
-# and SUPPORTED_ACTUATOR_KINDS's own module-level docstring note in
-# schema.scenario).
+# engine.fsw actually builds.
 _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
     "star_tracker": [
         _ParamSpec("noise_arcsec", False, 0.0, "1-sigma attitude noise [arcsec]"),
@@ -153,6 +150,10 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
         _ParamSpec("steadyIsp", False, 220.0, "fuel efficiency [s]"),
         _ParamSpec("MinOnTime", False, 0.020, "minimum on time [s]"),
     ],
+    "magnetic_torque_rod": [
+        _ParamSpec("gtHat_B", True, [1.0, 0.0, 0.0], "dipole-axis direction, body frame, unit vector [-]"),
+        _ParamSpec("max_dipole_a_m2", True, 0.1, "maximum commandable dipole magnitude [A*m^2]"),
+    ],
 }
 
 # Schema-valid (SUPPORTED_ACTUATOR_KINDS) but engine.fsw/engine.service
@@ -160,8 +161,23 @@ _KIND_PARAM_SPECS: dict[str, list[_ParamSpec]] = {
 # schema.scenario.SUPPORTED_ACTUATOR_KINDS's module-level docstring note.
 # Selectable here (so a saved scenario file using one can still be
 # opened/edited), but flagged with an in-dialog warning rather than
-# letting a beginner discover this only when Run Simulation fails.
-_UNIMPLEMENTED_ACTUATOR_KINDS = ("magnetic_torque_rod",)
+# letting a beginner discover this only when Run Simulation fails. Empty
+# now -- every SUPPORTED_ACTUATOR_KINDS value is wired up by engine.fsw
+# (see _CONDITIONAL_ACTUATOR_NOTES below for "magnetic_torque_rod"'s own
+# extra requirement, which is a condition, not an "unimplemented" gap).
+_UNIMPLEMENTED_ACTUATOR_KINDS = ()
+
+# A kind that IS wired up, but only in a specific role with its own extra
+# requirement beyond "needs these params" -- shown as an additional note
+# above the normal param hint, not a warning that it's unsimulated.
+_CONDITIONAL_ACTUATOR_NOTES = {
+    "magnetic_torque_rod": (
+        "Only simulated for continuous reaction-wheel momentum management (this spacecraft also needs "
+        "magnetic_momentum_management set, and at least one 'reaction_wheel' actuator -- see the Power / "
+        "propulsion tab) -- there is no standalone attitude-control/detumble mode for magnetic torque "
+        "rods alone."
+    ),
+}
 
 
 def _spin_component(value: float = 0.0) -> QDoubleSpinBox:
@@ -201,9 +217,13 @@ def _hint_text(kind: str) -> str:
             "Pick 'reaction_wheel' for a working actuator."
         )
     specs = _KIND_PARAM_SPECS.get(kind)
-    if not specs:
-        return "No params needed for this kind."
     lines = []
+    note = _CONDITIONAL_ACTUATOR_NOTES.get(kind)
+    if note:
+        lines.append(f"ℹ {note}")
+    if not specs:
+        lines.append("No params needed for this kind.")
+        return "\n".join(lines)
     for spec in specs:
         tag = "required" if spec.required else "optional"
         where = " -- see X/Y/Z fields below" if spec.is_vector else ""

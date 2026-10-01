@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 12
+    assert len(_TEMPLATE_PATHS) >= 13
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -105,6 +105,16 @@ def test_momentum_dumping_template_mixes_reaction_wheel_and_thruster_actuators()
     assert kinds == {"reaction_wheel", "thruster"}
     assert sat.momentum_dumping is not None
     assert sat.momentum_dumping.hs_max > 0
+
+
+def test_magnetic_momentum_management_template_mixes_reaction_wheel_and_mtb_actuators():
+    scenario = load_scenario(_TEMPLATES_DIR / "13_magnetic_torque_rod_momentum_management.json")
+    sat = scenario.spacecraft[0]
+    kinds = {a.kind for a in sat.actuators}
+    assert kinds == {"reaction_wheel", "magnetic_torque_rod"}
+    assert sat.magnetic_momentum_management is not None
+    num_rw = sum(1 for a in sat.actuators if a.kind == "reaction_wheel")
+    assert len(sat.magnetic_momentum_management.wheel_speed_biases_rad_s) == num_rw
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

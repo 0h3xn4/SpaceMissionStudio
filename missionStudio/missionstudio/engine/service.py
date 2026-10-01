@@ -677,7 +677,7 @@ class SimulationService:
 
         needs_magnetometer = any(
             sensor.kind == "magnetometer" for sc in scenario.spacecraft for sensor in sc.sensors
-        )
+        ) or any(sc.magnetic_momentum_management is not None for sc in scenario.spacecraft)
         if needs_magnetometer and gravity.central_body == "earth":
             self._mag_field_model = fsw.build_magnetic_field_wmm(
                 self.scSim, dyn_task_name, central_body_state_out_msg, central_body.radEquator
@@ -1026,13 +1026,11 @@ class SimulationService:
             rw_effector_for_viz = None
             thr_effector_for_viz = None
             if sc_config.fsw_mode is not None:
-                unsupported_kinds = sorted({
-                    a.kind for a in sc_config.actuators if a.kind in ("magnetic_torque_rod",)
-                })
-                if unsupported_kinds:
+                if sc_config.magnetic_momentum_management is not None and self._mag_field_model is None:
                     raise SimulationServiceError(
-                        f"{sc_config.name}: actuator kind(s) {unsupported_kinds} are schema-valid but not "
-                        "wired up by engine.service yet (see engine.fsw's module docstring)"
+                        f"{sc_config.name}: magnetic_momentum_management needs an Earth central body -- "
+                        "magneticFieldWMM (Basilisk's WMM magnetic field model) is only wired up for "
+                        "gravity.central_body == 'earth', same restriction as a 'magnetometer' sensor"
                     )
 
                 nav = fsw.build_simple_nav(
@@ -1057,8 +1055,9 @@ class SimulationService:
                         self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg, sc_config.control_params,
                         rw_config_msg=rw_config_msg, rw_speed_out_msg=rw_state_effector.rwSpeedOutMsg,
                     )
-                    fsw.build_rw_motor_torque(self.scSim, dyn_task_name, sc_config.name, mrp, rw_config_msg,
-                                               rw_state_effector)
+                    rw_motor_torque_mod = fsw.build_rw_motor_torque(
+                        self.scSim, dyn_task_name, sc_config.name, mrp, rw_config_msg, rw_state_effector
+                    )
                     handle.rw_speed_recorder = rw_state_effector.rwSpeedOutMsg.recorder()
                     self.scSim.AddModelToTask(dyn_task_name, handle.rw_speed_recorder)
                     rw_effector_for_viz = rw_state_effector
@@ -1086,6 +1085,21 @@ class SimulationService:
                         handle.num_thrusters = len(desat_thruster_actuators)
                         handle.thruster_on_time_recorder = desat_dumping.thrusterOnTimeOutMsg.recorder()
                         self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
+
+                    # Reaction-wheel momentum management via magnetic torque
+                    # rods (schema.scenario.MagneticMomentumManagementConfig)
+                    # -- the alternative desaturation hardware to
+                    # momentum_dumping's thrusters above; Scenario.validate()
+                    # guarantees these are mutually exclusive and that
+                    # "magnetic_torque_rod" actuators are present whenever
+                    # this is set.
+                    if sc_config.magnetic_momentum_management is not None:
+                        mtb_actuators = [a for a in sc_config.actuators if a.kind == "magnetic_torque_rod"]
+                        mtb_effector, _ = fsw.build_mtb_desaturation(
+                            self.scSim, dyn_task_name, sc_config.name, sc_object, mtb_actuators,
+                            rw_motor_torque_mod, rw_config_msg, rw_state_effector, self._mag_field_model,
+                            sc_config.magnetic_momentum_management,
+                        )
                 else:
                     thruster_actuators = [a for a in sc_config.actuators if a.kind == "thruster"]
                     if thruster_actuators:

@@ -156,7 +156,7 @@ environment issue.
   `engine/constellation.py`, `engine/spacecraft_templates.py`,
   `engine/propellant_bookkeeping.py`, `cli.py`, and the entire
   `missionstudio/gui/` package) has no Basilisk import and is fully
-  exercised either way -- `pytest tests/` runs and passes 755 tests
+  exercised either way -- `pytest tests/` runs and passes 774 tests
   with or without Basilisk installed (see "Running the tests" below).
   That includes the PySide6 GUI: built, run headless, and driven with
   `pytest-qt` for real -- every form field, every menu action, every
@@ -300,7 +300,7 @@ it.
 
 **Reusable starting points** -- three spacecraft "bus" templates
 (passive CubeSat, 3-axis-stabilized CubeSat, ESPA-class smallsat) and
-twelve complete example scenarios covering every major concept in
+thirteen complete example scenarios covering every major concept in
 isolation (see "Template missions" below).
 
 **Safe cancellation** -- **Abort Simulation** cooperatively cancels an
@@ -395,6 +395,7 @@ missionStudio/
         10_gravity_gradient_torque.json
         11_thruster_attitude_control.json
         12_reaction_wheel_momentum_dumping.json
+        13_magnetic_torque_rod_momentum_management.json
   scripts/
     _generate_templates.py            -- regenerates scenarios/templates/*.json from schema dataclasses (not installed/imported elsewhere)
   packaging/                          -- build_wheel.sh/.ps1, install.sh/.ps1, .desktop entry (Linux) -- see packaging/README.md
@@ -446,7 +447,7 @@ python3 -m pip install -e ".[dev,gui]"
 python3 -m pytest tests/ -v
 ```
 
-Without Basilisk on `PYTHONPATH`, this runs 755 tests (schema, space
+Without Basilisk on `PYTHONPATH`, this runs 774 tests (schema, space
 weather, results, link budget, constellation generation, CLI, and the
 full PySide6 GUI, run headless) and skips 107 whose premise is
 specifically "Basilisk is unavailable" (marked `requires_basilisk`), per
@@ -578,7 +579,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-twelve built-in template missions (see "Template missions" below) or
+thirteen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -595,15 +596,15 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has twelve ready-to-run scenario
+`missionstudio/scenarios/templates/` has thirteen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
 attitude pointing (idealized, then with real ADCS hardware), a Mission
 Sequence-based impulsive orbit raise, a Monte Carlo dispersion
 analysis, uncontrolled gravity-gradient torque, thruster-only attitude
-control, and reaction-wheel momentum dumping via thrusters. See that
-directory's own `README.md` for the full catalog and
+control, and reaction-wheel momentum management via thrusters or via
+magnetic torque rods. See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -627,7 +628,7 @@ and hasn't been run for real.
 
 **Built into the GUI itself** (not just files you'd have to know the path
 to): the GUI's **Load Scenario** tab (`gui/load_scenario_widget.py`,
-see "Running the GUI" above) lists all twelve by name with their
+see "Running the GUI" above) lists all thirteen by name with their
 description shown on selection, no file-browsing needed -- "Open
 Template" or a double-click loads one and switches straight to the
 Scenario Editor tab. The same tab's "Browse for a file..." button covers
@@ -687,12 +688,18 @@ specifier like `"bsk[all]==2.12.0"`), not literally only a `.whl` file.
   directly, not a ground station) is schema-valid but not wired up** --
   it needs an `EphemerisMsg`, which this checkout only produces via
   `ephemerisConverter` from a `SpicePlanetStateMsg`, not yet built here.
-* **`"magnetic_torque_rod"` actuator kind is schema-valid but not wired
-  up** -- `engine.service` raises a specific error if configured, rather
-  than silently doing nothing. (`"thruster"` IS wired up: real
-  `thrusterDynamicEffector` + `thrForceMapping` + `thrFiringSchmitt`, an
-  alternative to `"reaction_wheel"` -- a spacecraft may use one actuator
-  kind or the other, not both, on the same spacecraft.)
+* **Both actuator kinds beyond `"reaction_wheel"` are wired up, each for
+  a specific role**: `"thruster"` either as primary attitude control
+  (real `thrusterDynamicEffector` + `thrForceMapping` + `thrFiringSchmitt`
+  -- a spacecraft uses `"reaction_wheel"` OR `"thruster"` for control, not
+  both) or, together with `"reaction_wheel"`, as `MomentumDumpingConfig`'s
+  desaturation hardware; `"magnetic_torque_rod"` ONLY as
+  `MagneticMomentumManagementConfig`'s desaturation hardware (continuous
+  RW momentum biasing via the real geomagnetic field, not a discrete
+  burst) -- there is no standalone magnetic-torque-rod attitude-control/
+  detumble mode, so a `"magnetic_torque_rod"` actuator without
+  `magnetic_momentum_management` set is rejected early with a specific
+  error.
 * **The attitude control loop closes on truth spacecraft state.**
   `simpleNav` is in the loop (not raw `scStateOutMsg`), but its
   error-model matrices are left at Basilisk's own zero defaults -- there

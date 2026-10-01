@@ -10,6 +10,7 @@ from missionstudio.schema import (
     DispersionConfig,
     GravityConfig,
     GroundStationConfig,
+    MagneticMomentumManagementConfig,
     MomentumDumpingConfig,
     MonteCarloConfig,
     OrbitIC,
@@ -450,6 +451,123 @@ def test_momentum_dumping_round_trips():
     assert loaded.spacecraft[0].momentum_dumping.hs_max == 65.0
     assert loaded.spacecraft[0].momentum_dumping.thr_min_fire_time == 0.05
     assert loaded.spacecraft[0].momentum_dumping.max_counter_value == 50
+
+
+def test_magnetic_torque_rod_requires_gtHat_B():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1", params={"max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="gtHat_B"):
+        sc.validate()
+
+
+def test_magnetic_torque_rod_requires_max_dipole_a_m2():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1", params={"gtHat_B": [1, 0, 0]}),
+    ]
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="max_dipole_a_m2"):
+        sc.validate()
+
+
+def test_magnetic_torque_rod_without_magnetic_momentum_management_rejected():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    with pytest.raises(ScenarioValidationError, match="magnetic_momentum_management"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_reaction_wheel_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[])
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'reaction_wheel' actuator"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_magnetic_torque_rod_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[0.0])
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'magnetic_torque_rod' actuator"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_requires_one_bias_per_reaction_wheel():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0]}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(
+        wheel_speed_biases_rad_s=[10.0]  # only 1 entry for 2 reaction wheels
+    )
+    with pytest.raises(ScenarioValidationError, match="needs exactly 2 entries"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_with_all_required_params_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[10.0])
+    sc.validate()  # must not raise
+
+
+def test_mixing_reaction_wheel_and_magnetic_torque_rod_without_config_rejected():
+    """Unlike the thruster case, mixing reaction_wheel with
+    magnetic_torque_rod isn't caught by the generic "mix rejected" rule
+    (that rule only fires for reaction_wheel+thruster) -- it's caught
+    instead by magnetic_torque_rod's own "needs magnetic_momentum_management"
+    requirement, which fires regardless of what else is on the spacecraft.
+    """
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    with pytest.raises(ScenarioValidationError, match="magnetic_momentum_management"):
+        sc.validate()
+
+
+def test_magnetic_momentum_management_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+        ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                        params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(
+        wheel_speed_biases_rad_s=[12.5], c_gain=0.01,
+    )
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].magnetic_momentum_management.wheel_speed_biases_rad_s == [12.5]
+    assert loaded.spacecraft[0].magnetic_momentum_management.c_gain == 0.01
 
 
 def test_unsupported_fsw_mode_rejected():

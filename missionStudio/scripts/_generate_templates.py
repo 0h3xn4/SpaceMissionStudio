@@ -29,6 +29,7 @@ place to regenerate from.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from missionstudio.engine.constellation import WalkerConstellationRequest, generate_walker_constellation
@@ -36,6 +37,7 @@ from missionstudio.schema.scenario import (
     DispersionConfig,
     GravityConfig,
     GroundStationConfig,
+    MagneticMomentumManagementConfig,
     MomentumDumpingConfig,
     MonteCarloConfig,
     OrbitIC,
@@ -54,6 +56,19 @@ OUT_DIR = Path(__file__).resolve().parent.parent / "missionstudio" / "scenarios"
 
 _INERTIA_SMALL = [5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0]
 _INERTIA_MEDIUM = [12.5, 0.0, 0.0, 0.0, 12.5, 0.0, 0.0, 0.0, 7.5]
+_RPM_TO_RAD_S = math.pi / 30.0
+
+# Skewed-pyramid 4-wheel layout, beta=52deg -- the exact spin axes
+# examples/scenarioMtbMomentumManagement.py uses, computed here (not
+# copied as decimals) so the values stay traceably derived from that
+# same beta angle.
+_MTB_DEMO_BETA_RAD = 52.0 * math.pi / 180.0
+_MTB_DEMO_RW_AXES = [
+    [0.0, math.cos(_MTB_DEMO_BETA_RAD), math.sin(_MTB_DEMO_BETA_RAD)],
+    [0.0, math.sin(_MTB_DEMO_BETA_RAD), -math.cos(_MTB_DEMO_BETA_RAD)],
+    [math.cos(_MTB_DEMO_BETA_RAD), -math.sin(_MTB_DEMO_BETA_RAD), 0.0],
+    [-math.cos(_MTB_DEMO_BETA_RAD), -math.sin(_MTB_DEMO_BETA_RAD), 0.0],
+]
 
 def _conservative_drag_margin() -> SpaceWeatherConfig:
     """A conservative, sustained-worst-case atmospheric-drag margin -- a
@@ -738,6 +753,73 @@ def build_12_reaction_wheel_momentum_dumping() -> Scenario:
     )
 
 
+def build_13_magnetic_torque_rod_momentum_management() -> Scenario:
+    return Scenario(
+        name="13 - Reaction wheel momentum management via magnetic torque rods",
+        description=(
+            "The alternative desaturation strategy to '12': instead of waiting for total momentum to "
+            "cross a threshold and firing a discrete thruster burst, this spacecraft's four reaction "
+            "wheels (same skewed-pyramid layout as examples/scenarioMtbMomentumManagement.py) are "
+            "CONTINUOUSLY biased toward target speeds (800/600/400/200 RPM) the whole run, using four "
+            "magnetic torque rods and the real geomagnetic field (Basilisk's WMM model) via "
+            "MagneticMomentumManagementConfig (engine.fsw.build_mtb_desaturation: a dedicated "
+            "magnetometer + tamComm feed mtbMomentumManagement, which sits BETWEEN rwMotorTorque and "
+            "the RW hardware, modifying the commanded motor torque). No control-allocation conflict "
+            "with the fsw_mode='inertial3D' attitude pointing running at the same time -- magnetic "
+            "torque rods never do attitude control here, only this continuous momentum bias.\n\n"
+            "What to look at: result series '{sat-1}.rw_speeds' should climb from zero and settle near "
+            "800/600/400/200 RPM (converted: ~83.8/62.8/41.9/20.9 rad/s) over the ~2 hour run -- "
+            "confirmed by direct experimentation against a real Basilisk build to converge to within "
+            "about 0.5 RPM of each target. Compare the SHAPE of this convergence against '12''s sharp, "
+            "discrete desaturation steps -- same underlying problem (reaction wheels accumulating "
+            "momentum), two structurally different real Basilisk solutions.\n\n"
+            "Try changing: wheel_speed_biases_rad_s (different target speeds per wheel), c_gain (a "
+            "larger gain reacts faster but can overshoot/oscillate), or the orbit inclination (a "
+            "near-equatorial orbit sees a weaker, less favorably-oriented geomagnetic field than a "
+            "higher-inclination one, which can slow convergence noticeably)."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=120.0 / 1440.0, dynamics_task_rate_s=2.0, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6778.14, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=60.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=10.0,
+                inertia_kg_m2=[0.02 / 3, 0.0, 0.0, 0.0, 0.1256 / 3, 0.0, 0.0, 0.0, 0.1256 / 3],
+                sigma_bn_init=[0.1, 0.2, -0.3],
+                omega_bn_b_init_rad_s=[0.001, -0.01, 0.03],
+                fsw_mode="inertial3D",
+                fsw_params={"sigma_R0N": [0.0, 0.0, 0.0]},
+                control_params={"K": 0.0001, "P": 0.002},
+                actuators=[
+                    *[
+                        ActuatorConfig(kind="reaction_wheel", name=f"rw-{i + 1}",
+                                         params={"gsHat_B": axis, "rw_type": "BCT_RWP015", "Omega_max": 5000.0})
+                        for i, axis in enumerate(_MTB_DEMO_RW_AXES)
+                    ],
+                    ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                                     params={"gtHat_B": [1.0, 0.0, 0.0], "max_dipole_a_m2": 0.1}),
+                    ActuatorConfig(kind="magnetic_torque_rod", name="mtb-2",
+                                     params={"gtHat_B": [0.0, 1.0, 0.0], "max_dipole_a_m2": 0.1}),
+                    ActuatorConfig(kind="magnetic_torque_rod", name="mtb-3",
+                                     params={"gtHat_B": [0.0, 0.0, 1.0], "max_dipole_a_m2": 0.1}),
+                    ActuatorConfig(kind="magnetic_torque_rod", name="mtb-4",
+                                     params={"gtHat_B": [0.70710678, 0.70710678, 0.0], "max_dipole_a_m2": 0.1}),
+                ],
+                magnetic_momentum_management=MagneticMomentumManagementConfig(
+                    wheel_speed_biases_rad_s=[
+                        800.0 * _RPM_TO_RAD_S, 600.0 * _RPM_TO_RAD_S, 400.0 * _RPM_TO_RAD_S, 200.0 * _RPM_TO_RAD_S,
+                    ],
+                    c_gain=0.003,
+                ),
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -752,6 +834,8 @@ def main() -> None:
     _save(build_10_gravity_gradient_torque(), "10_gravity_gradient_torque.json")
     _save(build_11_thruster_attitude_control(), "11_thruster_attitude_control.json")
     _save(build_12_reaction_wheel_momentum_dumping(), "12_reaction_wheel_momentum_dumping.json")
+    _save(build_13_magnetic_torque_rod_momentum_management(),
+          "13_magnetic_torque_rod_momentum_management.json")
 
 
 if __name__ == "__main__":

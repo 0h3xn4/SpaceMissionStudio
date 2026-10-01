@@ -298,7 +298,15 @@ def test_reset_to_template_button_overwrites_params(qtbot):
     assert "stale" not in config.params
 
 
-def test_unimplemented_actuator_kind_shows_warning_hint(qtbot):
+def test_magnetic_torque_rod_shows_a_conditional_requirement_note(qtbot):
+    """Regression guard: "magnetic_torque_rod" used to be in
+    _UNIMPLEMENTED_ACTUATOR_KINDS (engine.service rejected it outright).
+    It's wired up now, but ONLY for magnetic momentum management -- this
+    checks the hint explains that extra requirement rather than either
+    claiming it's unsimulated (false now) or saying nothing about the
+    requirement at all (which would silently surprise a user at Run
+    Simulation time).
+    """
     from missionstudio.gui.sensor_actuator_editor import _ItemEditorDialog
     from missionstudio.schema.scenario import SUPPORTED_ACTUATOR_KINDS, ActuatorConfig
 
@@ -306,7 +314,8 @@ def test_unimplemented_actuator_kind_shows_warning_hint(qtbot):
     qtbot.addWidget(dialog)
     index = dialog.kind_combo.findText("magnetic_torque_rod")
     dialog.kind_combo.setCurrentIndex(index)
-    assert "not simulated yet" in dialog.hint_label.text()
+    assert "not simulated yet" not in dialog.hint_label.text()
+    assert "magnetic_momentum_management" in dialog.hint_label.text()
 
 
 def test_thruster_kind_is_implemented_and_round_trips(qtbot):

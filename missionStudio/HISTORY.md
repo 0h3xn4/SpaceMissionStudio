@@ -4033,3 +4033,73 @@ egress to fetch them is blocked (see task 1's entry above and
 already true for all nine original templates, not something new to
 these three. Full suite: 755 passed, 107 skipped.
 
+### Magnetic torque rod actuator (task 4 of 19)
+
+The last remaining schema-valid-but-unwired actuator kind. Unlike the
+thruster-based desaturation in task 3, this uses a materially different
+Basilisk strategy -- `mtbMomentumManagement` -- which continuously
+biases each reaction wheel's speed toward a target using whatever
+magnetic torque the real geomagnetic field (Basilisk's WMM model) can
+produce at the spacecraft's current position, rather than waiting for a
+threshold and firing a discrete burst. It sits BETWEEN `rwMotorTorque`
+and the RW hardware: it reads the originally-commanded RW motor torque
+and republishes a modified one, so `engine.fsw.build_mtb_desaturation`
+re-subscribes the RW effector's command input to override
+`build_rw_motor_torque`'s own direct subscription (safe: Basilisk
+resolves message subscriptions at `InitializeSimulation()`, so the last
+`subscribeTo()` call before that wins).
+
+New `SpacecraftConfig.magnetic_momentum_management`
+(`MagneticMomentumManagementConfig`: `wheel_speed_biases_rad_s` -- one
+target speed per reaction-wheel actuator, in listed order -- and a
+`c_gain` control gain), requiring BOTH `"reaction_wheel"` and
+`"magnetic_torque_rod"` actuators, mirroring task 3's `momentum_dumping`
+requirement structure. New `ActuatorConfig(kind="magnetic_torque_rod")`
+params: `gtHat_B` (dipole-axis unit vector) and `max_dipole_a_m2`
+(maximum commandable dipole). Unlike `"thruster"`, `"magnetic_torque_rod"`
+has NO standalone attitude-control role in this app -- Basilisk ships no
+ready-made B-dot-style detumble controller, so a `"magnetic_torque_rod"`
+actuator without `magnetic_momentum_management` set is rejected early
+with a specific message, rather than silently building a dead actuator.
+
+**A real, independently-found UI bug, fixed opportunistically**: the
+"magnetic_torque_rod" entry in `_UNIMPLEMENTED_ACTUATOR_KINDS` (which
+used to show "not simulated yet") had to be removed now that it IS
+simulated, so the sensor/actuator editor's hint text gained a new
+`_CONDITIONAL_ACTUATOR_NOTES` mechanism -- a kind can be fully wired up
+but still need an extra note ("needs magnetic_momentum_management set")
+beyond its plain param list, which `_UNIMPLEMENTED_ACTUATOR_KINDS`'s
+binary "simulated or not" flag couldn't express.
+
+**Verification**: confirmed empirically, not assumed from the shipped
+example's comment, that `mtbMomentumManagement` needs NO equivalent of
+task 3's "prime one tick, re-Reset()" dance -- it's a continuous
+proportional controller, not an event-triggered threshold system.
+Running the exact production `engine.fsw` call sequence
+(`build_reaction_wheels` + `build_mrp_feedback` + `build_rw_motor_torque`
++ `build_magnetic_field_wmm` + `build_mtb_desaturation`, exactly as
+`engine.service` now calls them) against a real Basilisk build drove a
+4-wheel cluster from rest to within 0.1-0.5 RPM of commanded targets
+(800/600/400/200 RPM) over a 120-minute run, while the attitude
+controller simultaneously converged to near-exact inertial pointing
+(attitude error ~3e-21). A real test-harness pitfall caught and fixed
+along the way: a bypass-SPICE verification needs `magneticFieldWMM` fed
+a planet-orientation matrix, and a naive all-zero one (Python's default
+for an unpopulated `SpicePlanetStateMsgPayload`) made wheel speeds
+converge nowhere near their targets (150-370 RPM off) -- an IDENTITY
+orientation matrix (correct for this inertial-only bypass setup) fixed
+it completely; `engine.service.SimulationService` always supplies a
+real, non-degenerate SPICE-sourced planet message in production, so
+this was specific to the test harness, not a bug in the shipped code.
+Two new `requires_basilisk` tests in `tests/test_mtb_desaturation.py`
+ACTUALLY PASS against that build. Plus 9 new schema-validation tests
+and 4 new GUI tests (including the "no longer shows not-simulated-yet,
+now explains the real requirement" regression guard), all passing.
+
+**Template**: `13_magnetic_torque_rod_momentum_management.json`, the
+direct counterpart to '12' -- same reaction-wheel/attitude-control setup,
+magnetic desaturation instead of thruster desaturation, so the two
+templates' result plots can be compared side by side (smooth continuous
+convergence vs. sharp discrete steps). Full suite: 774 passed, 109
+skipped.
+

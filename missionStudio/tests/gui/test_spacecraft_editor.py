@@ -1349,3 +1349,93 @@ def test_dialog_round_trips_momentum_dumping(qtbot):
 
     sc = dialog.to_dataclass()
     assert sc.momentum_dumping.hs_max == 70.0
+
+
+def test_dialog_magnetic_momentum_management_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.magnetic_momentum_management_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management is None
+
+
+def test_dialog_builds_magnetic_momentum_management_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="reaction_wheel", name="rw-2", params={"gsHat_B": [0, 1, 0]}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.magnetic_momentum_management_group.setChecked(True)
+    dialog.mmm_wheel_speed_biases_edit.setText("83.8, 62.8")
+    dialog.mmm_c_gain.setValue(0.01)
+
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management is not None
+    assert sc.magnetic_momentum_management.wheel_speed_biases_rad_s == [83.8, 62.8]
+    assert sc.magnetic_momentum_management.c_gain == 0.01
+
+
+def test_dialog_round_trips_magnetic_momentum_management(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import (
+        ActuatorConfig, MagneticMomentumManagementConfig, OrbitIC, SpacecraftConfig,
+    )
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+        magnetic_momentum_management=MagneticMomentumManagementConfig(
+            wheel_speed_biases_rad_s=[12.5], c_gain=0.02,
+        ),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.magnetic_momentum_management_group.isChecked()
+    assert dialog.mmm_wheel_speed_biases_edit.text() == "12.5"
+    assert dialog.mmm_c_gain.value() == 0.02
+
+    sc = dialog.to_dataclass()
+    assert sc.magnetic_momentum_management.wheel_speed_biases_rad_s == [12.5]
+
+
+def test_dialog_rejects_malformed_wheel_speed_biases(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, ScenarioValidationError, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-mmm",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="reaction_wheel", name="rw-1", params={"gsHat_B": [1, 0, 0]}),
+            ActuatorConfig(kind="magnetic_torque_rod", name="mtb-1",
+                            params={"gtHat_B": [1, 0, 0], "max_dipole_a_m2": 0.1}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.magnetic_momentum_management_group.setChecked(True)
+    dialog.mmm_wheel_speed_biases_edit.setText("not a number")
+
+    with pytest.raises(ScenarioValidationError, match="comma-separated numbers"):
+        dialog.to_dataclass()

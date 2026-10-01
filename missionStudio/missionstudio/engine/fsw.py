@@ -52,6 +52,17 @@ project's "never fabricate a Basilisk API" rule:
   ``thrForceMapping`` + ``thrFiringSchmitt`` (the "thruster" actuator kind's
   control-torque path, replacing ``rwMotorTorque``/
   ``reactionWheelStateEffector``): ``examples/scenarioAttitudeFeedback2T_TH.py``.
+* ``MtbEffector`` + ``tamComm`` + ``mtbMomentumManagement`` (continuous
+  RW momentum management via magnetic torque rods,
+  :func:`build_mtb_desaturation`), including the real, un-doctored
+  ``rwMotorTorqueOutMsg``-sits-between-``rwMotorTorque``-and-the-RW
+  -hardware wiring: ``examples/scenarioMtbMomentumManagement.py``, run
+  directly against a real Basilisk build to confirm the exact wiring
+  works (see this feature's ``HISTORY.md`` entry for the actual
+  numbers) -- notably WITHOUT a ``magneticFieldWMM.epochInMsg``
+  subscription, matching this file's own pre-existing
+  ``build_magnetic_field_wmm()`` precedent (confirmed that omitting it,
+  unlike the shipped example which sets one, does not break anything).
 * ``thrMomentumManagement`` + ``thrForceMapping`` (momentum-dump mode,
   ``angErrThresh`` > pi) + ``thrMomentumDumping`` (RW desaturation via
   thrusters, :func:`build_momentum_dumping`), including the "re-``Reset()``
@@ -116,10 +127,12 @@ from Basilisk.fswAlgorithms import (
     mrpFeedback,
     rwMotorTorque,
     sunSafePoint,
+    tamComm,
     thrFiringSchmitt,
     thrForceMapping,
     thrMomentumDumping,
     thrMomentumManagement,
+    mtbMomentumManagement,
     velocityPoint,
 )
 from Basilisk.simulation import (
@@ -129,6 +142,7 @@ from Basilisk.simulation import (
     imuSensor,
     magnetometer,
     magneticFieldWMM,
+    MtbEffector,
     reactionWheelStateEffector,
     simpleNav,
     starTracker,
@@ -512,6 +526,95 @@ def build_momentum_dumping(scSim, task_name: str, tag: str, rw_config_msg, rw_sp
 
     thruster_effector.cmdsInMsg.subscribeTo(dumping.thrusterOnTimeOutMsg)
     return desat_control, force_mapping, dumping
+
+
+def build_mtb_desaturation(scSim, task_name: str, tag: str, sc_object, actuator_configs: List,
+                            rw_motor_torque_module, rw_config_msg, rw_state_effector, mag_field_model, config):
+    """Continuous reaction-wheel momentum management via magnetic torque
+    bars: a dedicated magnetometer ("TAM") + ``tamComm`` (raw sensor-frame
+    -> body-frame conversion) feed Basilisk's ``mtbMomentumManagement``,
+    which sits BETWEEN ``rwMotorTorque`` and the RW hardware -- it reads
+    the ORIGINAL commanded RW motor torque (``rwMotorTorqueInMsg``) and
+    republishes a modified one (``rwMotorTorqueOutMsg``) that also biases
+    each wheel toward ``config.wheel_speed_biases_rad_s`` using whatever
+    magnetic torque ``MtbEffector`` can actually produce from the current
+    field -- this function re-subscribes ``rw_state_effector``'s command
+    input to that modified output, OVERRIDING the direct subscription
+    :func:`build_rw_motor_torque` already made (safe: Basilisk resolves
+    message subscriptions at ``InitializeSimulation()``, so the last
+    ``subscribeTo()`` call before that wins). Matches
+    ``examples/scenarioMtbMomentumManagement.py`` exactly.
+
+    This dedicated TAM is intentionally separate from any user-configured
+    ``"magnetometer"`` SensorConfig on the same spacecraft (see
+    :func:`attach_sensors`) -- one is this control loop's own near-truth
+    sensor (zero noise, matching the shipped example), the other is a
+    user-visible, independently-configurable (and possibly noisy)
+    instrument for navigation/results. Keeping them separate means a
+    user's sensor noise setting can never silently degrade (or a removed
+    sensor silently break) the desaturation control loop.
+
+    No equivalent of :func:`build_momentum_dumping`'s "prime one tick,
+    then re-Reset()" dance is needed here -- confirmed by running this
+    exact chain against a real Basilisk build (see this function's
+    verification note in HISTORY.md): ``mtbMomentumManagement`` is a
+    continuous proportional controller, not an event-triggered threshold
+    -and-burst system, so it has no equivalent startup requirement.
+    """
+    mtb_configs = actuator_configs
+    gt_hats = [[float(v) for v in a.params["gtHat_B"]] for a in mtb_configs]
+    max_dipoles = [float(a.params["max_dipole_a_m2"]) for a in mtb_configs]
+
+    mtb_config_payload = messaging.MTBArrayConfigMsgPayload()
+    mtb_config_payload.numMTB = len(mtb_configs)
+    # Row-major 3xN alignment matrix: all N bars' X components, then all N
+    # Y components, then all N Z components -- matches
+    # examples/scenarioMtbMomentumManagement.py's own GtMatrix_B layout.
+    mtb_config_payload.GtMatrix_B = (
+        [g[0] for g in gt_hats] + [g[1] for g in gt_hats] + [g[2] for g in gt_hats]
+    )
+    mtb_config_payload.maxMtbDipoles = max_dipoles
+    mtb_params_msg = messaging.MTBArrayConfigMsg().write(mtb_config_payload)
+
+    mtb_effector = MtbEffector.MtbEffector()
+    mtb_effector.ModelTag = f"{tag}_mtbEffector"
+    sc_object.addDynamicEffector(mtb_effector)
+    scSim.AddModelToTask(task_name, mtb_effector)
+
+    env_index = len(mag_field_model.scStateInMsgs)
+    mag_field_model.addSpacecraftToModel(sc_object.scStateOutMsg)
+
+    tam = magnetometer.Magnetometer()
+    tam.ModelTag = f"{tag}_desatTAM"
+    tam.senNoiseStd = [0.0, 0.0, 0.0]
+    tam.stateInMsg.subscribeTo(sc_object.scStateOutMsg)
+    tam.magInMsg.subscribeTo(mag_field_model.envOutMsgs[env_index])
+    scSim.AddModelToTask(task_name, tam)
+
+    tam_comm_mod = tamComm.tamComm()
+    tam_comm_mod.ModelTag = f"{tag}_tamComm"
+    tam_comm_mod.dcm_BS = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    tam_comm_mod.tamInMsg.subscribeTo(tam.tamDataOutMsg)
+    scSim.AddModelToTask(task_name, tam_comm_mod)
+
+    mtb_management = mtbMomentumManagement.mtbMomentumManagement()
+    mtb_management.ModelTag = f"{tag}_mtbMomentumManagement"
+    mtb_management.wheelSpeedBiases = [float(v) for v in config.wheel_speed_biases_rad_s]
+    mtb_management.cGain = config.c_gain
+    mtb_management.rwParamsInMsg.subscribeTo(rw_config_msg)
+    mtb_management.mtbParamsInMsg.subscribeTo(mtb_params_msg)
+    mtb_management.tamSensorBodyInMsg.subscribeTo(tam_comm_mod.tamOutMsg)
+    mtb_management.rwSpeedsInMsg.subscribeTo(rw_state_effector.rwSpeedOutMsg)
+    mtb_management.rwMotorTorqueInMsg.subscribeTo(rw_motor_torque_module.rwMotorTorqueOutMsg)
+    scSim.AddModelToTask(task_name, mtb_management)
+
+    rw_state_effector.rwMotorCmdInMsg.subscribeTo(mtb_management.rwMotorTorqueOutMsg)
+
+    mtb_effector.mtbCmdInMsg.subscribeTo(mtb_management.mtbCmdOutMsg)
+    mtb_effector.mtbParamsInMsg.subscribeTo(mtb_params_msg)
+    mtb_effector.magInMsg.subscribeTo(mag_field_model.envOutMsgs[env_index])
+
+    return mtb_effector, mtb_management
 
 
 def build_rw_motor_torque(scSim, task_name: str, tag: str, mrp_feedback_module, rw_config_msg, rw_state_effector):

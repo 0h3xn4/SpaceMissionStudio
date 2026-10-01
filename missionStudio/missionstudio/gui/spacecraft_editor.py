@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 from ..schema.scenario import (
     ActuatorConfig,
     ConstantThrustConfig,
+    MagneticMomentumManagementConfig,
     MomentumDumpingConfig,
     OrbitIC,
     PhasingKeepingConfig,
@@ -549,6 +550,32 @@ class SpacecraftEditorDialog(QDialog):
         md_form.addRow("Control periods between firings [-]", self.md_max_counter_value)
         power_layout.addWidget(self.momentum_dumping_group)
 
+        # The alternative desaturation strategy to momentum_dumping above --
+        # requires "reaction_wheel" AND "magnetic_torque_rod" actuators
+        # instead of "thruster" (see MagneticMomentumManagementConfig's
+        # docstring for why the two strategies are mutually exclusive).
+        # wheel_speed_biases_rad_s is a comma-separated list (one entry per
+        # reaction_wheel actuator) rather than a fixed set of spin boxes,
+        # matching this dialog's own pk_target_separation_edit precedent
+        # for a variable-length numeric list.
+        mmm0 = config.magnetic_momentum_management if config else None
+        self.magnetic_momentum_management_group = QGroupBox(
+            "Magnetic momentum management (RW desaturation via torque rods)"
+        )
+        self.magnetic_momentum_management_group.setCheckable(True)
+        self.magnetic_momentum_management_group.setChecked(mmm0 is not None)
+        mmm_form = QFormLayout(self.magnetic_momentum_management_group)
+        self.mmm_wheel_speed_biases_edit = QLineEdit(
+            ", ".join(f"{v:g}" for v in mmm0.wheel_speed_biases_rad_s) if mmm0 else "0"
+        )
+        self.mmm_wheel_speed_biases_edit.setPlaceholderText(
+            "e.g. 83.8, 62.8 (comma-separated, rad/s, one per reaction_wheel actuator)"
+        )
+        mmm_form.addRow("Wheel speed biases [rad/s]", self.mmm_wheel_speed_biases_edit)
+        self.mmm_c_gain = _spin(1.0e-9, 1.0e6, decimals=6, step=0.001, value=mmm0.c_gain if mmm0 else 0.003)
+        mmm_form.addRow("Control gain c_gain [-]", self.mmm_c_gain)
+        power_layout.addWidget(self.magnetic_momentum_management_group)
+
         rf_link0 = config.rf_link if config else None
         self.rf_link_group = QGroupBox("Downlink RF link budget (margin ESTIMATE only)")
         self.rf_link_group.setCheckable(True)
@@ -753,6 +780,7 @@ class SpacecraftEditorDialog(QDialog):
             phasing_keeping=self._phasing_keeping_to_dataclass(),
             constant_thrust=self._constant_thrust_to_dataclass(),
             momentum_dumping=self._momentum_dumping_to_dataclass(),
+            magnetic_momentum_management=self._magnetic_momentum_management_to_dataclass(),
             enable_drag=self.enable_drag_check.isChecked(),
             drag_coeff=self.drag_coeff.value(),
             drag_area_m2=self.drag_area_m2.value(),
@@ -810,6 +838,23 @@ class SpacecraftEditorDialog(QDialog):
             hs_max=self.md_hs_max.value(),
             thr_min_fire_time=self.md_thr_min_fire_time.value(),
             max_counter_value=int(self.md_max_counter_value.value()),
+        )
+
+    def _magnetic_momentum_management_to_dataclass(self) -> MagneticMomentumManagementConfig | None:
+        if not self.magnetic_momentum_management_group.isChecked():
+            return None
+        raw = self.mmm_wheel_speed_biases_edit.text().strip()
+        try:
+            wheel_speed_biases_rad_s = [float(part.strip()) for part in raw.split(",") if part.strip()]
+        except ValueError as exc:
+            raise ScenarioValidationError(
+                f"Wheel speed biases must be comma-separated numbers (e.g. '83.8, 62.8'): {exc}"
+            ) from exc
+        if not wheel_speed_biases_rad_s:
+            raise ScenarioValidationError("Wheel speed biases needs at least one number")
+        return MagneticMomentumManagementConfig(
+            wheel_speed_biases_rad_s=wheel_speed_biases_rad_s,
+            c_gain=self.mmm_c_gain.value(),
         )
 
     def _phasing_keeping_to_dataclass(self) -> PhasingKeepingConfig | None:
