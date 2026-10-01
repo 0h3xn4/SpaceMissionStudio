@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SpaceMissionStudio
+Comment=Mission-analysis GUI built on the Basilisk astrodynamics framework
+Exec=spacemissionstudio gui
+Icon=spacemissionstudio
+Terminal=false
+Categories=Science;Education;
+StartupNotify=true
+StartupWMClass=spacemissionstudio

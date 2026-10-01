@@ -1,16 +1,17 @@
 # README
 
-## missionStudio
+## SpaceMissionStudio
 
-This fork also includes **[missionStudio](missionStudio/)**, a standalone,
-GUI-based mission-analysis application built entirely on top of the Basilisk
-engine below (think "STK/FreeFlyer-lite") -- pick a built-in template
-mission, run a real simulation, see the results, no code required.
+This fork also includes **[SpaceMissionStudio](SpaceMissionStudio/)**
+(formerly "missionStudio"), a standalone, GUI-based mission-analysis
+application built entirely on top of the Basilisk engine below (think
+"STK/FreeFlyer-lite") -- pick a built-in template mission, run a real
+simulation, see the results, no code required.
 
-* New to it? Start with **[missionStudio/USER_MANUAL.md](missionStudio/USER_MANUAL.md)**
+* New to it? Start with **[SpaceMissionStudio/USER_MANUAL.md](SpaceMissionStudio/USER_MANUAL.md)**
   -- a beginner-friendly, step-by-step walkthrough with real screenshots, no
   programming or orbital-mechanics background assumed.
-* Installing it, or developing it: **[missionStudio/README.md](missionStudio/README.md)**.
+* Installing it, or developing it: **[SpaceMissionStudio/README.md](SpaceMissionStudio/README.md)**.
 
 ## Basilisk
 
