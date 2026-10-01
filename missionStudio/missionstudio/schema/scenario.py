@@ -565,6 +565,52 @@ class MagneticMomentumManagementConfig:
 
 
 @dataclass
+class FuelTankConfig:
+    """Real propellant depletion for this spacecraft's ``"thruster"``
+    actuators -- Basilisk's ``fuelTank`` state effector
+    (``FuelTankModelUniformBurn``) tied to the thruster hardware via
+    ``fuelTank.addThrusterSet()``, confirmed against
+    ``examples/MultiSatBskSim/modelsMultiSat/BSK_MultiSatDynamics.py``'s
+    own ``SetFuelTank()``. Every tick, the tank reads the SAME mass-flow
+    rate (derived from each firing thruster's own ``steadyIsp`` and
+    commanded thrust -- the standard rocket equation, ``mDot = F /
+    (steadyIsp * g0)``) the thruster hardware itself already computes for
+    its own physics, and depletes ``hub.mHub`` by exactly that amount --
+    unlike this app's existing hand-rolled propellant bookkeeping
+    (``engine.orbit_maintenance``'s station-keeping/phasing/
+    constant-thrust controllers, which track an explicit-Euler rocket
+    -equation estimate in Python and feed it back into ``hub.mHub``
+    themselves), this is Basilisk's own state effector doing the real
+    physics, including the resulting center-of-mass shift as propellant
+    depletes (``r_TcT_TInit``), which the hand-rolled scalar-mass
+    approach cannot capture at all.
+
+    Requires at least one ``"thruster"`` actuator on this spacecraft --
+    a tank with nothing drawing from it is schema-valid (just inert) in
+    Basilisk itself, but almost certainly not what was intended, so this
+    schema rejects it with a specific message instead.
+
+    ``None`` (the default) means no fuel tank is simulated -- thrusters
+    fire with unlimited propellant, exactly as before this feature
+    existed (this app's pre-existing behavior for ACS/desaturation
+    thrusters specifically; station-keeping/phasing/constant-thrust
+    propellant bookkeeping is unrelated and unaffected either way).
+    """
+
+    propellant_mass_kg: float  # [kg] initial propellant mass loaded in the tank
+    max_propellant_mass_kg: float  # [kg] tank capacity -- propellant_mass_kg must not exceed this
+    tank_position_b_m: list = field(default_factory=lambda: [0.0, 0.0, 0.0])  # [m] r_TB_B, tank position in body frame
+
+    def validate(self, spacecraft_name: str) -> None:
+        _require(self.max_propellant_mass_kg > 0, f"{spacecraft_name}: fuel_tank.max_propellant_mass_kg must be > 0")
+        _require(0.0 <= self.propellant_mass_kg <= self.max_propellant_mass_kg,
+                  f"{spacecraft_name}: fuel_tank.propellant_mass_kg must be between 0 and "
+                  "max_propellant_mass_kg")
+        _require(len(self.tank_position_b_m) == 3,
+                  f"{spacecraft_name}: fuel_tank.tank_position_b_m must be a 3-element [x, y, z] list [m]")
+
+
+@dataclass
 class SpacecraftConfig:
     name: str
     orbit: OrbitIC
@@ -628,6 +674,7 @@ class SpacecraftConfig:
     constant_thrust: Optional[ConstantThrustConfig] = None
     momentum_dumping: Optional[MomentumDumpingConfig] = None
     magnetic_momentum_management: Optional[MagneticMomentumManagementConfig] = None
+    fuel_tank: Optional[FuelTankConfig] = None
 
     # Phase 5: PURELY COSMETIC Vizard display -- replaces this spacecraft's
     # default cube icon with a custom CAD model
@@ -812,6 +859,11 @@ class SpacecraftConfig:
                       "actuator (desaturation hardware) on this spacecraft")
             num_reaction_wheels = sum(1 for a in self.actuators if a.kind == "reaction_wheel")
             self.magnetic_momentum_management.validate(self.name, num_reaction_wheels)
+        if self.fuel_tank is not None:
+            _require("thruster" in actuator_kinds_present,
+                      f"{self.name}: fuel_tank needs at least one 'thruster' actuator on this spacecraft to "
+                      "draw propellant from")
+            self.fuel_tank.validate(self.name)
 
         if self.vizard_model_path is not None:
             _require(bool(self.vizard_model_path.strip()), f"{self.name}: vizard_model_path must not be blank")
@@ -1222,11 +1274,14 @@ class Scenario:
                 MagneticMomentumManagementConfig(**magnetic_momentum_management_data)
                 if magnetic_momentum_management_data is not None else None
             )
+            fuel_tank_data = sc.pop("fuel_tank", None)
+            fuel_tank = FuelTankConfig(**fuel_tank_data) if fuel_tank_data is not None else None
             spacecraft.append(SpacecraftConfig(orbit=orbit, sensors=sensors, actuators=actuators,
                                                 power=power, rf_link=rf_link, station_keeping=station_keeping,
                                                 phasing_keeping=phasing_keeping, constant_thrust=constant_thrust,
                                                 momentum_dumping=momentum_dumping,
                                                 magnetic_momentum_management=magnetic_momentum_management,
+                                                fuel_tank=fuel_tank,
                                                 **sc))
 
         mission_sequence = [Command.from_dict(c) for c in data.pop("mission_sequence", [])]

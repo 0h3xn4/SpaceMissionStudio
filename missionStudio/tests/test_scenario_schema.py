@@ -8,6 +8,7 @@ from missionstudio.schema import (
     ActuatorConfig,
     ConstantThrustConfig,
     DispersionConfig,
+    FuelTankConfig,
     GravityConfig,
     GroundStationConfig,
     MagneticMomentumManagementConfig,
@@ -591,6 +592,66 @@ def test_magnetic_momentum_management_with_all_required_params_validates():
     sc.spacecraft[0].fsw_mode = "sunSafePoint"
     sc.spacecraft[0].magnetic_momentum_management = MagneticMomentumManagementConfig(wheel_speed_biases_rad_s=[10.0])
     sc.validate()  # must not raise
+
+
+def test_fuel_tank_requires_a_thruster_actuator():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=20.0, max_propellant_mass_kg=25.0)
+    with pytest.raises(ScenarioValidationError, match="needs at least one 'thruster' actuator"):
+        sc.validate()
+
+
+def test_fuel_tank_propellant_mass_must_not_exceed_capacity():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=30.0, max_propellant_mass_kg=25.0)
+    with pytest.raises(ScenarioValidationError, match="between 0 and max_propellant_mass_kg"):
+        sc.validate()
+
+
+def test_fuel_tank_requires_positive_capacity():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=0.0, max_propellant_mass_kg=0.0)
+    with pytest.raises(ScenarioValidationError, match="max_propellant_mass_kg must be > 0"):
+        sc.validate()
+
+
+def test_fuel_tank_with_thruster_actuator_validates():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(propellant_mass_kg=20.0, max_propellant_mass_kg=25.0)
+    sc.validate()  # must not raise
+
+
+def test_fuel_tank_round_trips():
+    sc = _minimal_scenario()
+    sc.spacecraft[0].actuators = [
+        ActuatorConfig(kind="thruster", name="thr-1",
+                        params={"r_B": [1, 0, 0], "tHat_B": [1, 0, 0], "MaxThrust": 1.0}),
+    ]
+    sc.spacecraft[0].fsw_mode = "sunSafePoint"
+    sc.spacecraft[0].fuel_tank = FuelTankConfig(
+        propellant_mass_kg=20.0, max_propellant_mass_kg=25.0, tank_position_b_m=[0.1, 0.0, -0.2],
+    )
+    sc.validate()
+    loaded = Scenario.from_dict(sc.to_dict())
+    loaded.validate()
+    assert loaded.spacecraft[0].fuel_tank.propellant_mass_kg == 20.0
+    assert loaded.spacecraft[0].fuel_tank.max_propellant_mass_kg == 25.0
+    assert loaded.spacecraft[0].fuel_tank.tank_position_b_m == [0.1, 0.0, -0.2]
 
 
 def test_mixing_reaction_wheel_and_magnetic_torque_rod_without_config_rejected():

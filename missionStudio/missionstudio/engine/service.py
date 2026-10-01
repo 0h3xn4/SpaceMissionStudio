@@ -451,6 +451,7 @@ class _SpacecraftHandle:
     thruster_on_time_recorder: Optional[object] = None
     num_thrusters: int = 0
     css_sun_estimate_recorder: Optional[object] = None
+    fuel_tank_recorder: Optional[object] = None
     sensor_recorders: Dict[str, object] = field(default_factory=dict)  # sensor.name -> (kind, recorder)
     battery_recorder: Optional[object] = None  # Phase 4: only set if sc_config.power was configured
     battery_module: Optional[object] = None  # Phase 4: the simpleBattery.SimpleBattery itself, for engine.vizard
@@ -1146,6 +1147,13 @@ class SimulationService:
                         handle.num_thrusters = len(desat_thruster_actuators)
                         handle.thruster_on_time_recorder = desat_dumping.thrusterOnTimeOutMsg.recorder()
                         self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
+                        if sc_config.fuel_tank is not None:
+                            fuel_tank_effector = fsw.build_fuel_tank(
+                                self.scSim, dyn_task_name, sc_config.name, sc_object, desat_thruster_effector,
+                                sc_config.fuel_tank,
+                            )
+                            handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
+                            self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
 
                     # Reaction-wheel momentum management via magnetic torque
                     # rods (schema.scenario.MagneticMomentumManagementConfig)
@@ -1179,6 +1187,13 @@ class SimulationService:
                         handle.thruster_on_time_recorder = firing_logic.onTimeOutMsg.recorder()
                         self.scSim.AddModelToTask(dyn_task_name, handle.thruster_on_time_recorder)
                         thr_effector_for_viz = thruster_effector
+                        if sc_config.fuel_tank is not None:
+                            fuel_tank_effector = fsw.build_fuel_tank(
+                                self.scSim, dyn_task_name, sc_config.name, sc_object, thruster_effector,
+                                sc_config.fuel_tank,
+                            )
+                            handle.fuel_tank_recorder = fuel_tank_effector.fuelTankOutMsg.recorder()
+                            self.scSim.AddModelToTask(dyn_task_name, handle.fuel_tank_recorder)
                     else:
                         mrp = fsw.build_mrp_feedback(
                             self.scSim, dyn_task_name, sc_config.name, guid_msg, veh_config_msg,
@@ -1519,6 +1534,10 @@ class SimulationService:
                 on_times = np.asarray(handle.thruster_on_time_recorder.OnTimeRequest)[:, :handle.num_thrusters]
                 columns = tuple(f"thruster_{i}" for i in range(handle.num_thrusters))
                 result.add(TimeSeries(f"{name}.thruster_on_time", thr_t_s, columns, on_times, units="s"))
+            if handle.fuel_tank_recorder is not None:
+                fuel_t_s = handle.fuel_tank_recorder.times() * macros.NANO2SEC
+                result.add(TimeSeries(f"{name}.fuel_mass_remaining", fuel_t_s, ("fuel_mass_remaining",),
+                                       handle.fuel_tank_recorder.fuelMass, units="kg"))
 
             for sensor_name, (kind, recorder) in handle.sensor_recorders.items():
                 sensor_t_s = recorder.times() * macros.NANO2SEC

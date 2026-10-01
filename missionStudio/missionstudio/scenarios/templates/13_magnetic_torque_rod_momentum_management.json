@@ -184,6 +184,7 @@
         ],
         "c_gain": 0.003
       },
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,

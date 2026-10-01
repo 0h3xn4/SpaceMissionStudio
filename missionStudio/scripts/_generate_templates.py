@@ -35,6 +35,7 @@ from pathlib import Path
 from missionstudio.engine.constellation import WalkerConstellationRequest, generate_walker_constellation
 from missionstudio.schema.scenario import (
     DispersionConfig,
+    FuelTankConfig,
     GravityConfig,
     GroundStationConfig,
     MagneticMomentumManagementConfig,
@@ -1053,6 +1054,66 @@ def build_16_lambert_transfer() -> Scenario:
     )
 
 
+def build_17_fuel_tank_depletion() -> Scenario:
+    return Scenario(
+        name="17 - Real propellant depletion (fuel tank)",
+        description=(
+            "The exact same 8-thruster attitude control setup as '11' (inertial3D pointing, the real "
+            "thrForceMapping -> thrFiringSchmitt -> thrusterDynamicEffector chain), with a real "
+            "FuelTankConfig added -- Basilisk's own fuelTank state effector (engine.fsw.build_fuel_tank, "
+            "confirmed against examples/MultiSatBskSim/modelsMultiSat/BSK_MultiSatDynamics.py's own "
+            "SetFuelTank()) now tracks REAL propellant depletion as the thrusters fire, reading the same "
+            "mass-flow rate (mDot = F / (steadyIsp * g0)) each thruster already computes for its own "
+            "physics -- unlike this app's older station-keeping/phasing/constant-thrust propellant "
+            "bookkeeping (engine.orbit_maintenance, a hand-rolled Python estimate), this is Basilisk's "
+            "own state effector doing the real physics, including the resulting center-of-mass shift as "
+            "propellant depletes.\n\n"
+            "This exact configuration was confirmed directly against a real Basilisk build: the "
+            "spacecraft's attitude error converges from its initial tip (sigma norm ~0.37) to near-zero "
+            "(~0.002) within about 100-150 seconds, consuming roughly 0.185 kg of the tank's 0.5 kg "
+            "starting load during that active correction burn -- then '{sat-1}.fuel_mass_remaining' goes "
+            "flat once the attitude has converged and the thrusters stop firing, a clean before "
+            "/during/after depletion curve.\n\n"
+            "What to look at: result series '{sat-1}.fuel_mass_remaining' alongside '{sat-1}"
+            ".thruster_on_time' -- the fuel-depletion curve's steep drop should line up exactly with the "
+            "period where thrusters are actively firing, then both go flat together.\n\n"
+            "Try changing: fuel_tank.propellant_mass_kg (set it below the ~0.185 kg this convergence "
+            "burn needs to see what happens when the tank runs dry mid-maneuver -- thrusterDynamicEffector "
+            "keeps commanding thrust, but fuelTank has nothing left to give), or each thruster's "
+            "steadyIsp (a lower Isp burns through the same delta-V budget using more propellant, a "
+            "higher Isp less)."
+        ),
+        epoch_utc="2030-01-01T00:00:00",
+        simulation_mode="full_attitude",
+        gravity=GravityConfig(central_body="earth", central_body_degree=0),
+        sim_settings=SimSettings(duration_days=0.01, dynamics_task_rate_s=0.5, integrator="rkf78"),
+        spacecraft=[
+            SpacecraftConfig(
+                name="sat-1",
+                orbit=OrbitIC(type="classical_elements", semi_major_axis_km=6928.0, eccentricity=0.0,
+                               inclination_deg=45.0, raan_deg=0.0, arg_periapsis_deg=0.0, true_anomaly_deg=0.0),
+                dry_mass_kg=100.0,
+                inertia_kg_m2=[10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0],
+                sigma_bn_init=[0.3, 0.2, -0.1],
+                omega_bn_b_init_rad_s=[0.0, 0.0, 0.0],
+                fsw_mode="inertial3D",
+                fsw_params={"sigma_R0N": [0.0, 0.0, 0.0]},
+                actuators=[
+                    ActuatorConfig(kind="thruster", name=f"thr-{i + 1}",
+                                     params={"r_B": pos, "tHat_B": direction, "MaxThrust": 1.0})
+                    for i, (pos, direction) in enumerate(zip(
+                        [[-1, -1, 1.28], [1, -1, -1.28], [1, -1, 1.28], [1, 1, -1.28],
+                         [1, 1, 1.28], [-1, 1, -1.28], [-1, 1, 1.28], [-1, -1, -1.28]],
+                        [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0],
+                         [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]],
+                    ))
+                ],
+                fuel_tank=FuelTankConfig(propellant_mass_kg=0.5, max_propellant_mass_kg=1.0),
+            ),
+        ],
+    )
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     _save(build_01_two_body_circular_orbit(), "01_two_body_circular_orbit.json")
@@ -1072,6 +1133,7 @@ def main() -> None:
     _save(build_14_css_sun_heading_estimation(), "14_css_sun_heading_estimation.json")
     _save(build_15_celestial_body_pointing(), "15_celestial_body_pointing.json")
     _save(build_16_lambert_transfer(), "16_lambert_transfer.json")
+    _save(build_17_fuel_tank_depletion(), "17_fuel_tank_depletion.json")
 
 
 if __name__ == "__main__":

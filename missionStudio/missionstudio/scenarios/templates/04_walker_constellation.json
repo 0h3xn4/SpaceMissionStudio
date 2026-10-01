@@ -69,6 +69,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -144,6 +145,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -219,6 +221,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -294,6 +297,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -369,6 +373,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -444,6 +449,7 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
+      "fuel_tank": null,
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,

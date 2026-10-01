@@ -4382,3 +4382,65 @@ report position again) so the "before" and "after" snapshots in the
 GUI's Mission Output tab show the transfer actually landing on
 target_position_m.
 
+### Real FuelTank state effector (task 8 of 19): a second, more physical propellant model alongside the existing one
+
+A real codebase audit finding, not a feature request: this project
+ALREADY had propellant bookkeeping (`engine.orbit_maintenance`'s
+station-keeping/phasing/constant-thrust controllers), but it's a
+hand-rolled Python estimate -- explicit-Euler rocket equation, fed back
+into `hub.mHub` manually each tick -- and ONLY covers those three
+long-duration maintenance burns. The attitude-control/desaturation
+thrusters from task 2/3 of this backlog (`"thruster"` actuators via
+`thrForceMapping`/`thrMomentumDumping`) have never tracked propellant at
+all -- they fire with unlimited "free" fuel. New
+`SpacecraftConfig.fuel_tank` (`FuelTankConfig`) closes that gap using
+Basilisk's OWN `fuelTank` state effector (`FuelTankModelUniformBurn`),
+confirmed against `examples/MultiSatBskSim/modelsMultiSat/
+BSK_MultiSatDynamics.py`'s own `SetFuelTank()` -- `fuelTank.
+addThrusterSet()` ties the tank directly to a `ThrusterDynamicEffector`,
+so it reads the exact same mass-flow rate (`mDot = F / (steadyIsp *
+g0)`, confirmed directly in `thrusterDynamicEffector.cpp`) the thruster
+hardware already computes for its own force/torque physics, and
+depletes `hub.mHub` by exactly that amount. This is a materially more
+physical model than the hand-rolled one: a real state effector, not a
+Python `UpdateState()` estimate, including the propellant's own
+contribution to the hub's center of mass as it depletes
+(`tank_position_b_m` -> `setR_TB_B`) -- something a scalar `hub.mHub`
+adjustment cannot represent at all. The two propellant models are
+unrelated and don't conflict: a spacecraft could in principle use both
+(station-keeping's own bookkeeping AND a fuel tank on its ACS
+thrusters), each tracking its own, different propellant budget.
+
+New `ActuatorConfig(kind="thruster")` + `fuel_tank` requires at least
+one `"thruster"` actuator present (checked by schema, with a specific
+error otherwise -- a tank with nothing drawing from it would be
+schema-valid in Basilisk itself but almost certainly not what was
+intended). Wired into BOTH places this app builds a
+`ThrusterDynamicEffector` from `"thruster"` actuators: the primary
+-control path (`fsw_mode` + no reaction wheels) and `momentum_dumping`'s
+separate desaturation-thruster path -- confirmed these are mutually
+exclusive in practice (the existing reaction_wheel+thruster mixing rule
+means a spacecraft reaches at most one of the two), so exactly one
+`fuelTank` ever gets built per spacecraft regardless of which path fires.
+
+**Verification**: `tests/test_fuel_tank.py` (2 new `requires_basilisk`
+tests) confirms, against a real Basilisk build, that a continuously
+-firing thruster depletes fuel at the exact rate the rocket equation
+predicts (within 1%, over a long-enough run that a real, confirmed
+1-task-tick startup transient -- the thruster doesn't start firing until
+the tick after `InitializeSimulation()` -- becomes negligible rather
+than needing to special-case it), and that a thruster that never fires
+at all leaves fuel mass exactly unchanged. New GUI support (a checkable
+"Fuel tank" group box in the spacecraft editor, mirroring
+`momentum_dumping`'s own pattern) and a new `{name}.fuel_mass_remaining`
+result series.
+
+**Template**: `17_fuel_tank_depletion.json` -- '11's exact 8-thruster
+attitude-control setup with a 0.5 kg fuel tank added. Confirmed directly
+against a real Basilisk build: the attitude converges from its initial
+tip within about 100-150 seconds, consuming ~0.185 kg of propellant
+during that active correction burn, after which
+`{sat-1}.fuel_mass_remaining` goes flat (thrusters stop firing once
+converged) -- a clean, real before/during/after depletion curve, not a
+hand-picked-to-look-plausible number.
+

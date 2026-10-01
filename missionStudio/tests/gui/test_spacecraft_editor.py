@@ -1351,6 +1351,70 @@ def test_dialog_round_trips_momentum_dumping(qtbot):
     assert sc.momentum_dumping.hs_max == 70.0
 
 
+def test_dialog_builds_fuel_tank_config_when_group_checked(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-ft",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+    dialog.fuel_tank_group.setChecked(True)
+    dialog.ft_propellant_mass.setValue(15.0)
+    dialog.ft_max_propellant_mass.setValue(25.0)
+    dialog.ft_tank_pos_x.setValue(0.1)
+    dialog.ft_tank_pos_y.setValue(0.2)
+    dialog.ft_tank_pos_z.setValue(-0.3)
+
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank is not None
+    assert sc.fuel_tank.propellant_mass_kg == 15.0
+    assert sc.fuel_tank.max_propellant_mass_kg == 25.0
+    assert sc.fuel_tank.tank_position_b_m == [0.1, 0.2, -0.3]
+
+
+def test_dialog_round_trips_fuel_tank(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+    from missionstudio.schema.scenario import ActuatorConfig, FuelTankConfig, OrbitIC, SpacecraftConfig
+
+    existing = SpacecraftConfig(
+        name="sat-ft",
+        orbit=OrbitIC(type="cartesian", position_km=[7000, 0, 0], velocity_km_s=[0, 7.5, 0]),
+        actuators=[
+            ActuatorConfig(kind="thruster", name="thr-1",
+                            params={"r_B": [1, 0, 0], "tHat_B": [0, 1, 0], "MaxThrust": 1.0}),
+        ],
+        fsw_mode="sunSafePoint",
+        fuel_tank=FuelTankConfig(propellant_mass_kg=12.0, max_propellant_mass_kg=20.0),
+    )
+    dialog = SpacecraftEditorDialog(config=existing)
+    qtbot.addWidget(dialog)
+
+    assert dialog.fuel_tank_group.isChecked()
+    assert dialog.ft_propellant_mass.value() == 12.0
+    assert dialog.ft_max_propellant_mass.value() == 20.0
+
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank.propellant_mass_kg == 12.0
+
+
+def test_dialog_fuel_tank_defaults_to_none(qtbot):
+    from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
+
+    dialog = SpacecraftEditorDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog.fuel_tank_group.isChecked()
+    sc = dialog.to_dataclass()
+    assert sc.fuel_tank is None
+
+
 def test_dialog_magnetic_momentum_management_defaults_to_none(qtbot):
     from missionstudio.gui.spacecraft_editor import SpacecraftEditorDialog
 

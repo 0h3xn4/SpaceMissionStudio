@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 from ..schema.scenario import (
     ActuatorConfig,
     ConstantThrustConfig,
+    FuelTankConfig,
     MagneticMomentumManagementConfig,
     MomentumDumpingConfig,
     OrbitIC,
@@ -594,6 +595,34 @@ class SpacecraftEditorDialog(QDialog):
         mmm_form.addRow("Control gain c_gain [-]", self.mmm_c_gain)
         power_layout.addWidget(self.magnetic_momentum_management_group)
 
+        # Requires a "thruster" actuator on this spacecraft (see
+        # schema.scenario.FuelTankConfig's docstring) -- same
+        # not-cross-checked-here convention as momentum_dumping/
+        # magnetic_momentum_management above.
+        ft0 = config.fuel_tank if config else None
+        self.fuel_tank_group = QGroupBox("Fuel tank (real propellant depletion for thrusters)")
+        self.fuel_tank_group.setCheckable(True)
+        self.fuel_tank_group.setChecked(ft0 is not None)
+        ft_form = QFormLayout(self.fuel_tank_group)
+        self.ft_propellant_mass = _spin(0.0, 1.0e6, decimals=3, step=1.0,
+                                          value=ft0.propellant_mass_kg if ft0 else 10.0)
+        ft_form.addRow("Propellant mass [kg]", self.ft_propellant_mass)
+        self.ft_max_propellant_mass = _spin(1.0e-6, 1.0e6, decimals=3, step=1.0,
+                                              value=ft0.max_propellant_mass_kg if ft0 else 20.0)
+        ft_form.addRow("Tank capacity [kg]", self.ft_max_propellant_mass)
+        tank_pos = ft0.tank_position_b_m if ft0 else [0.0, 0.0, 0.0]
+        tank_pos_row = QHBoxLayout()
+        self.ft_tank_pos_x = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[0])
+        self.ft_tank_pos_y = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[1])
+        self.ft_tank_pos_z = _spin(-1.0e3, 1.0e3, decimals=3, step=0.1, value=tank_pos[2])
+        tank_pos_row.addWidget(self.ft_tank_pos_x)
+        tank_pos_row.addWidget(self.ft_tank_pos_y)
+        tank_pos_row.addWidget(self.ft_tank_pos_z)
+        tank_pos_row_widget = QWidget()
+        tank_pos_row_widget.setLayout(tank_pos_row)
+        ft_form.addRow("Tank position r_TB_B [m]", tank_pos_row_widget)
+        power_layout.addWidget(self.fuel_tank_group)
+
         rf_link0 = config.rf_link if config else None
         self.rf_link_group = QGroupBox("Downlink RF link budget (margin ESTIMATE only)")
         self.rf_link_group.setCheckable(True)
@@ -799,6 +828,7 @@ class SpacecraftEditorDialog(QDialog):
             constant_thrust=self._constant_thrust_to_dataclass(),
             momentum_dumping=self._momentum_dumping_to_dataclass(),
             magnetic_momentum_management=self._magnetic_momentum_management_to_dataclass(),
+            fuel_tank=self._fuel_tank_to_dataclass(),
             enable_drag=self.enable_drag_check.isChecked(),
             drag_coeff=self.drag_coeff.value(),
             drag_area_m2=self.drag_area_m2.value(),
@@ -873,6 +903,15 @@ class SpacecraftEditorDialog(QDialog):
         return MagneticMomentumManagementConfig(
             wheel_speed_biases_rad_s=wheel_speed_biases_rad_s,
             c_gain=self.mmm_c_gain.value(),
+        )
+
+    def _fuel_tank_to_dataclass(self) -> FuelTankConfig | None:
+        if not self.fuel_tank_group.isChecked():
+            return None
+        return FuelTankConfig(
+            propellant_mass_kg=self.ft_propellant_mass.value(),
+            max_propellant_mass_kg=self.ft_max_propellant_mass.value(),
+            tank_position_b_m=[self.ft_tank_pos_x.value(), self.ft_tank_pos_y.value(), self.ft_tank_pos_z.value()],
         )
 
     def _phasing_keeping_to_dataclass(self) -> PhasingKeepingConfig | None:

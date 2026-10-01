@@ -20,7 +20,7 @@ def test_at_least_one_template_exists():
     # directory got renamed/moved) and every parametrized test below
     # collecting zero cases, which would pass "successfully" while
     # testing nothing at all.
-    assert len(_TEMPLATE_PATHS) >= 16
+    assert len(_TEMPLATE_PATHS) >= 17
 
 
 @pytest.mark.parametrize("path", _TEMPLATE_PATHS, ids=lambda p: p.name)
@@ -150,6 +150,15 @@ def test_lambert_transfer_template_targets_the_documented_position():
     assert lambert_cmd.params["spacecraft"] == "sat-1"
     assert lambert_cmd.params["target_position_m"] == [-6578000.0, 0.0, 0.0]
     assert lambert_cmd.params["time_of_flight_s"] == 2490.0
+
+
+def test_fuel_tank_template_has_a_tank_tied_to_its_thrusters():
+    scenario = load_scenario(_TEMPLATES_DIR / "17_fuel_tank_depletion.json")
+    sat = scenario.spacecraft[0]
+    assert sat.fuel_tank is not None
+    assert sat.fuel_tank.propellant_mass_kg == 0.5
+    assert sat.fuel_tank.max_propellant_mass_kg == 1.0
+    assert any(a.kind == "thruster" for a in sat.actuators)
 
 
 def test_phasing_template_pairs_phasing_keeping_with_station_keeping():

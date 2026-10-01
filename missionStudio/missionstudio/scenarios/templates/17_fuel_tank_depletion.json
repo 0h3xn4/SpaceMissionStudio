@@ -1,5 +1,5 @@
 {
-  "name": "11 - Attitude control via thrusters (no reaction wheels)",
+  "name": "17 - Real propellant depletion (fuel tank)",
   "epoch_utc": "2030-01-01T00:00:00",
   "simulation_mode": "full_attitude",
   "gravity": {
@@ -209,7 +209,15 @@
       "constant_thrust": null,
       "momentum_dumping": null,
       "magnetic_momentum_management": null,
-      "fuel_tank": null,
+      "fuel_tank": {
+        "propellant_mass_kg": 0.5,
+        "max_propellant_mass_kg": 1.0,
+        "tank_position_b_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
       "vizard_model_path": null,
       "vizard_model_offset_m": [
         0.0,
@@ -250,6 +258,6 @@
     "dispersions": []
   },
   "mission_sequence": [],
-  "description": "The thruster counterpart to '06'/'07': instead of reaction wheels or an idealized actuator, this spacecraft points itself using eight real ACS thrusters (an 8-thruster corner-mounted cube layout, the same real configuration examples/scenarioAttitudeFeedback2T_TH.py/scenarioMomentumDumping.py ship) via Basilisk's real thrForceMapping -> thrFiringSchmitt -> thrusterDynamicEffector chain (see engine.fsw.build_thrusters/build_thruster_force_mapping). fsw_mode 'inertial3D' commands a fixed inertial attitude; the spacecraft starts tipped away from it with a small initial body rate.\n\nWhat to look at: result series '{sat-1}.thruster_on_time' (one column per thruster, seconds) shows which thrusters fired and for how long as the controller worked to null the attitude error -- compare against '07''s '{sat-1}.rw_speeds' to see the equivalent signal for the reaction-wheel case. In Vizard, thruster plumes render natively (engine.vizard.enable_vizard's thr_effectors_by_spacecraft) when a thruster is firing.\n\nTry changing: each actuator's MaxThrust (weaker thrusters take longer to null the same attitude error), or the thruster layout itself (fewer than 6 well-placed thrusters cannot produce a pure torque about all three axes -- thrForceMapping will report a degraded/saturated solution).",
+  "description": "The exact same 8-thruster attitude control setup as '11' (inertial3D pointing, the real thrForceMapping -> thrFiringSchmitt -> thrusterDynamicEffector chain), with a real FuelTankConfig added -- Basilisk's own fuelTank state effector (engine.fsw.build_fuel_tank, confirmed against examples/MultiSatBskSim/modelsMultiSat/BSK_MultiSatDynamics.py's own SetFuelTank()) now tracks REAL propellant depletion as the thrusters fire, reading the same mass-flow rate (mDot = F / (steadyIsp * g0)) each thruster already computes for its own physics -- unlike this app's older station-keeping/phasing/constant-thrust propellant bookkeeping (engine.orbit_maintenance, a hand-rolled Python estimate), this is Basilisk's own state effector doing the real physics, including the resulting center-of-mass shift as propellant depletes.\n\nThis exact configuration was confirmed directly against a real Basilisk build: the spacecraft's attitude error converges from its initial tip (sigma norm ~0.37) to near-zero (~0.002) within about 100-150 seconds, consuming roughly 0.185 kg of the tank's 0.5 kg starting load during that active correction burn -- then '{sat-1}.fuel_mass_remaining' goes flat once the attitude has converged and the thrusters stop firing, a clean before /during/after depletion curve.\n\nWhat to look at: result series '{sat-1}.fuel_mass_remaining' alongside '{sat-1}.thruster_on_time' -- the fuel-depletion curve's steep drop should line up exactly with the period where thrusters are actively firing, then both go flat together.\n\nTry changing: fuel_tank.propellant_mass_kg (set it below the ~0.185 kg this convergence burn needs to see what happens when the tank runs dry mid-maneuver -- thrusterDynamicEffector keeps commanding thrust, but fuelTank has nothing left to give), or each thruster's steadyIsp (a lower Isp burns through the same delta-V budget using more propellant, a higher Isp less).",
   "schema_version": 1
 }

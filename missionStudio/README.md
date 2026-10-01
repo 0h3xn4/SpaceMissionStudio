@@ -285,6 +285,17 @@ separation target; radial/cross-track (R/N) only set the follower's
 starting geometry, since the phasing controller has no radial/
 cross-track control authority (the wizard says so up front).
 
+**Fuel tank** -- real propellant depletion for `"thruster"` actuators
+(`SpacecraftConfig.fuel_tank`, `engine.fsw.build_fuel_tank`): Basilisk's
+own `fuelTank` state effector (`FuelTankModelUniformBurn`), tied to the
+thruster hardware so it reads the SAME mass-flow rate the thruster
+itself already computes (`mDot = F / (steadyIsp * g0)`) -- a materially
+different, more physical mechanism than the orbit-maintenance
+bookkeeping above (which is a hand-rolled Python estimate specific to
+station-keeping/phasing/constant-thrust burns); this one is Basilisk's
+own effector, including the resulting center-of-mass shift as
+propellant depletes.
+
 **Vizard visualization** -- live-stream or `.bin` playback file, an
 Earth-centered default camera view with orbit trace lines, live
 data panels (battery charge, station-keeping propellant remaining,
@@ -582,7 +593,7 @@ missionstudio gui
 ```
 
 The GUI opens on its **Load Scenario** tab (left pane) -- pick one of the
-sixteen built-in template missions (see "Template missions" below) or
+seventeen built-in template missions (see "Template missions" below) or
 browse for any other scenario file; either one switches you to the
 **Scenario Editor** tab next to it with that scenario loaded and ready to
 edit. File > New/Open/Save/Save As work against the same
@@ -599,7 +610,7 @@ clear error (not a crash) if Basilisk isn't installed/built.
 
 ## Template missions for learning and for starting your own
 
-`missionstudio/scenarios/templates/` has sixteen ready-to-run scenario
+`missionstudio/scenarios/templates/` has seventeen ready-to-run scenario
 files, each demonstrating one missionStudio concept in isolation --
 two-body orbits, J2/third-body perturbations, GEO station-keeping,
 a generated Walker constellation, formation-flying phasing control,
@@ -608,8 +619,9 @@ Sequence-based impulsive orbit raise, a Monte Carlo dispersion
 analysis, uncontrolled gravity-gradient torque, thruster-only attitude
 control, reaction-wheel momentum management via thrusters or via
 magnetic torque rods, real sun-heading estimation from coarse sun
-sensor hardware, direct celestial-body pointing, and a Lambert-solver
-point-to-point transfer. See that directory's own `README.md` for the full catalog and
+sensor hardware, direct celestial-body pointing, a Lambert-solver
+point-to-point transfer, and real propellant depletion via a fuel tank.
+See that directory's own `README.md` for the full catalog and
 what each one teaches -- every file also carries its own extensive
 `description` field (visible in the GUI's scenario form, or by opening
 the `.json` directly) explaining what to look at after running it and
@@ -623,7 +635,7 @@ and every one is covered by `tests/test_scenario_templates.py`
 `tests/gui/test_scenario_templates_gui.py` (confirms each one also
 round-trips through the actual `ScenarioEditorWidget` form), and
 `tests/gui/test_load_scenario_widget.py` (the in-GUI picker described
-below) -- 101 tests total, all passing before this was committed. What's
+below) -- 107 tests total, all passing before this was committed. What's
 NOT yet verified: an actual Basilisk run of any of them (this sandbox has
 none), so treat the physical numbers (propellant use, drift rates,
 orbital periods) as reasonable back-of-the-envelope choices, not

@@ -143,6 +143,7 @@ from Basilisk.simulation import (
     coarseSunSensor,
     ephemerisConverter,
     extForceTorque,
+    fuelTank,
     groundLocation,
     imuSensor,
     magnetometer,
@@ -563,6 +564,53 @@ def build_thrusters(scSim, task_name: str, tag: str, sc_object, actuator_configs
     scSim.AddModelToTask(task_name, thruster_effector, 20)
     thr_config_msg = thr_factory.getConfigMessage()
     return thr_factory, thruster_effector, thr_config_msg
+
+
+def build_fuel_tank(scSim, task_name: str, tag: str, sc_object, thruster_effector, fuel_tank_config):
+    """Real propellant depletion for ``thruster_effector`` -- Basilisk's
+    ``fuelTank`` state effector (``FuelTankModelUniformBurn``, the
+    "fuel mass depletes directly, no slosh/CoM-within-tank modeling"
+    model), tied to the thruster hardware via ``fuelTank.addThrusterSet()``
+    so it reads the SAME mass-flow rate the thruster hardware already
+    computes for its own physics each tick (``mDot = F / (steadyIsp *
+    g0)``, confirmed directly in ``thrusterDynamicEffector.cpp``) and
+    depletes ``hub.mHub`` by exactly that amount -- unlike
+    ``engine.orbit_maintenance``'s hand-rolled Python propellant
+    bookkeeping (an explicit-Euler rocket-equation estimate fed back into
+    ``hub.mHub`` manually, used for station-keeping/phasing/
+    constant-thrust burns), this is Basilisk's own effector, including
+    the resulting center-of-mass shift as propellant depletes. Matches
+    ``examples/MultiSatBskSim/modelsMultiSat/BSK_MultiSatDynamics.py``'s
+    own ``SetFuelTank()``.
+
+    ``schema.scenario.FuelTankConfig.tank_position_b_m`` is the tank's
+    OWN position in the body frame (``setR_TB_B``) -- a materially
+    different vector from the thruster nozzle positions
+    (``ActuatorConfig(kind="thruster").params["r_B"]``) already set in
+    :func:`build_thrusters`; both matter for a fully physical model (the
+    nozzle position for thrust/torque, the tank position for the
+    propellant's own contribution to the hub's center of mass), so
+    neither can stand in for the other.
+
+    Returns the ``fuelTank.FuelTank()`` state effector itself (its
+    ``fuelTankOutMsg`` -- a real ``FuelTankMsgPayload`` -- is what
+    ``engine.service`` records for the ``{name}.fuel_mass_remaining``
+    result series and any live Vizard propellant gauge).
+    """
+    tank_model = fuelTank.FuelTankModelUniformBurn()
+    tank_model.propMassInit = float(fuel_tank_config.propellant_mass_kg)
+    tank_model.maxFuelMass = float(fuel_tank_config.max_propellant_mass_kg)
+    tank_model.r_TcT_TInit = [[0.0], [0.0], [0.0]]
+
+    tank = fuelTank.FuelTank()
+    tank.ModelTag = f"{tag}_fuelTank"
+    tank.setTankModel(tank_model)
+    tank.setR_TB_B([[float(v)] for v in fuel_tank_config.tank_position_b_m])
+    tank.addThrusterSet(thruster_effector)
+
+    sc_object.addStateEffector(tank)
+    scSim.AddModelToTask(task_name, tank, 20)
+    return tank
 
 
 def build_thruster_force_mapping(scSim, task_name: str, tag: str, mrp_feedback_module, thr_config_msg,
